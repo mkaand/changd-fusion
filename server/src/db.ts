@@ -1,0 +1,34 @@
+import pg from "pg";
+export const makePool = (url: string) => {
+  const pool = new pg.Pool({
+    connectionString: url,
+    max: 8,
+    connectionTimeoutMillis: 5000,
+    statement_timeout: 10000,
+  });
+  // Idle connection failures must not terminate the service or expose connection strings.
+  pool.on("error", () =>
+    console.error(
+      JSON.stringify({ level: "error", code: "database_pool_error" }),
+    ),
+  );
+  return pool;
+};
+export type Pool = pg.Pool;
+export async function transaction<T>(
+  pool: Pool,
+  fn: (c: pg.PoolClient) => Promise<T>,
+): Promise<T> {
+  const c = await pool.connect();
+  try {
+    await c.query("BEGIN");
+    const value = await fn(c);
+    await c.query("COMMIT");
+    return value;
+  } catch (e) {
+    await c.query("ROLLBACK");
+    throw e;
+  } finally {
+    c.release();
+  }
+}
