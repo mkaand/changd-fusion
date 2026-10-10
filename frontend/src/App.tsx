@@ -15,6 +15,8 @@ import {
   Alert,
   Empty,
   Spin,
+  Drawer,
+  Dropdown,
   App as AntApp,
 } from "antd";
 import {
@@ -22,6 +24,8 @@ import {
   BellOutlined,
   LogoutOutlined,
   PlusOutlined,
+  MenuOutlined,
+  MoreOutlined,
 } from "@ant-design/icons";
 import { api, percent } from "./api";
 import { monitorState, monitorStates, filterMonitors } from "./monitor-status";
@@ -45,8 +49,24 @@ const AccountSecurity = lazy(() =>
 );
 import logo from "./assets/logo.svg";
 const { Header, Sider, Content } = Layout;
+
+function useCompactLayout() {
+  const [compact, setCompact] = useState(() =>
+    typeof window === "undefined" ? false : window.innerWidth < 1024,
+  );
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 1023px)");
+    const update = () => setCompact(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  return compact;
+}
+
 export default function FusionApp() {
   const themeAdapter = useThemeAdapter();
+  const compactLayout = useCompactLayout();
   const [query, setQuery] = useState(""),
     [stateFilter, setStateFilter] = useState<string>();
   const { message } = AntApp.useApp();
@@ -59,7 +79,8 @@ export default function FusionApp() {
     [page, setPage] = useState("jobs"),
     [selected, setSelected] = useState<any>(),
     [refresh, setRefresh] = useState(0),
-    [collapsed, setCollapsed] = useState(false);
+    [collapsed, setCollapsed] = useState(false),
+    [navigationOpen, setNavigationOpen] = useState(false);
   const [open, setOpen] = useState(false),
     [editing, setEditing] = useState<any>(),
     [saving, setSaving] = useState(false);
@@ -111,6 +132,7 @@ export default function FusionApp() {
   const navigate = (key: string) => {
     setPage(key);
     setSelected(undefined);
+    setNavigationOpen(false);
     history.replaceState(null, "", key === "jobs" ? "/jobs" : "/notifications");
   };
   const detail = async (id: string) => {
@@ -167,6 +189,16 @@ export default function FusionApp() {
       void message.error((e as Error).message);
     }
   };
+  const remove = (m: any) =>
+    Modal.confirm({
+      title: "Delete monitor and history?",
+      content: "This action cannot be undone.",
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        await api("/jobs/" + m.id, "DELETE");
+        await reload();
+      },
+    });
   if (authLoading)
     return (
       <div className="center">
@@ -175,9 +207,37 @@ export default function FusionApp() {
     );
   if (!user) return <Login onSuccess={() => void getUser()} />;
   const current = monitors.find((m) => m.id === selected?.id) ?? selected;
+  const filteredMonitors = filterMonitors(monitors, query, stateFilter);
+  const navigation = (
+    <Menu
+      selectedKeys={[page === "detail" ? "jobs" : page]}
+      items={[
+        { key: "jobs", icon: <EyeOutlined />, label: "Monitors" },
+        { key: "notifications", icon: <BellOutlined />, label: "Notifications" },
+      ]}
+      onClick={({ key }) => navigate(key)}
+    />
+  );
+  const signOut = async () => {
+    try {
+      await api("/logout", "POST", {});
+      setUser(null);
+    } catch (e) {
+      void message.error((e as Error).message);
+    }
+  };
   return (
     <Layout className="shell">
       <Header className="header">
+        {compactLayout && (
+          <Button
+            className="navigation-toggle"
+            type="text"
+            icon={<MenuOutlined />}
+            aria-label="Open navigation"
+            onClick={() => setNavigationOpen(true)}
+          />
+        )}
         <a
           href="/jobs"
           onClick={(e) => {
@@ -187,50 +247,59 @@ export default function FusionApp() {
           className="brand"
         >
           <img src={logo} alt="Changd" />
-          Changd <span>Fusion</span>
+          <span className="brand-name">Changd <span>Fusion</span></span>
         </a>
-        <Space>
+        <Space className="desktop-account-actions">
           <span className="user-name">{user.firstname || "Account"}</span>
           <Suspense>
             <AccountSecurity signedOut={() => setUser(null)} />
           </Suspense>
-          <Button
-            icon={<LogoutOutlined />}
-            onClick={async () => {
-              try {
-                await api("/logout", "POST", {});
-                setUser(null);
-              } catch (e) {
-                void message.error((e as Error).message);
-              }
-            }}
-          >
+          <Button icon={<LogoutOutlined />} onClick={() => void signOut()}>
             Sign out
           </Button>
         </Space>
+        {compactLayout && (
+          <Dropdown
+            trigger={["click"]}
+            placement="bottomRight"
+            dropdownRender={() => (
+              <div className="account-menu">
+                <div className="account-menu-name">{user.firstname || "Account"}</div>
+                <Suspense>
+                  <AccountSecurity signedOut={() => setUser(null)} />
+                </Suspense>
+                <Button icon={<LogoutOutlined />} danger block onClick={() => void signOut()}>
+                  Sign out
+                </Button>
+              </div>
+            )}
+          >
+            <Button type="text" aria-label="Open account menu" icon={<MoreOutlined />} />
+          </Dropdown>
+        )}
       </Header>
       <Layout>
-        <Sider
-          collapsible
-          collapsed={collapsed}
-          onCollapse={setCollapsed}
-          breakpoint="lg"
-          collapsedWidth={64}
-          theme={themeAdapter.resolved}
-        >
-          <Menu
-            selectedKeys={[page === "detail" ? "jobs" : page]}
-            items={[
-              { key: "jobs", icon: <EyeOutlined />, label: "Monitors" },
-              {
-                key: "notifications",
-                icon: <BellOutlined />,
-                label: "Notifications",
-              },
-            ]}
-            onClick={({ key }) => navigate(key)}
-          />
-        </Sider>
+        {compactLayout ? (
+          <Drawer
+            title="Changd Fusion"
+            placement="left"
+            open={navigationOpen}
+            onClose={() => setNavigationOpen(false)}
+            className="mobile-navigation"
+          >
+            {navigation}
+          </Drawer>
+        ) : (
+          <Sider
+            collapsible
+            collapsed={collapsed}
+            onCollapse={setCollapsed}
+            collapsedWidth={64}
+            theme={themeAdapter.resolved}
+          >
+            {navigation}
+          </Sider>
+        )}
         <Content className="content">
           {error && (
             <Alert
@@ -398,19 +467,72 @@ export default function FusionApp() {
                     allowClear
                     value={stateFilter}
                     onChange={setStateFilter}
-                    style={{ width: 220 }}
+                    className="status-filter"
                     options={monitorStates.map((value) => ({
                       value,
                       label: value.replaceAll("_", " "),
                     }))}
                   />
                 </Space>
-                <Card>
+                {compactLayout ? (
+                  <section className="monitor-card-list" aria-label="Monitor list">
+                    {loading ? (
+                      <div className="mobile-loading" role="status" aria-label="Loading monitors"><Spin /></div>
+                    ) : filteredMonitors.length === 0 ? (
+                      <Card><Empty description="Create a monitor to track text and visual changes together." /></Card>
+                    ) : (
+                      filteredMonitors.map((m) => (
+                        <Card key={m.id} className="monitor-card" size="small">
+                          <div className="monitor-card-heading">
+                            <Button type="link" className="monitor-card-name" onClick={() => void detail(m.id)}>
+                              {m.name}
+                            </Button>
+                            <Dropdown
+                              trigger={["click"]}
+                              menu={{
+                                items: [
+                                  { key: "edit", label: "Edit" },
+                                  { key: "delete", danger: true, label: "Delete" },
+                                ],
+                                onClick: ({ key }) => key === "edit" ? void edit(m) : remove(m),
+                              }}
+                            >
+                              <Button aria-label={`More actions for ${m.name}`} type="text" icon={<MoreOutlined />} />
+                            </Dropdown>
+                          </div>
+                          <Typography.Paragraph className="monitor-url" type="secondary" ellipsis={{ rows: 2, tooltip: m.url }}>
+                            {m.url}
+                          </Typography.Paragraph>
+                          <Space className="monitor-tags" wrap>
+                            {m.text_enabled && <Tag>Text</Tag>}
+                            {m.visual_enabled && <Tag color="blue">Visual</Tag>}
+                            {m.kind !== "browser" && <Tag>{m.kind}</Tag>}
+                            <Tag color={m.last_error ? "red" : m.enabled && !m.paused ? "green" : "default"}>
+                              {monitorState(m).replaceAll("_", " ")}
+                            </Tag>
+                            {m.warning_code && <Tag color="gold">Warning</Tag>}
+                          </Space>
+                          <dl className="monitor-card-meta">
+                            <div><dt>Last checked</dt><dd>{m.last_run ? new Date(m.last_run).toLocaleString() : "Never"}</dd></div>
+                            <div><dt>Last change</dt><dd>{m.last_change_at ? new Date(m.last_change_at).toLocaleString() : "—"}</dd></div>
+                            {m.visual_enabled && <div><dt>Visual change</dt><dd>{m.last_dimension_change ? "Dimensions changed" : percent(m.last_percent)}</dd></div>}
+                          </dl>
+                          <Space className="monitor-card-actions" wrap>
+                            <Button onClick={() => void detail(m.id)}>Details</Button>
+                            <Button type="primary" onClick={() => void action(m.id, "run")}>Check now</Button>
+                            <Button onClick={() => void edit(m)}>Edit</Button>
+                          </Space>
+                        </Card>
+                      ))
+                    )}
+                  </section>
+                ) : (
+                <Card className="monitor-table-card">
                   <Table
                     rowKey="id"
                     loading={loading}
-                    dataSource={filterMonitors(monitors, query, stateFilter)}
-                    scroll={{ x: 660 }}
+                    dataSource={filteredMonitors}
+                    scroll={{ x: 960 }}
                     pagination={{ pageSize: 10, hideOnSinglePage: true }}
                     locale={{
                       emptyText: (
@@ -501,13 +623,7 @@ export default function FusionApp() {
                             <Button
                               danger
                               onClick={() =>
-                                Modal.confirm({
-                                  title: "Delete monitor and history?",
-                                  onOk: async () => {
-                                    await api("/jobs/" + m.id, "DELETE");
-                                    await reload();
-                                  },
-                                })
+                                remove(m)
                               }
                             >
                               Delete
@@ -518,6 +634,7 @@ export default function FusionApp() {
                     ]}
                   />
                 </Card>
+                )}
               </>
             )}
           </Suspense>

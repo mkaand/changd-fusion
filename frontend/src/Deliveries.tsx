@@ -1,6 +1,21 @@
 import { useEffect, useState } from "react";
-import { Alert, Button, Table, Tag, Select, Space } from "antd";
+import { Alert, Button, Card, Table, Tag, Select, Space, Pagination } from "antd";
 import { api } from "./api";
+
+function useCompactDeliveries() {
+  const [compact, setCompact] = useState(() =>
+    typeof window === "undefined" ? false : window.innerWidth < 1024,
+  );
+  useEffect(() => {
+    const media = window.matchMedia("(max-width: 1023px)");
+    const update = () => setCompact(media.matches);
+    update();
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  return compact;
+}
+
 export function Deliveries({ admin = false }: { admin?: boolean }) {
   const [items, setItems] = useState<any[]>([]),
     [total, setTotal] = useState(0),
@@ -9,6 +24,15 @@ export function Deliveries({ admin = false }: { admin?: boolean }) {
     [error, setError] = useState(""),
     [loading, setLoading] = useState(true),
     [version, setVersion] = useState(0);
+  const compact = useCompactDeliveries();
+  const retry = async (item: any) => {
+    try {
+      await api(`/deliveries/${item.id}/retry`, "POST", {});
+      setVersion((v) => v + 1);
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
   useEffect(() => {
     let alive = true;
     setLoading(true);
@@ -62,6 +86,25 @@ export function Deliveries({ admin = false }: { admin?: boolean }) {
           }
         />
       )}
+      {compact ? (
+        <div className="delivery-card-list" aria-label="Notification deliveries">
+          {items.map((item) => (
+            <Card key={item.id} className="delivery-card" size="small">
+              <Space wrap>
+                <a href={`/jobs/${item.monitor_id}`}>{item.monitor_name}</a>
+                <Tag>{item.channel_name}</Tag>
+                <Tag color={item.status === "failed" ? "red" : item.status === "sent" ? "green" : "blue"}>
+                  {item.status}
+                </Tag>
+              </Space>
+              <p className="delivery-details">
+                Attempts: {item.attempts} · {item.last_error || (item.delivered_at ? "Delivered " + new Date(item.delivered_at).toLocaleString() : "Next attempt " + new Date(item.next_attempt).toLocaleString())}
+              </p>
+              {admin && <Button disabled={item.status !== "failed"} onClick={() => void retry(item)}>Retry delivery</Button>}
+            </Card>
+          ))}
+        </div>
+      ) : (
       <Table
         rowKey="id"
         loading={loading}
@@ -114,14 +157,7 @@ export function Deliveries({ admin = false }: { admin?: boolean }) {
                   render: (_: unknown, r: any) => (
                     <Button
                       disabled={r.status !== "failed"}
-                      onClick={async () => {
-                        try {
-                          await api(`/deliveries/${r.id}/retry`, "POST", {});
-                          setVersion((v) => v + 1);
-                        } catch (e) {
-                          setError((e as Error).message);
-                        }
-                      }}
+                      onClick={() => void retry(r)}
                     >
                       Retry delivery
                     </Button>
@@ -131,6 +167,17 @@ export function Deliveries({ admin = false }: { admin?: boolean }) {
             : []),
         ]}
       />
+      )}
+      {compact && (
+        <Pagination
+          current={page}
+          pageSize={10}
+          total={total}
+          onChange={setPage}
+          showSizeChanger={false}
+          hideOnSinglePage
+        />
+      )}
     </section>
   );
 }

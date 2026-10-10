@@ -796,7 +796,7 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await page.evaluate(() => window.scrollTo(0, 0));
     await page.waitForFunction(
       () =>
-        !!document.querySelector(".ant-layout-sider-collapsed") &&
+        !!document.querySelector(".navigation-toggle") &&
         document.documentElement.scrollWidth <= window.innerWidth,
     );
     const overflow = await page.evaluate(() =>
@@ -825,6 +825,26 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
       "Mobile page must not overflow horizontally",
     );
     await page.getByRole("button", { name: "← Monitors", exact: true }).click();
+    await page.locator(".monitor-card").first().waitFor();
+    assert.equal(await page.locator(".ant-table").count(), 0);
+    for (const width of [320, 375, 390, 430, 768]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.getByRole("button", { name: "Open navigation" }).waitFor();
+      assert.ok(await page.locator(".monitor-card").count(), `card dashboard at ${width}px`);
+      assert.ok(
+        await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+        `dashboard must not overflow at ${width}px`,
+      );
+    }
+    for (const width of [1024, 1440]) {
+      await page.setViewportSize({ width, height: 844 });
+      await page.locator(".monitor-table-card .ant-table").waitFor();
+      assert.ok(
+        await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth),
+        `desktop dashboard must not overflow at ${width}px`,
+      );
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
     await page
       .getByRole("button", { name: "Dimension fixture", exact: true })
       .click();
