@@ -78,6 +78,7 @@ before(async () => {
     pool,
     cfg,
     new EgressPolicy(async () => [{ address: "8.8.8.8", family: 4 }]),
+    { telegramValidate: async () => ({ first_name: "Fixture Bot", username: "fixture_bot" }) },
   );
   ownerAgent = request.agent(app);
   otherAgent = request.agent(app);
@@ -237,6 +238,19 @@ test("monitor validation rejects private URLs, injection, foreign channels; all 
     .post("/api/v1/notifications/" + ch.id + "/test")
     .set("X-Fusion-Request", "1")
     .send({ monitor_id: monitor.id })
+    .expect(404);
+  await ownerAgent
+    .post("/api/v1/notifications/" + ch.id + "/validate")
+    .set("X-Fusion-Request", "1")
+    .send({})
+    .expect(200)
+    .expect((r) => {
+      assert.deepEqual(r.body, { valid: true, bot: { first_name: "Fixture Bot", username: "fixture_bot" } });
+    });
+  await otherAgent
+    .post("/api/v1/notifications/" + ch.id + "/validate")
+    .set("X-Fusion-Request", "1")
+    .send({})
     .expect(404);
 });
 test("hybrid precision: 0.35% → PostgreSQL → API → notification, one event and one outbox entry", async () => {

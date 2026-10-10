@@ -88,11 +88,11 @@ for (const [state, expected] of [
       assert.ok(text.includes("may be present"));
   });
 }
-test("Telegram timezone is validated, defaults to Istanbul and respects daylight saving", () => {
+test("Telegram timezone is validated, defaults to UTC and respects daylight saving", () => {
   const token = "123456:" + "x".repeat(24);
   assert.equal(
     telegramSchema.parse({ token, chat_id: "-123456" }).timezone,
-    "Europe/Istanbul",
+    "UTC",
   );
   assert.equal(
     telegramSchema.safeParse({

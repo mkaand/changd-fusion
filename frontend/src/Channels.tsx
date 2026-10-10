@@ -25,7 +25,8 @@ export function Channels({
 }) {
   const [open, setOpen] = useState(false),
     [editing, setEditing] = useState<any>(),
-    [saving, setSaving] = useState(false);
+    [saving, setSaving] = useState(false),
+    [validating, setValidating] = useState<string>();
   const [form] = Form.useForm();
   const provider = Form.useWatch("provider", form);
   const create = (channel?: any) => {
@@ -78,6 +79,20 @@ export function Channels({
               <Tag color="warning">Send a test notification first</Tag>
             )}
             <Button onClick={() => create(c)}>Edit</Button>
+            {c.provider === "telegram" && (
+              <Button
+                loading={validating === c.id}
+                onClick={async () => {
+                  setValidating(c.id);
+                  try {
+                    const result = await api(`/notifications/${c.id}/validate`, "POST", {});
+                    report(`Bot validated: ${result.bot.first_name}${result.bot.username ? " (@" + result.bot.username + ")" : ""}`);
+                  } catch (e) {
+                    report((e as Error).message);
+                  } finally { setValidating(undefined); }
+                }}
+              >Validate Bot</Button>
+            )}
             <Button
               disabled={!monitors.length}
               onClick={async () => {
@@ -164,16 +179,13 @@ export function Channels({
               </Form.Item>
               <Form.Item
                 name={["config", "timezone"]}
-                label="Telegram saat dilimi"
-                initialValue="Europe/Istanbul"
+                label="Telegram timezone"
+                initialValue="UTC"
               >
                 <Select
                   options={[
-                    {
-                      value: "Europe/Istanbul",
-                      label: "Türkiye — Europe/Istanbul",
-                    },
                     { value: "UTC", label: "UTC" },
+                    { value: "Europe/Istanbul", label: "Europe/Istanbul" },
                     { value: "Europe/Berlin", label: "Europe/Berlin" },
                     { value: "America/New_York", label: "America/New_York" },
                   ]}
@@ -184,6 +196,11 @@ export function Channels({
                 the token is never returned. After saving, send a test
                 notification yourself.
               </p>
+              <ol className="telegram-help">
+                <li>Create a bot with BotFather and copy its token.</li>
+                <li>Start a chat with the bot, or add it to your group.</li>
+                <li>Enter the chat ID, save, then validate and send a test.</li>
+              </ol>
             </>
           ) : (
             <>

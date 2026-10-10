@@ -22,7 +22,7 @@ export const telegramSchema = z
     timezone: z
       .string()
       .max(100)
-      .default("Europe/Istanbul")
+      .default("UTC")
       .refine((value) => {
         try {
           new Intl.DateTimeFormat("en-GB", { timeZone: value });
@@ -179,6 +179,46 @@ export type TelegramSend = (
   body: Buffer,
   contentType: string,
 ) => Promise<void>;
+export type TelegramValidate = (
+  token: string,
+) => Promise<{ first_name: string; username?: string }>;
+export const telegramValidate: TelegramValidate = async (token) => {
+  const t = await new EgressPolicy().target("https://api.telegram.org");
+  return await new Promise((resolve, reject) => {
+    const req = https.request(
+      {
+        hostname: "api.telegram.org",
+        path: `/bot${token}/getMe`,
+        method: "POST",
+        signal: AbortSignal.timeout(15000),
+        lookup: (_h, opts, cb: any) =>
+          opts.all
+            ? cb(null, [{ address: t.address, family: t.family }])
+            : cb(null, t.address, t.family),
+      },
+      (res) => {
+        let data = "";
+        res.on("data", (chunk) => {
+          data += chunk;
+          if (data.length > 100000) req.destroy(Error("Provider response too large"));
+        });
+        res.on("end", () => {
+          try {
+            const body = JSON.parse(data);
+            if (res.statusCode === 200 && body.ok && typeof body.result?.first_name === "string")
+              resolve({ first_name: truncateText(body.result.first_name, 120), username: typeof body.result.username === "string" ? truncateText(body.result.username, 120) : undefined });
+            else reject(Error("Telegram validation failed"));
+          } catch {
+            reject(Error("Telegram validation failed"));
+          }
+        });
+      },
+    );
+    req.setTimeout(15000, () => req.destroy(Error("Provider timed out")));
+    req.on("error", () => reject(Error("Telegram validation failed")));
+    req.end();
+  });
+};
 export const telegramSend: TelegramSend = async (
   token,
   method,

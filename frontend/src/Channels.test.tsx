@@ -15,7 +15,7 @@ const channel = {
   enabled: true,
   config: { chat_id: "-123456", timezone: "Europe/Istanbul" },
 };
-it("Telegram editor defaults to Istanbul and never prepopulates the write-only token", async () => {
+it("Telegram editor preserves an existing timezone and never prepopulates the write-only token", async () => {
   const user = userEvent.setup();
   render(
     <Channels
@@ -27,7 +27,7 @@ it("Telegram editor defaults to Istanbul and never prepopulates the write-only t
   );
   await user.click(screen.getByRole("button", { name: "Edit" }));
   expect(screen.getByLabelText("Bot token")).toHaveValue("");
-  expect(screen.getByText("Türkiye — Europe/Istanbul")).toBeInTheDocument();
+  expect(screen.getByText("Europe/Istanbul")).toBeInTheDocument();
   expect(
     screen.getByText(/Telegram messages are in English/),
   ).toBeInTheDocument();
@@ -42,6 +42,15 @@ it("Telegram editor defaults to Istanbul and never prepopulates the write-only t
       }),
     }),
   );
+});
+it("validates a Telegram bot only after explicit user action", async () => {
+  vi.mocked(api).mockResolvedValue({ valid: true, bot: { first_name: "Fixture", username: "fixture_bot" } });
+  const user = userEvent.setup(), report = vi.fn();
+  render(<Channels channels={[channel]} monitors={[]} reload={vi.fn()} report={report} />);
+  expect(api).not.toHaveBeenCalled();
+  await user.click(screen.getByRole("button", { name: "Validate Bot" }));
+  expect(api).toHaveBeenCalledWith("/notifications/fixture/validate", "POST", {});
+  expect(report).toHaveBeenCalledWith("Bot validated: Fixture (@fixture_bot)");
 });
 it("Telegram sends nothing on mount and queues a test only after explicit user action", async () => {
   vi.mocked(api).mockResolvedValue({ queued: true });

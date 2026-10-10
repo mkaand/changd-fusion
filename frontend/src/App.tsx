@@ -22,6 +22,7 @@ import {
 import {
   EyeOutlined,
   BellOutlined,
+  SettingOutlined,
   LogoutOutlined,
   PlusOutlined,
   MenuOutlined,
@@ -47,6 +48,9 @@ const Deliveries = lazy(() =>
 );
 const AccountSecurity = lazy(() =>
   import("./AccountSecurity").then((m) => ({ default: m.AccountSecurity })),
+);
+const Settings = lazy(() =>
+  import("./Settings").then((m) => ({ default: m.Settings })),
 );
 import logo from "./assets/logo.svg";
 const { Header, Sider, Content } = Layout;
@@ -134,7 +138,7 @@ export default function FusionApp() {
     setPage(key);
     setSelected(undefined);
     setNavigationOpen(false);
-    history.replaceState(null, "", key === "jobs" ? "/jobs" : "/notifications");
+    history.replaceState(null, "", key === "jobs" ? "/jobs" : "/" + key);
   };
   const detail = async (id: string) => {
     try {
@@ -215,6 +219,7 @@ export default function FusionApp() {
       items={[
         { key: "jobs", icon: <EyeOutlined />, label: "Monitors" },
         { key: "notifications", icon: <BellOutlined />, label: "Notifications" },
+        { key: "settings", icon: <SettingOutlined />, label: "Settings" },
       ]}
       onClick={({ key }) => navigate(key)}
     />
@@ -320,7 +325,9 @@ export default function FusionApp() {
               </div>
             }
           >
-            {page === "notifications" ? (
+            {page === "settings" ? (
+              <Settings channels={channels} monitors={monitors} reload={() => void reload()} report={(s: string) => void message.info(s)} admin={user.user_type === 2} signedOut={() => setUser(null)} theme={themeAdapter} />
+            ) : page === "notifications" ? (
               <>
                 <Channels
                   channels={channels}

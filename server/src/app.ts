@@ -13,7 +13,7 @@ import type { Config } from "./config.js";
 import { HttpError } from "./errors.js";
 import { EgressPolicy } from "./egress.js";
 import { encrypt, decrypt } from "./crypto.js";
-import { smtpSchema, telegramSchema } from "./notifications.js";
+import { smtpSchema, telegramSchema, telegramValidate, type TelegramValidate } from "./notifications.js";
 import { Storage } from "./storage.js";
 import { stepsSchema } from "./browser-steps.js";
 import { vaultSchema, sealValues } from "./vault.js";
@@ -113,6 +113,7 @@ export function createApp(
     frontendDir?: string;
     allowedHosts?: string[];
     requireNotificationTest?: boolean;
+    telegramValidate?: TelegramValidate;
   } = {},
 ) {
   const app = express();
@@ -287,6 +288,15 @@ export function createApp(
     res.json({ ok: true });
   });
   app.get("/api/v1/users/me", (_req, res) => res.json(res.locals.user));
+  app.get("/api/v1/system/diagnostics", async (_req, res) => {
+    const userId = res.locals.user.user_id;
+    const [monitors, deliveries, states] = await Promise.all([
+      pool.query("SELECT count(*) total,count(*) FILTER (WHERE enabled AND NOT paused) active,count(*) FILTER (WHERE monitor_state IN ('persistent_failure','authentication_required','challenge_detected')) attention FROM fusion_monitors WHERE user_id=$1", [userId]),
+      pool.query("SELECT count(*) total,count(*) FILTER (WHERE status='failed') failed,count(*) FILTER (WHERE status IN ('pending','sending')) pending,max(delivered_at) last_delivered_at FROM fusion_outbox o JOIN fusion_channels c ON c.id=o.channel_id WHERE c.user_id=$1", [userId]),
+      pool.query("SELECT monitor_state,count(*) count FROM fusion_monitors WHERE user_id=$1 GROUP BY monitor_state", [userId]),
+    ]);
+    res.json({ api: "ok", monitoring: monitors.rows[0], deliveries: deliveries.rows[0], states: states.rows, retention_days: cfg.HISTORY_DAYS });
+  });
   app.get("/api/v1/users", async (_req, res) => {
     if (res.locals.user.user_type !== 2)
       throw new HttpError(403, "Administrator required");
@@ -854,6 +864,17 @@ export function createApp(
       );
     });
     res.status(202).json({ queued: true });
+  });
+  app.post("/api/v1/notifications/:id/validate", async (req, res) => {
+    const current = await channelOwner(String(req.params.id), res.locals.user.user_id);
+    if (current.provider !== "telegram") throw new HttpError(400, "Telegram channel required");
+    const config = telegramSchema.parse(decrypt(current.config.encrypted, cfg.CHANNEL_KEY));
+    try {
+      const bot = await (options.telegramValidate ?? telegramValidate)(config.token);
+      res.json({ valid: true, bot });
+    } catch {
+      throw new HttpError(400, "Telegram bot validation failed");
+    }
   });
   if (options.frontendDir) {
     app.use(

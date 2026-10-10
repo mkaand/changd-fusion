@@ -258,6 +258,11 @@ details {
 .mobile-loading { display: grid; min-height: 180px; place-items: center; }
 .delivery-card-list { display: grid; gap: 10px; margin-top: 12px; }
 .delivery-details { margin: 10px 0; overflow-wrap: anywhere; }
+.settings-page { max-width: 960px; }
+.settings-page .ant-segmented { margin-bottom: 16px; }
+.settings-stack { width: 100%; }
+.settings-stack .ant-card { width: 100%; }
+.telegram-help { padding-left: 20px; color: var(--fusion-text, #1d1d1b); }
 .step-target {
   display: grid;
   grid-template-columns: 120px minmax(0, 1fr);
@@ -267,6 +272,8 @@ details {
   .step-target {
     grid-template-columns: 1fr;
   }
+  .settings-page .ant-segmented-group { flex-wrap: wrap; }
+  .settings-page .ant-segmented-item { flex: 1 1 45%; text-align: center; }
 }
 
 @media (prefers-reduced-motion: reduce) {
