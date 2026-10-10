@@ -155,18 +155,31 @@ export async function runMonitor(
     }
     return true;
   } finally {
-    if (locked)
-      await c.query("SELECT pg_advisory_unlock(hashtextextended($1,0))", [id]);
-    if (shared) await c.query("SELECT pg_advisory_unlock_shared(741902)");
-    c.release();
+    let clean = false;
+    try {
+      if (locked)
+        await c.query("SELECT pg_advisory_unlock(hashtextextended($1,0))", [
+          id,
+        ]);
+      if (shared) await c.query("SELECT pg_advisory_unlock_shared(741902)");
+      clean = true;
+    } finally {
+      // An uncertain unlock must destroy the session, releasing every advisory lock.
+      c.release(!clean);
+    }
   }
 }
 export async function retainHistory(pool: Pool, cfg: Config) {
   // Serialize cleanup with capture using a shared/exclusive global advisory lock.
   const guard = await pool.connect();
-  const locked = (
-    await guard.query("SELECT pg_try_advisory_lock(741902) locked")
-  ).rows[0].locked;
+  let locked: boolean;
+  try {
+    locked = (await guard.query("SELECT pg_try_advisory_lock(741902) locked"))
+      .rows[0].locked;
+  } catch (error) {
+    guard.release(true);
+    throw error;
+  }
   if (!locked) {
     guard.release();
     return;
@@ -194,7 +207,12 @@ export async function retainHistory(pool: Pool, cfg: Config) {
       )
         await storage.remove(name);
   } finally {
-    await guard.query("SELECT pg_advisory_unlock(741902)");
-    guard.release();
+    let clean = false;
+    try {
+      await guard.query("SELECT pg_advisory_unlock(741902)");
+      clean = true;
+    } finally {
+      guard.release(!clean);
+    }
   }
 }

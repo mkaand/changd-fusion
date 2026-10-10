@@ -1,5 +1,5 @@
-import { test, before, after } from "node:test";
-import { closeServer } from "../helpers/server.js";
+import { test, before, after, type TestContext } from "node:test";
+import { closeServer, listenServer } from "../helpers/server.js";
 import assert from "node:assert/strict";
 import request from "supertest";
 import { makePool, type Pool } from "../../src/db.js";
@@ -13,10 +13,10 @@ import { capture } from "../../src/capture.js";
 import { EgressPolicy } from "../../src/egress.js";
 import { encrypt } from "../../src/crypto.js";
 import { PNG } from "pngjs";
-import { randomUUID, randomBytes } from "node:crypto";
+import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { hash } from "bcryptjs";
 import jwt from "jsonwebtoken";
-import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { mkdtemp, rm, readFile, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
@@ -37,6 +37,11 @@ let pool: Pool,
   channelId: string,
   root: string;
 const password = "synthetic-fixture-password";
+function managedServer(t: TestContext, handler: http.RequestListener) {
+  const server = http.createServer(handler);
+  t.after(() => closeServer(server));
+  return server;
+}
 function image(changed = 0, width = 100, height = 100) {
   const p = new PNG({ width, height });
   p.data.fill(255);
@@ -84,10 +89,16 @@ before(async () => {
       .expect(200);
 });
 after(async () => {
-  await pool?.end();
-  await admin.query(`DROP DATABASE IF EXISTS ${dbName}`);
-  await admin.end();
-  if (root) await rm(root, { recursive: true, force: true });
+  try {
+    await pool?.end();
+    await admin.query(`DROP DATABASE IF EXISTS ${dbName}`);
+  } finally {
+    try {
+      await admin.end();
+    } finally {
+      if (root) await rm(root, { recursive: true, force: true });
+    }
+  }
 });
 test("fresh migration is repeatable and decimal columns are NUMERIC", async () => {
   const r = await pool.query(
@@ -393,21 +404,21 @@ test("outbox retries and restart status preserve event uniqueness", async () => 
   });
   assert.equal(deliveries, 1);
 });
-test("real Playwright hybrid capture uses one session, selectors, masks, normalization and private subresource isolation", async () => {
+test("real Playwright hybrid capture uses one session, selectors, masks, normalization and private subresource isolation", async (t) => {
   let subresourceHits = 0;
-  const privateServer = http.createServer((_req, res) => {
+  const privateServer = managedServer(t, (_req, res) => {
     subresourceHits++;
     res.end("private");
   });
-  await new Promise<void>((r) => privateServer.listen(0, "127.0.0.1", r));
+  await listenServer(privateServer);
   const privatePort = (privateServer.address() as AddressInfo).port;
-  const fixture = http.createServer((_req, res) => {
+  const fixture = managedServer(t, (_req, res) => {
     res.setHeader("Content-Type", "text/html");
     res.end(
       `<main id="content"> Price   10 <span class="dynamic">time</span></main><img src="http://127.0.0.1:${privatePort}/private"><script>fetch('http://169.254.169.254/')</script>`,
     );
   });
-  await new Promise<void>((r) => fixture.listen(0, "127.0.0.1", r));
+  await listenServer(fixture);
   const port = (fixture.address() as AddressInfo).port;
   const policy = new EgressPolicy(
     async (host) =>
@@ -447,11 +458,11 @@ test("real Playwright hybrid capture uses one session, selectors, masks, normali
     await closeServer(privateServer);
   }
 });
-test("controlled HTML and API monitoring preserve functionality with canonical JSON", async () => {
-  const fixture = http.createServer((req, res) =>
+test("controlled HTML and API monitoring preserve functionality with canonical JSON", async (t) => {
+  const fixture = managedServer(t, (req, res) =>
     res.end(req.url === "/json" ? '{"z":1,"a":2}' : "<main>Hello</main>"),
   );
-  await new Promise<void>((r) => fixture.listen(0, "127.0.0.1", r));
+  await listenServer(fixture);
   const port = (fixture.address() as AddressInfo).port;
   const policy = new EgressPolicy(
     async () => [{ address: "127.0.0.1", family: 4 }],
@@ -521,8 +532,46 @@ test("legacy migration preserves owner, historical references and NUMERIC decima
     await legacy.query(
       "INSERT INTO history(job_id,change_percent,screenshot,source_screenshot) VALUES(1,1,'historical.png','baseline.png')",
     );
+    // Reconstruct the applied Sprint 1 schema, then upgrade only through migration 002.
+    const firstSQL = await readFile(
+      new URL("../../migrations/001_fusion.sql", import.meta.url),
+      "utf8",
+    );
+    await legacy.query(firstSQL);
+    await legacy.query(
+      "CREATE TABLE fusion_migrations(name text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())",
+    );
+    await legacy.query(
+      "INSERT INTO fusion_migrations(name,checksum) VALUES($1,$2)",
+      ["001_fusion.sql", createHash("sha256").update(firstSQL).digest("hex")],
+    );
+    const original = (await legacy.query("SELECT id FROM fusion_monitors"))
+      .rows[0].id;
+    const preservedCapture = randomUUID();
+    await legacy.query(
+      "INSERT INTO fusion_captures(id,monitor_id,text_content,screenshot) VALUES($1,$2,$3,$4)",
+      [
+        preservedCapture,
+        original,
+        "Preserved Sprint 1 baseline",
+        randomUUID() + ".png",
+      ],
+    );
+    await legacy.query(
+      "UPDATE fusion_monitors SET baseline_id=$2,latest_capture_id=$2,last_percent=$3 WHERE id=$1",
+      [original, preservedCapture, "0.35"],
+    );
     await migrate(legacy);
     await migrate(legacy);
+    const upgraded = (
+      await legacy.query("SELECT * FROM fusion_monitors WHERE id=$1", [
+        original,
+      ])
+    ).rows[0];
+    assert.equal(upgraded.capture_mode, "viewport");
+    assert.equal(upgraded.baseline_id, preservedCapture);
+    assert.equal(upgraded.latest_capture_id, preservedCapture);
+    assert.equal(upgraded.last_percent, "0.3500000000");
     const r = await legacy.query(
       "SELECT m.user_id,e.legacy_refs FROM fusion_monitors m JOIN fusion_events e ON e.monitor_id=m.id",
     );
@@ -537,151 +586,6 @@ test("legacy migration preserves owner, historical references and NUMERIC decima
   } finally {
     await legacy.end();
     await admin.query(`DROP DATABASE ${legacyName}`);
-  }
-});
-
-test("browser smoke: sign in, monitor history, decimal display, image comparison and mobile layout", async () => {
-  const { chromium } = await import("playwright");
-  const { readFile } = await import("node:fs/promises");
-  const apiServer = app.listen(0, "127.0.0.1");
-  await new Promise<void>((r) => apiServer.once("listening", r));
-  const apiPort = (apiServer.address() as AddressInfo).port;
-  const ui = http.createServer(async (req, res) => {
-    if (req.url?.startsWith("/api/")) {
-      const upstream = http.request(
-        {
-          host: "127.0.0.1",
-          port: apiPort,
-          path: req.url,
-          method: req.method,
-          headers: req.headers,
-        },
-        (r) => {
-          res.writeHead(r.statusCode!, r.headers);
-          r.pipe(res);
-        },
-      );
-      upstream.on("error", () => res.end());
-      req.pipe(upstream);
-      return;
-    }
-    const file = req.url?.startsWith("/assets/")
-      ? req.url.split("?")[0]
-      : "/index.html";
-    try {
-      const body = await readFile(
-        new URL("../../../frontend/dist" + file, import.meta.url),
-      );
-      res.setHeader(
-        "Content-Type",
-        file.endsWith(".js")
-          ? "text/javascript"
-          : file.endsWith(".css")
-            ? "text/css"
-            : "text/html",
-      );
-      res.end(body);
-    } catch {
-      res.writeHead(404);
-      res.end();
-    }
-  });
-  await new Promise<void>((r) => ui.listen(0, "127.0.0.1", r));
-  const origin = "http://127.0.0.1:" + (ui.address() as AddressInfo).port;
-  const oldURL = cfg.PUBLIC_URL;
-  cfg.PUBLIC_URL = origin;
-  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
-  try {
-    browser = await chromium.launch({
-      chromiumSandbox: true,
-      executablePath: cfg.PLAYWRIGHT_EXECUTABLE_PATH,
-      timeout: 15000,
-    });
-    const page = await browser.newPage();
-    const errors: string[] = [];
-    page.on("pageerror", (e) => {
-      errors.push(e.message);
-      console.error("UI fixture runtime error:", e.message);
-    });
-    page.setDefaultTimeout(8000);
-    await page.goto(origin);
-    await page.getByLabel("Email", { exact: true }).fill("owner@example.com");
-    await page.getByLabel("Password", { exact: true }).fill(password);
-    await page.getByRole("button", { name: "Sign in", exact: true }).click();
-    await page
-      .getByRole("button", { name: "Hybrid fixture", exact: true })
-      .click();
-    await page.getByText("Monitoring history", { exact: true }).waitFor();
-    await page.getByText("Visual: 0.35%", { exact: true }).first().waitFor();
-    assert.ok(await page.getByAltText("Before capture").count());
-    assert.ok(await page.getByAltText("After capture").count());
-    await page.setViewportSize({ width: 390, height: 844 });
-    await page.screenshot({ path: path.join(root, "mobile-smoke.png") });
-    assert.ok(
-      await page
-        .getByRole("button", { name: "Check now", exact: true })
-        .isVisible(),
-    );
-    assert.deepEqual(errors, []);
-  } finally {
-    cfg.PUBLIC_URL = oldURL;
-    try {
-      await browser?.close();
-    } finally {
-      await Promise.all([closeServer(ui), closeServer(apiServer)]);
-    }
-  }
-});
-
-test("automatic worker scheduling handles due monitors and respects retry backoff", async () => {
-  await pool.query(
-    "UPDATE fusion_monitors SET next_run=now()-interval '1 second' WHERE id=$1",
-    [monitor.id],
-  );
-  let calls = 0;
-  await workerCycle(pool, cfg, {
-    capture: async () => {
-      calls++;
-      return { text: "Price 11", screenshot: image(35) };
-    },
-    send: async () => {},
-  });
-  assert.equal(calls, 1);
-  await workerCycle(pool, cfg, {
-    capture: async () => {
-      calls++;
-      throw Error("must not run before next schedule");
-    },
-    send: async () => {},
-  });
-  assert.equal(calls, 1);
-});
-
-test("administrator authorization is database-backed; token role claims are ignored", async () => {
-  const me = (await ownerAgent.get("/api/v1/users/me")).body;
-  const claimed = jwt.sign(
-    { sub: me.user_id, admin: true, user_type: 2 },
-    cfg.JWT_SECRET,
-    {
-      algorithm: "HS256",
-      expiresIn: "2h",
-      issuer: "changd-fusion",
-      audience: "changd-fusion-ui",
-    },
-  );
-  await request(app)
-    .get("/api/v1/users")
-    .set("Authorization", "Bearer " + claimed)
-    .expect(403);
-  await pool.query("UPDATE users SET user_type=2 WHERE user_id=$1", [
-    me.user_id,
-  ]);
-  try {
-    await ownerAgent.get("/api/v1/users").expect(200);
-  } finally {
-    await pool.query("UPDATE users SET user_type=0 WHERE user_id=$1", [
-      me.user_id,
-    ]);
   }
 });
 
@@ -757,9 +661,213 @@ test("dimension events persist explicit sizes, preserve both images, advance bas
   );
 });
 
-test("capture modes use one browser page for text and image; limits, selector errors and timeouts preserve baseline", async () => {
+test("browser smoke: sign in, monitor history, decimal display, image comparison and mobile layout", async (t) => {
+  const { chromium } = await import("playwright");
+  const { readFile } = await import("node:fs/promises");
+  const apiServer = app.listen(0, "127.0.0.1");
+  t.after(() => closeServer(apiServer));
+  await new Promise<void>((r) => apiServer.once("listening", r));
+  const apiPort = (apiServer.address() as AddressInfo).port;
+  const ui = managedServer(t, async (req, res) => {
+    if (req.url?.startsWith("/api/")) {
+      const upstream = http.request(
+        {
+          host: "127.0.0.1",
+          port: apiPort,
+          path: req.url,
+          method: req.method,
+          agent: false,
+          headers: req.headers,
+        },
+        (r) => {
+          res.writeHead(r.statusCode!, r.headers);
+          r.pipe(res);
+        },
+      );
+      upstream.on("error", () => res.end());
+      req.on("aborted", () => upstream.destroy());
+      res.on("close", () => upstream.destroy());
+      req.pipe(upstream);
+      return;
+    }
+    const file = req.url?.startsWith("/assets/")
+      ? req.url.split("?")[0]
+      : "/index.html";
+    try {
+      const body = await readFile(
+        new URL("../../../frontend/dist" + file, import.meta.url),
+      );
+      res.setHeader(
+        "Content-Type",
+        file.endsWith(".js")
+          ? "text/javascript"
+          : file.endsWith(".css")
+            ? "text/css"
+            : "text/html",
+      );
+      res.end(body);
+    } catch {
+      res.writeHead(404);
+      res.end();
+    }
+  });
+  t.after(() => closeServer(ui));
+  await listenServer(ui);
+  const origin = "http://127.0.0.1:" + (ui.address() as AddressInfo).port;
+  const oldURL = cfg.PUBLIC_URL;
+  cfg.PUBLIC_URL = origin;
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
+  try {
+    browser = await chromium.launch({
+      chromiumSandbox: true,
+      executablePath: cfg.PLAYWRIGHT_EXECUTABLE_PATH,
+      timeout: 15000,
+    });
+    const page = await browser.newPage();
+    const errors: string[] = [];
+    page.on("pageerror", (e) => {
+      errors.push(e.message);
+      console.error("UI fixture runtime error:", e.message);
+    });
+    page.setDefaultTimeout(8000);
+    await page.goto(origin);
+    await page.getByLabel("Email", { exact: true }).fill("owner@example.com");
+    await page.getByLabel("Password", { exact: true }).fill(password);
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    const output = process.env.UI_SCREENSHOT_DIR ?? root;
+    await mkdir(output, { recursive: true });
+    await page.screenshot({ path: path.join(output, "dashboard-desktop.png") });
+    await page
+      .getByRole("button", { name: "Hybrid fixture", exact: true })
+      .click();
+    await page.getByText("Monitoring history", { exact: true }).waitFor();
+    await page.getByText("Visual: 0.35%", { exact: true }).first().waitFor();
+    assert.ok(await page.getByAltText("Before capture").count());
+    assert.ok(await page.getByAltText("After capture").count());
+    const slider = page
+      .getByRole("slider", { name: "Before / After comparison" })
+      .first();
+    await slider.focus();
+    await slider.press("ArrowRight");
+    assert.equal(await slider.getAttribute("aria-valuenow"), "51");
+    await page.screenshot({ path: path.join(output, "history-desktop.png") });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.evaluate(() => window.scrollTo(0, 0));
+    await page.waitForFunction(
+      () =>
+        !!document.querySelector(".ant-layout-sider-collapsed") &&
+        document.documentElement.scrollWidth <= window.innerWidth,
+    );
+    const overflow = await page.evaluate(() =>
+      Array.from(document.querySelectorAll("*"))
+        .map((el) => ({
+          tag: el.tagName,
+          className: typeof el.className === "string" ? el.className : "",
+          right: el.getBoundingClientRect().right,
+          width: el.getBoundingClientRect().width,
+        }))
+        .filter((el) => el.right > window.innerWidth + 1 && el.width > 0)
+        .slice(0, 12),
+    );
+    if (overflow.length)
+      console.error("Mobile fixture overflow:", JSON.stringify(overflow));
+    await page.screenshot({ path: path.join(output, "history-mobile.png") });
+    assert.ok(
+      await page
+        .getByRole("button", { name: "Check now", exact: true })
+        .isVisible(),
+    );
+    assert.ok(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+      "Mobile page must not overflow horizontally",
+    );
+    await page.getByRole("button", { name: "← Monitors", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Dimension fixture", exact: true })
+      .click();
+    await page
+      .getByText("Screenshot dimensions changed", { exact: true })
+      .waitFor();
+    assert.equal(await page.getByRole("slider").count(), 1);
+    await page
+      .locator(".event")
+      .filter({
+        has: page.getByText("Screenshot dimensions changed", { exact: true }),
+      })
+      .screenshot({ path: path.join(output, "dimensions-mobile.png") });
+    await page.getByRole("button", { name: "Edit", exact: true }).click();
+    await page.getByLabel("Screenshot capture mode", { exact: true }).waitFor();
+    await page.screenshot({
+      path: path.join(output, "capture-settings-mobile.png"),
+    });
+    assert.deepEqual(errors, []);
+  } finally {
+    cfg.PUBLIC_URL = oldURL;
+    try {
+      await browser?.close();
+    } finally {
+      await Promise.all([closeServer(ui), closeServer(apiServer)]);
+    }
+  }
+});
+
+test("automatic worker scheduling handles due monitors and respects retry backoff", async () => {
+  await pool.query(
+    "UPDATE fusion_monitors SET next_run=now()-interval '1 second' WHERE id=$1",
+    [monitor.id],
+  );
+  let calls = 0;
+  await workerCycle(pool, cfg, {
+    capture: async () => {
+      calls++;
+      return { text: "Price 11", screenshot: image(35) };
+    },
+    send: async () => {},
+  });
+  assert.equal(calls, 1);
+  await workerCycle(pool, cfg, {
+    capture: async () => {
+      calls++;
+      throw Error("must not run before next schedule");
+    },
+    send: async () => {},
+  });
+  assert.equal(calls, 1);
+});
+
+test("administrator authorization is database-backed; token role claims are ignored", async () => {
+  const me = (await ownerAgent.get("/api/v1/users/me")).body;
+  const claimed = jwt.sign(
+    { sub: me.user_id, admin: true, user_type: 2 },
+    cfg.JWT_SECRET,
+    {
+      algorithm: "HS256",
+      expiresIn: "2h",
+      issuer: "changd-fusion",
+      audience: "changd-fusion-ui",
+    },
+  );
+  await request(app)
+    .get("/api/v1/users")
+    .set("Authorization", "Bearer " + claimed)
+    .expect(403);
+  await pool.query("UPDATE users SET user_type=2 WHERE user_id=$1", [
+    me.user_id,
+  ]);
+  try {
+    await ownerAgent.get("/api/v1/users").expect(200);
+  } finally {
+    await pool.query("UPDATE users SET user_type=0 WHERE user_id=$1", [
+      me.user_id,
+    ]);
+  }
+});
+
+test("capture modes use one browser page for text and image; limits, selector errors and timeouts preserve baseline", async (t) => {
   let slowHits = 0;
-  const fixture = http.createServer((req, res) => {
+  const fixture = managedServer(t, (req, res) => {
     if (req.url === "/slow") {
       slowHits++;
       return;
@@ -769,7 +877,7 @@ test("capture modes use one browser page for text and image; limits, selector er
       '<style>body{margin:0}#region{width:320px;height:240px;background:#fff}#tall{height:1800px}</style><main id="region">Hybrid region</main><div id="tall"></div>',
     );
   });
-  await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
+  await listenServer(fixture);
   const port = (fixture.address() as AddressInfo).port;
   const policy = new EgressPolicy(
     async () => [{ address: "127.0.0.1", family: 4 }],

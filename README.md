@@ -2,11 +2,12 @@
 
 Changd Fusion is a self-hosted website monitor based on [Changd by Paul Aschmann](https://github.com/paschmann/changd). It preserves Changd's Ant Design interface while bringing text and visual detection into **one monitor, one browser capture, one schedule, and one combined change event**.
 
-## Sprint 1 functionality
+## Sprint 1 / 1.1 functionality
 
 - Node.js 24, TypeScript core, React 19, Ant Design 6, Vite, PostgreSQL 16 and sandboxed Playwright Chromium.
 - Independent Text / Visual switches, CSS or XPath extraction, literal text ignore rules, whitespace/case normalization, dynamic-region removal and screenshot masks.
-- Pixelmatch comparison with decimal percentages, before/after images, a comparison slider, highlighted text changes and filtered history.
+- Pixelmatch comparison with decimal percentages, explicit dimension-change events, before/after images, a keyboard-accessible comparison slider, highlighted text changes and filtered history.
+- Viewport (default), bounded full-page and single CSS-element screenshots, with independent text extraction in the same browser session.
 - HTML source and canonical JSON monitoring without launching a browser.
 - Native SMTP and Telegram channels, encrypted credentials, a PostgreSQL notification outbox, retries and delivery status.
 - Private screenshots, owner-scoped API operations, restricted network capture, disabled public registration, server-side sessions and sanitized errors.
@@ -54,13 +55,17 @@ Only the UI is published, on loopback port 3000. PostgreSQL and captures use nam
 
 The Docker API/worker use a version-pinned, signed Debian Chromium package with Playwright; update `CHROMIUM_VERSION` deliberately when refreshing security patches. A bundled Playwright download is optional for native development.
 
-The worker runs one capture at a time and uses PostgreSQL advisory locks across worker replicas. Its container runs as a non-root user with Chromium sandboxing enabled and the included Playwright seccomp profile. If the host blocks user namespaces, configure the runtime's supported Chromium sandbox policy; **do not disable the browser sandbox**. See [runtime requirements](docs/security.md). Optional enterprise build CAs can be supplied with Docker BuildKit's `build_ca` secret; they are mounted only during build commands, never copied into the image. Do not disable TLS or package verification.
+The worker defaults to one capture at a time (`CHROMIUM_CONCURRENCY`, bounded to 1–3 per worker) and uses PostgreSQL advisory locks across worker replicas. Its container runs as a non-root user with Chromium sandboxing enabled and the included Playwright seccomp profile. If the host blocks user namespaces, configure the runtime's supported Chromium sandbox policy; **do not disable the browser sandbox**. See [runtime requirements](docs/security.md). Optional enterprise build CAs can be supplied with Docker BuildKit's `build_ca` secret; they are mounted only during build commands, never copied into the image. Do not disable TLS or package verification.
 
 ## Baselines and precision
 
 The first successful capture establishes the baseline without an alert. A change event compares the baseline with the latest capture; text and visual changes are combined, and a successful event advances the baseline once. Below-threshold captures update only the latest capture, allowing small visual changes to accumulate against the baseline. A failure preserves both references. Resetting or editing a monitor schedules a new baseline without deleting history.
 
-The visual rule is **change percentage > configured threshold**. Equality does not alert, including zero at threshold zero. Pixel counts are evaluated using decimal arithmetic before persistence; PostgreSQL stores `NUMERIC(14,10)` percentages and the API returns decimal strings. Different screenshot dimensions count as 100%; a pixel diff image is unavailable in that case. Captures use a bounded 1280×900 viewport rather than an unbounded full-page screenshot.
+The visual rule is **change percentage > configured threshold**. Equality does not alert, including zero at threshold zero. Pixel counts are evaluated using decimal arithmetic before persistence; PostgreSQL stores `NUMERIC(14,10)` percentages and the API returns decimal strings. Different screenshot dimensions produce a **structural dimension-change event**, independently of the percentage threshold. Its percentage is `null`, both sizes/images are preserved, no pixel diff is fabricated, and the successful new capture becomes the baseline once. The next same-sized unchanged capture does not repeat the alert.
+
+Capture modes are Viewport (1280×900 default), Full page, and Selected element (exactly one visible CSS selector, independent of the CSS/XPath text selector). All use scale 1, a fixed viewport/locale/timezone, reduced motion, disabled animations and awaited fonts. The server checks dimensions before capture and PNG decoding; defaults allow at most 4096 pixels wide, 8192 high and 8 million total pixels, with an absolute 16-million-pixel ceiling. Oversized pages fail safely and keep both baseline/latest references. Choose a smaller region rather than accepting a silently cropped image.
+
+Compose defaults constrain the worker to 1 CPU, 1 GiB RAM, 256 PIDs and 256 MiB shared memory. `WORKER_CPUS`, `WORKER_MEMORY`, `WORKER_PIDS`, `WORKER_SHM`, `CAPTURE_TIMEOUT_MS`, image limits and concurrency are configurable in the generic examples. Graceful shutdown stops new captures/deliveries, closes active browser/proxy resources and has a process-level deadline. Container limits remain essential because hostile pages can allocate resources before screenshot size checks.
 
 ## Notifications and persistence
 
@@ -80,10 +85,11 @@ npm --prefix frontend run build
 npm --prefix frontend test
 # Explicitly local, disposable PostgreSQL; tests create/drop uniquely named databases.
 TEST_DATABASE_URL=postgresql://postgres@127.0.0.1:5432/postgres npm --prefix server run test:integration
-node scripts/privacy-scan.mjs
+node --test scripts/privacy-scan.test.mjs
+node scripts/privacy-scan.mjs --history=origin/master
 ```
 
-Integration tests need the frontend build and Playwright browser. `PLAYWRIGHT_EXECUTABLE_PATH` can select a compatible installed Chromium. Tests use controlled local fixtures and mocked notification providers, never real monitoring targets or production accounts. CI runs builds, unit/integration tests, browser smoke checks and the privacy scan.
+Integration tests need the frontend build and Playwright browser. `PLAYWRIGHT_EXECUTABLE_PATH` can select a compatible installed Chromium. Tests use controlled local fixtures and mocked notification providers, never real monitoring targets or production accounts. CI pins a supported sandbox-compatible Ubuntu 22.04 runner, runs builds, audits, unit/integration tests and browser smoke checks, and has an independent history/privacy job. Integration tests report failures immediately (TAP), have 90-second test deadlines and an 8-minute process-group watchdog; the verification job is bounded to 20 minutes. The artifact/source privacy scan also runs after test failure. Set `UI_SCREENSHOT_DIR` to an ignored local directory to retain synthetic dashboard/history/settings screenshots for review. See [Sprint 1.1 validation](docs/validation.md).
 
 ## Theme integration
 

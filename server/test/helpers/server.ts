@@ -12,3 +12,12 @@ export async function closeServer(server: Server): Promise<void> {
   server.closeAllConnections();
   await closed;
 }
+export async function listenServer(server: Server): Promise<void> {
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+}

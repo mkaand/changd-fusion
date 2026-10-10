@@ -51,7 +51,7 @@ export function ImageComparison({
         </figure>
         {failed && (
           <Alert
-            title="An image is unavailable. Refresh history to try again."
+            title="An image is unavailable. Reload the page to try again."
             type="warning"
           />
         )}
@@ -61,7 +61,7 @@ export function ImageComparison({
     <>
       {failed && (
         <Alert
-          title="An image is unavailable. Refresh history to try again."
+          title="An image is unavailable. Reload the page to try again."
           type="warning"
         />
       )}

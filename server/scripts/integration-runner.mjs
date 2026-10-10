@@ -19,7 +19,10 @@ const child = spawn(
 );
 let timedOut = false;
 let killTimer;
+let terminating = false;
 function terminate() {
+  if (terminating) return;
+  terminating = true;
   try {
     process.kill(-child.pid, "SIGTERM");
   } catch {}
@@ -47,6 +50,11 @@ child.on("error", (error) => {
   process.exitCode = 1;
 });
 child.on("exit", (code, signal) => {
+  if (terminating) {
+    try {
+      process.kill(-child.pid, "SIGKILL");
+    } catch {}
+  }
   clearTimeout(timer);
   clearTimeout(killTimer);
   if (signal) console.error(`Integration process stopped by ${signal}`);

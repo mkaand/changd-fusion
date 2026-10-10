@@ -1,30 +1,50 @@
-# Sprint 1 validation
+# Sprint 1.1 validation
 
-All checks below were executed in the isolated development Cloud workspace with synthetic accounts, local fixtures and disposable databases. No production system or real notification credential was used.
+Executed on 2026-10-10 in isolated Codex Cloud with synthetic accounts, controlled local endpoints and disposable PostgreSQL databases. No production system or real provider credential was used.
 
 | Check | Result |
 | --- | --- |
-| Node 24 clean `npm ci` in both packages | Passed |
-| TypeScript backend build | Passed |
-| Frontend TypeScript + Vite production build | Passed; large-bundle warning remains |
-| Backend unit/provider/security tests | 11 passed, 0 failed/skipped |
-| PostgreSQL integration/browser tests | 14 passed, 0 failed/skipped |
-| Frontend form/precision tests | 3 passed, 0 failed/skipped |
-| Full dependency audit (both packages, including development dependencies) | 0 reported vulnerabilities at validation time |
-| API and UI Docker builds | Passed |
-| Docker fresh schema migration and synthetic admin creation | Passed |
-| Docker API authentication, UI proxy and restart smoke | Passed |
-| Non-root sandboxed Chromium in Docker with included Playwright seccomp profile | Passed |
-| Source/build privacy scan and inherited-history credential-pattern scan | Passed within scanner scope; manual review also performed |
-| GitHub Actions | Workflow added; remote execution not yet verified |
-| Real SMTP / Telegram delivery | Not attempted; providers tested with mocks |
+| Backend TypeScript production build | Passed |
+| Frontend TypeScript + Vite production build | Passed; largest JS chunk about 423 KB, no large-chunk warning |
+| Backend unit/security/provider/coordination tests | 18 passed, zero failures/skips |
+| PostgreSQL integration and real Chromium browser tests | 17 passed, zero failures/skips |
+| Frontend login, precision, comparison, history and unified form tests | 9 passed, zero failures/skips |
+| Privacy scanner regression tests | 2 passed, zero failures/skips |
+| Full npm audits, both packages including development dependencies | Zero reported vulnerabilities at validation time |
+| Source/build tree and new commit-history privacy scan | Passed within scanner scope, with manual domain/infrastructure review |
+| API and UI Docker production builds | Passed |
+| Compose configuration validation | Passed |
+| Docker UID / CPU / RAM / PID cgroup limits | UID 1000; 1 CPU, 1 GiB, 256 PIDs verified |
+| Docker sandbox and capture-mode smoke | Viewport, full page and element hybrid captures passed; Chromium reported Seccomp-BPF sandbox enabled |
+| Original MIT license and migration 001 | Unchanged |
+| Real SMTP / Telegram delivery | Not attempted; mocked providers/outbox tested |
 
-The known legacy login test was repaired: it now submits a real form, checks the API payload, verifies the successful-authentication callback, and checks an unsuccessful login never reports success. No failing test is disabled.
+GitHub verification runs the same suites using the bundled Playwright Chromium on a pinned Ubuntu 22.04 runner. Check draft PR #1 for the final-head workflow status; a cancelled, partial or diagnostic run is not a passing validation. The final delivery report links the completed successful run.
 
-Intermediate failures were diagnosed and corrected: legacy Node/Sharp dependencies were replaced; the HTTP fetch lookup callback was corrected for Node 24 multi-address resolution; browser-fixture paths and forced test-database teardown were corrected; non-root migration/config file permissions were corrected; and Docker namespace denial was resolved using the official Playwright seccomp profile. Cloud restricted the bundled Playwright CDN download, so the Docker image uses a pinned, signed Debian Chromium package instead. TLS and package verification remained enabled.
+## CI incident and repair
 
-The precision path verifies `0.35%` in the pixel comparison, PostgreSQL NUMERIC storage, authenticated API response, rendered browser history and mocked notification delivery. Zero, tiny changes, exact threshold equality, 100%, dimensions, corrupt image comparison and failed captures are covered. Hybrid text+visual changes produce one event and one unique outbox row per channel. Delivery retries and restart recovery are tested, with the documented at-least-once remote-delivery limitation.
+Original run [38005493269](https://github.com/mkaand/changd-fusion/actions/runs/38005493269) reported two immediate browser-test failures but never emitted the final failure details. The spec reporter buffered those details until suite completion. The UI fixture launched Chromium outside `try/finally`; launch failure left the API/UI HTTP servers listening, so the Node test process could not exit. With no shorter test/job limits, GitHub cancelled it at its default six-hour maximum, before the privacy step.
 
-Inherited public history contains upstream author/contact strings; that existing history was scanned without printing values and was not rewritten. The new source/build tree and new commit identity contain no personal email addresses; examples use synthetic addresses and the required Codex attribution.
+A bounded reproduction using the same browser version on Ubuntu 24.04 produced `No usable sandbox`, explicitly identifying AppArmor user-namespace restrictions. The Ubuntu 22.04 verification job passed with `chromiumSandbox: true`. The temporary diagnostic job was then removed. No sandbox fallback, global AppArmor disablement or permissive sysctl was introduced.
 
-The original MIT license is unchanged. Runtime configuration, test screenshots, credential files, build outputs and logs remain outside the committed tree. Public examples use example.com and synthetic fixtures. These checks do not constitute a complete security audit or prove production readiness.
+Tests now register fixture cleanup during setup and use `try/finally` for browsers, proxy sockets, gates and disposable databases. Active HTTP connections are closed. TAP emits failure details immediately. Individual integration tests have 90-second deadlines, the process-group watchdog has an 8-minute deadline with forced cleanup, the integration step has 10 minutes, and the verification job has 20 minutes. An independent three-minute privacy job scans source and new history even if installs/browser tests fail; build artifacts are also scanned with `if: always()` in verification.
+
+## Behavior verified
+
+- The exact `0.35%` path remains comparison → PostgreSQL NUMERIC → authenticated API → browser display → mocked notification. Zero, tiny, equality and genuine 100% comparisons remain covered; the rule is still strictly greater than the threshold.
+- Dimension mismatches store `null` percentage, explicit old/new sizes and both images. They produce one structural combined event/outbox entry, advance the baseline once and do not repeat for the next unchanged capture. Notification templates explain the condition rather than inventing a percentage.
+- Viewport/full-page/element capture extracts text and image from the same page. Oversized pages, missing selectors, launch failures and navigation timeouts fail safely, preserve baseline/latest references and clean up browser/proxy/fixture resources.
+- Migration testing reconstructs an already-applied Sprint 1 migration/checksum with a baseline/latest capture and decimal value, then applies migration 002 repeatedly without changing those references. Original legacy history/artifact references also survive.
+- Worker concurrency, same-monitor advisory locks, shutdown admission, outbox retry/restart uniqueness, and failed database-unlock cleanup are covered. Uncertain unlocks destroy the session rather than return a potentially locked connection to the pool.
+- Ownership, JWT/admin authority, mutation origin/header, disabled registration, SSRF/private IP/DNS/redirect/subresource restrictions, TLS validation, encryption and artifact path containment remain covered.
+- Browser smoke checks login, 0.35% history, slider keyboard interaction, mobile page bounds, dimension presentation and capture settings. Synthetic dashboard/history/dimension/settings screenshots are retained only in ignored local test output when `UI_SCREENSHOT_DIR` is set.
+
+Intermediate defects found and repaired during this sprint include the missing jsdom ResizeObserver fixture, inaccurate deletion-status assumptions in new tests, and an aggressive Ant Design vendor split that caused a runtime initialization error. The final split keeps React together, uses lazy history/channel routes, and passes real browser tests. Responsive assertions wait for the actual collapsed-layout condition rather than guessing a delay. No failing test is disabled.
+
+## Limits
+
+Total JavaScript download size is not reduced by the same ratio as the largest chunk; initial dependencies remain significant. Further route/form optimization and performance budgets are Sprint 2 work. The private shared-ui theme source is still unavailable and no substitute is introduced.
+
+Image checks cannot prevent a hostile page from allocating resources before measurement; Docker quotas provide the tested process-level backstop. Sandbox policy on a future deployment host requires a separately authorized review. Previously stored Sprint 1 dimension mismatches cannot safely be retroactively distinguished from genuine 100% events without inspecting historical artifacts, so old records are not rewritten.
+
+Remote notifications remain at least once in crash/uncertain-provider windows. The scanner checks known credential patterns, emails and optionally supplied private substrings; it is not a complete security audit. Runtime configuration, screenshots, credentials and logs are ignored and excluded from commits/build contexts. Inherited upstream history is preserved; new changed commit files are scanned without printing matched values.

@@ -52,6 +52,8 @@ export function MonitorForm({
               form.setFieldsValue({
                 text_enabled: true,
                 visual_enabled: false,
+                capture_mode: "viewport",
+                capture_selector: "",
               });
           }}
         />
@@ -148,7 +150,7 @@ export function MonitorForm({
           <Form.Item
             name="visual_threshold"
             label="Visual alert threshold (%)"
-            extra="Alerts when change is strictly greater than the threshold. Equality does not alert."
+            extra="For equal image sizes, alerts only above the threshold; equality does not alert. Dimension changes alert once without a percentage and advance the baseline."
           >
             <InputNumber stringMode min="0" max="100" step="0.01" />
           </Form.Item>

@@ -82,11 +82,16 @@ export async function dispatch(
         );
       }
     } finally {
-      if (locked)
-        await c.query("SELECT pg_advisory_unlock(hashtextextended($1,1))", [
-          id,
-        ]);
-      c.release();
+      let clean = false;
+      try {
+        if (locked)
+          await c.query("SELECT pg_advisory_unlock(hashtextextended($1,1))", [
+            id,
+          ]);
+        clean = true;
+      } finally {
+        c.release(!clean);
+      }
     }
   }
 }

@@ -17,7 +17,7 @@ jobs:
           POSTGRES_HOST_AUTH_METHOD: trust
         ports: [5432:5432]
         options: >-
-          --health-cmd pg_isready --health-interval 5s --health-timeout 3s --health-retries 20
+          --health-cmd "pg_isready -U postgres" --health-interval 5s --health-timeout 3s --health-retries 20
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -42,6 +42,9 @@ jobs:
         run: npm run build && npm test
         working-directory: server
         timeout-minutes: 2
+      - name: Dependency audits
+        run: npm --prefix server audit --audit-level=moderate && npm --prefix frontend audit --audit-level=moderate
+        timeout-minutes: 2
       - name: PostgreSQL and browser integration
         run: npm run test:integration
         working-directory: server
@@ -52,31 +55,16 @@ jobs:
         if: always()
         run: node scripts/privacy-scan.mjs
         timeout-minutes: 1
-  previous-runner-diagnostic:
-    # Temporary reproduction of the original runner; removed after diagnosis.
-    runs-on: ubuntu-24.04
-    timeout-minutes: 6
+  privacy:
+    # Independent of installs, browsers and test cleanup, so failures cannot hide this scan.
+    runs-on: ubuntu-22.04
+    timeout-minutes: 3
     steps:
       - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
       - uses: actions/setup-node@v6
         with:
           node-version: 24.19.0
-      - run: npm ci && npx playwright install --with-deps chromium
-        working-directory: server
-        timeout-minutes: 5
-      - name: Reproduce original sandbox launch with bounded cleanup
-        working-directory: server
-        run: |
-          node --input-type=module <<'JS'
-          import { chromium } from 'playwright';
-          let browser;
-          try {
-            browser = await chromium.launch({ chromiumSandbox: true, timeout: 15000 });
-            console.log('Original runner sandbox launch passed');
-          } catch (error) {
-            console.error(error.message);
-            process.exitCode = 1;
-          } finally {
-            await browser?.close();
-          }
-          JS
+      - run: node --test scripts/privacy-scan.test.mjs
+      - run: node scripts/privacy-scan.mjs --history=origin/master

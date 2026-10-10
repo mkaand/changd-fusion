@@ -38,8 +38,13 @@ export async function migrate(pool: Pool) {
       }
     }
   } finally {
-    await c.query("SELECT pg_advisory_unlock(741901)");
-    c.release();
+    let clean = false;
+    try {
+      await c.query("SELECT pg_advisory_unlock(741901)");
+      clean = true;
+    } finally {
+      c.release(!clean);
+    }
   }
 }
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
