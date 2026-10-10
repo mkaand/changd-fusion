@@ -30,6 +30,7 @@ import {
 import { api, percent } from "./api";
 import { monitorState, monitorStates, filterMonitors } from "./monitor-status";
 import { useThemeAdapter } from "./theme";
+import { AllMyThemeControls } from "./AllMyThemeControls";
 import { Login } from "./Login";
 import { MonitorForm, defaults } from "./MonitorForm";
 const History = lazy(() =>
@@ -249,6 +250,9 @@ export default function FusionApp() {
           <img src={logo} alt="Changd" />
           <span className="brand-name">Changd <span>Fusion</span></span>
         </a>
+        <div className="theme-controls-slot">
+          <AllMyThemeControls adapter={themeAdapter} />
+        </div>
         <Space className="desktop-account-actions">
           <span className="user-name">{user.firstname || "Account"}</span>
           <Suspense>

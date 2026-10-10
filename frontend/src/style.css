@@ -36,6 +36,7 @@ html, body, #root {
   color: #1677ff;
 }
 .desktop-account-actions { margin-left: auto; }
+.theme-controls-slot { flex: 0 0 auto; }
 .account-menu {
   width: 220px;
   padding: 8px;
@@ -149,6 +150,7 @@ details {
     min-width: 0;
   }
   .brand img { width: 32px; }
+  .brand-name span { display: none; }
   .page-header {
     gap: 8px;
   }
@@ -218,6 +220,10 @@ details {
   .monitor-card-actions .ant-btn:last-child { grid-column: span 2; }
   .login { margin: max(32px, env(safe-area-inset-top)) 12px; padding: 0; }
   .ant-pagination { display: flex; flex-wrap: wrap; justify-content: center; }
+}
+
+@media (max-width: 360px) {
+  .brand-name { display: none; }
 }
 
 :root[data-theme="dark"] {

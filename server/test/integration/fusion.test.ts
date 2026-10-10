@@ -718,9 +718,11 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
       req.pipe(upstream);
       return;
     }
-    const file = req.url?.startsWith("/assets/")
-      ? req.url.split("?")[0]
-      : "/index.html";
+    const pathName = req.url?.split("?")[0];
+    const file =
+      pathName?.startsWith("/assets/") || pathName === "/allmy-theme-init.js"
+        ? pathName
+        : "/index.html";
     try {
       const body = await readFile(
         new URL("../../../frontend/dist" + file, import.meta.url),
@@ -762,6 +764,14 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await page.getByLabel("Email", { exact: true }).fill("owner@example.com");
     await page.getByLabel("Password", { exact: true }).fill(password);
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    const themeSwitch = page.getByRole("switch", { name: /Switch to .* theme/ });
+    await themeSwitch.waitFor();
+    const initialTheme = await page.locator("html").getAttribute("data-theme");
+    await themeSwitch.click();
+    assert.notEqual(await page.locator("html").getAttribute("data-theme"), initialTheme);
+    assert.equal(await page.locator("html").getAttribute("data-theme-mode"), await page.locator("html").getAttribute("data-theme"));
+    await page.getByRole("button", { name: "Use automatic system theme" }).click();
+    assert.equal(await page.locator("html").getAttribute("data-theme-mode"), "system");
     const output = process.env.UI_SCREENSHOT_DIR ?? root;
     await mkdir(output, { recursive: true });
     await page
@@ -799,6 +809,7 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
         !!document.querySelector(".navigation-toggle") &&
         document.documentElement.scrollWidth <= window.innerWidth,
     );
+    assert.ok(await themeSwitch.isVisible(), "AllMy theme controls stay visible on mobile");
     const overflow = await page.evaluate(() =>
       Array.from(document.querySelectorAll("*"))
         .map((el) => ({

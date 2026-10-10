@@ -2,7 +2,8 @@ import { render, screen, cleanup, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { it, expect, afterEach, vi } from "vitest";
 import { filterMonitors, monitorState } from "./monitor-status";
-import { useThemeAdapter, setThemePreference, themeConfig } from "./theme";
+import { useThemeAdapter, setThemePreference, themeConfig, ALLMY_THEME_KEY } from "./theme";
+import { AllMyThemeControls } from "./AllMyThemeControls";
 import { Deliveries } from "./Deliveries";
 import { api } from "./api";
 vi.mock("./api", () => ({ api: vi.fn() }));
@@ -40,33 +41,45 @@ it("dashboard search and status filters distinguish paused, disabled and attenti
     1,
   );
 });
-it("theme adapter persists preferences, selects Ant Design algorithms and synchronizes storage changes without a replacement switch", () => {
+it("AllMy controls persist explicit themes, return to Auto and expose the original accessibility states", async () => {
   function Fixture() {
     const a = useThemeAdapter();
-    return (
-      <span>
-        {a.preference}:{a.resolved}
-      </span>
-    );
+    return <><span>{a.preference}:{a.resolved}</span><AllMyThemeControls adapter={a} /></>;
   }
+  const user = userEvent.setup();
+  const meta = document.createElement("meta");
+  meta.name = "theme-color";
+  document.head.append(meta);
   render(<Fixture />);
   expect(screen.getByText("system:light")).toBeInTheDocument();
-  act(() => setThemePreference("dark"));
+  const toggle = screen.getByRole("switch");
+  expect(toggle).toHaveAttribute("aria-checked", "false");
+  await user.click(toggle);
   expect(screen.getByText("dark:dark")).toBeInTheDocument();
-  expect(localStorage.getItem("fusion_theme_preference")).toBe("dark");
+  expect(localStorage.getItem(ALLMY_THEME_KEY)).toBe("dark");
+  expect(toggle).toHaveAttribute("aria-checked", "true");
+  expect(toggle).toHaveAttribute("aria-label", "Switch to light theme");
+  expect(document.documentElement.dataset.theme).toBe("dark");
+  expect(document.documentElement.dataset.themeMode).toBe("dark");
+  expect(document.documentElement.style.colorScheme).toBe("dark");
+  expect(meta.content).toBe("#0b1220");
   expect(themeConfig("dark").algorithm).not.toEqual(
     themeConfig("light").algorithm,
   );
+  await user.click(screen.getByRole("button", { name: "Use automatic system theme" }));
+  expect(screen.getByText("system:light")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Use automatic system theme" })).toHaveAttribute("aria-pressed", "true");
+  expect(localStorage.getItem(ALLMY_THEME_KEY)).toBeNull();
   act(() =>
     window.dispatchEvent(
       new StorageEvent("storage", {
-        key: "fusion_theme_preference",
+        key: ALLMY_THEME_KEY,
         newValue: "light",
       }),
     ),
   );
   expect(screen.getByText("light:light")).toBeInTheDocument();
-  expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+  document.head.removeChild(meta);
 });
 it("notification delivery history displays retries and authorized administrative retry", async () => {
   vi.mocked(api).mockResolvedValue({
