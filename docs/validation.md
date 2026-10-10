@@ -12,6 +12,10 @@ Cloud'un 32 GiB diski eski uygulama Docker katmanlarıyla dolunca build ve testl
 
 Gerçek GitHub Codespace, private HTTPS gateway ve iPhone Safari doğrulaması için GitHub Codespaces oluşturma yetkisi gerekir. Yerel mock ve Chromium mobile testleri gerçek Safari/GitHub authentication doğrulaması olarak sunulmaz. Güncel CI ve Codespace oluşturma sonucuna Draft PR #1'den ulaşılabilir. Kurulum ve sınırlamalar: [private-preview.md](private-preview.md).
 
+Kod commit'i `1b664f0aee4807298056df58ae01dea0d5cba5e6` için [PR CI 38049709567](https://github.com/mkaand/changd-fusion/actions/runs/38049709567) ve [push CI 38049707064](https://github.com/mkaand/changd-fusion/actions/runs/38049707064) **completed / success** oldu: verify, privacy ve docker tamamlandı. CI loglarında 100 test, sıfır skip/cancel ve tamamlanan source/build/history privacy taramaları doğrulandı.
+
+Gerçek Codespace oluşturma POST isteği **HTTP 403 — Resource not accessible by integration** ile reddedildi. Codespace oluşturulmadı; kullanıcı [GitHub üzerinden geliştirme dalını başlatmalıdır](https://codespaces.new/mkaand/changd-fusion/tree/feat/changd-fusion-sprint-1). Dynamic HTTPS/private gateway ve gerçek iPhone Safari doğrulaması bu yetki engeli nedeniyle yapılmadı. Bot token/Chat ID sağlanmadı ve gerçek Telegram/SMTP mesajı gönderilmedi.
+
 ## Sprint 2 validation (önceki temel)
 
 Executed on 2026-10-10 in isolated Codex Cloud with synthetic accounts, controlled local endpoints and disposable PostgreSQL databases. No production system or real provider credential was used.
