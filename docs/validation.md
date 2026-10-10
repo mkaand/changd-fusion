@@ -16,10 +16,12 @@ Executed on 2026-10-10 in isolated Codex Cloud with synthetic accounts, controll
 | Compose configuration validation | Passed |
 | Docker UID / CPU / RAM / PID cgroup limits | UID 1000; 1 CPU, 1 GiB, 256 PIDs verified |
 | Docker sandbox and capture-mode smoke | Browser Steps and CSS/XPath viewport/full-page/element hybrid captures passed; Chromium reported Seccomp-BPF sandbox enabled |
+| Docker migration / worker shutdown | Migration 003 applied on disposable DB; idle worker established DB coordination and exited 0 on SIGTERM |
+| Complete current Compose startup in Cloud | Not completed: concurrent image/container allocation exceeded this 32 GiB Cloud disk; components tested sequentially |
 | Original MIT license and migrations 001/002 | Unchanged |
 | Real SMTP / Telegram delivery | Not attempted; mocked providers/outbox tested |
 
-GitHub verification runs the same suites using the bundled Playwright Chromium on a pinned Ubuntu 22.04 runner. Check draft PR #1 for the final-head workflow status; a cancelled, partial or diagnostic run is not a passing validation. The PR and final delivery report link the completed successful final-head run. The previous Sprint 1.1 baseline was [38031604802](https://github.com/mkaand/changd-fusion/actions/runs/38031604802), with 46 passing tests. Sprint 2 expands this to **74 passing tests**, zero skipped/cancelled/failed tests, plus Docker smoke checks.
+GitHub verification runs the same suites using the bundled Playwright Chromium on a pinned Ubuntu 22.04 runner. Check draft PR #1 for the final-head workflow status; a cancelled, partial or diagnostic run is not a passing validation. Sprint 2 implementation run [38034723359](https://github.com/mkaand/changd-fusion/actions/runs/38034723359) and push run [38034720087](https://github.com/mkaand/changd-fusion/actions/runs/38034720087) completed successfully with verify/privacy/docker jobs. The PR and final report link the latest final-head run after this documentation update. The previous Sprint 1.1 baseline was [38031604802](https://github.com/mkaand/changd-fusion/actions/runs/38031604802), with 46 passing tests. Sprint 2 expands this to **74 passing tests**, zero skipped/cancelled/failed tests, plus Docker smoke checks.
 
 ## CI incident and repair
 
@@ -51,7 +53,7 @@ Intermediate defects found and repaired during this sprint include the missing j
 - React tests cover step add/remove/reorder/validation, search/status semantics, delivery error/retry UI, theme storage/algorithm synchronization and revoked-session handling. Browser smoke additionally exercises dashboard search, mobile steps controls, decimal history and image comparisons; ignored local screenshots include `browser-steps-mobile.png`.
 - Production Docker API/UI builds pass. The reusable `scripts/docker-smoke.mjs` checks UID 1000, 1 CPU, 1 GiB RAM, 256 PIDs and sandboxed Browser Steps/CSS/XPath captures with no external container network. CI adds a separate bounded Ubuntu 22.04 Docker job.
 
-During local verification, the 32 GiB Cloud disk filled with Docker build layers and a smoke launch failed with ENOSPC. Reclaiming only this application's reproducible build cache restored space; the smoke was rerun successfully. No sandbox/security setting was relaxed. The frontend's jsdom pseudo-element layout notice is informational; real Chromium checks the rendered interface. No test is disabled or skipped.
+During local verification, the 32 GiB Cloud disk filled with Docker build layers and a smoke launch failed with ENOSPC. Reclaiming only this application's reproducible build cache and superseded disposable validation images/containers restored space; database/capture volumes were preserved. The final image smoke was rerun successfully. The complete current Compose stack could not be kept concurrently on this Cloud disk; configuration, migration, worker shutdown, image builds and sandboxed captures were checked separately. GitHub Docker builds/smoke also passed. No sandbox/security setting was relaxed. The frontend's jsdom pseudo-element layout notice is informational; real Chromium checks the rendered interface. No test is disabled or skipped.
 
 ## Limits
 
