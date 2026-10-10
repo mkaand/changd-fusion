@@ -45,6 +45,9 @@ jobs:
       - name: Private Codespaces configuration and credential safeguards
         run: node --test --test-timeout=30000 scripts/preview.test.mjs
         timeout-minutes: 1
+      - name: Private production SSH access safeguards
+        run: python3 scripts/production-access.test.py
+        timeout-minutes: 1
       - name: Dependency audits
         run: npm --prefix server audit --audit-level=moderate && npm --prefix frontend audit --audit-level=moderate
         timeout-minutes: 2
