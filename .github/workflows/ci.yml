@@ -42,6 +42,9 @@ jobs:
         run: npm run build && npm test
         working-directory: server
         timeout-minutes: 2
+      - name: Private Codespaces configuration and credential safeguards
+        run: node --test --test-timeout=30000 scripts/preview.test.mjs
+        timeout-minutes: 1
       - name: Dependency audits
         run: npm --prefix server audit --audit-level=moderate && npm --prefix frontend audit --audit-level=moderate
         timeout-minutes: 2
@@ -77,8 +80,11 @@ jobs:
         with:
           node-version: 24.19.0
       - name: Build production API and UI images
-        run: docker build -t changd-fusion-api:ci ./server && docker build -t changd-fusion-ui:ci ./frontend
+        run: docker build -t changd-fusion-api:ci ./server && docker build -t changd-fusion-ui:ci ./frontend && docker build -t changd-fusion-preview:ci -f .devcontainer/Dockerfile .
         timeout-minutes: 10
       - name: Rootless resource limits and sandboxed Browser Steps smoke
         run: node scripts/docker-smoke.mjs
+        timeout-minutes: 2
+      - name: Codespaces image sandbox smoke
+        run: npm ci --prefix server --ignore-scripts --no-audit --no-fund && node scripts/preview-docker-smoke.mjs
         timeout-minutes: 2

@@ -25,7 +25,7 @@ export async function dispatch(
       ).rows[0].locked;
       if (!locked) continue;
       const r = await c.query(
-        `SELECT o.*,ch.provider,ch.config,ch.enabled,m.name,m.id monitor_id,e.text_changed,e.visual_changed,e.visual_percent,e.dimension_changed,e.before_dimensions,e.after_dimensions,e.text_diff,e.diff_screenshot,e.attention_state,e.error,
+        `SELECT o.*,ch.provider,ch.config,ch.enabled,m.name,m.id monitor_id,e.created_at checked_at,e.status event_type,e.text_changed,e.visual_changed,e.visual_percent,e.dimension_changed,e.before_dimensions,e.after_dimensions,e.text_diff,e.diff_screenshot,e.attention_state,e.error,
     b.screenshot before_image,a.screenshot after_image FROM fusion_outbox o JOIN fusion_channels ch ON ch.id=o.channel_id JOIN fusion_events e ON e.id=o.event_id
     JOIN fusion_monitors m ON m.id=e.monitor_id LEFT JOIN fusion_captures b ON b.id=e.before_id LEFT JOIN fusion_captures a ON a.id=e.after_id
     WHERE o.id=$1 AND o.status IN ('pending','sending') AND o.next_attempt<=now() AND ch.user_id=m.user_id`,
@@ -36,6 +36,18 @@ export async function dispatch(
       if (!row.enabled) {
         await c.query(
           "UPDATE fusion_outbox SET status='failed',last_error='Channel disabled' WHERE id=$1",
+          [id],
+        );
+        continue;
+      }
+      if (
+        row.provider === "telegram" &&
+        row.config.preview_test_required &&
+        !row.config.preview_verified &&
+        row.event_type !== "test"
+      ) {
+        await c.query(
+          "UPDATE fusion_outbox SET status='failed',last_error='Test notification required' WHERE id=$1",
           [id],
         );
         continue;
@@ -62,6 +74,12 @@ export async function dispatch(
         link: new URL("/jobs/" + row.monitor_id, cfg.PUBLIC_URL).href,
         attentionState: row.attention_state,
         attentionMessage: row.error,
+        checkedAt: row.checked_at,
+        eventType: row.event_type,
+        attempt: row.attempts + 1,
+        imageLabels: (["before", "after", "diff"] as const).filter((_, i) =>
+          Boolean([row.before_image, row.after_image, row.diff_screenshot][i]),
+        ),
         images: [row.before_image, row.after_image, row.diff_screenshot].filter(
           Boolean,
         ),
@@ -77,6 +95,17 @@ export async function dispatch(
           "UPDATE fusion_outbox SET status='sent',delivered_at=now(),last_error=null WHERE id=$1",
           [id],
         );
+        if (
+          row.provider === "telegram" &&
+          row.event_type === "test" &&
+          row.config.preview_test_required
+        ) {
+          // An in-flight test for old credentials cannot authorize newly edited credentials.
+          await c.query(
+            "UPDATE fusion_channels SET config=jsonb_set(config,'{preview_verified}','true'::jsonb) WHERE id=$1 AND config->>'encrypted'=$2 AND config->>'preview_test_required'='true'",
+            [row.channel_id, row.config.encrypted],
+          );
+        }
       } catch {
         await c.query(
           "UPDATE fusion_outbox SET status=CASE WHEN attempts>=5 THEN 'failed' ELSE 'pending' END,last_error='Provider delivery failed',next_attempt=now()+least(3600,30*power(2,attempts))*interval '1 second' WHERE id=$1",

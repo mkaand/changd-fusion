@@ -11,7 +11,7 @@ import { workerCycle } from "../../src/worker.js";
 import { readConfig, type Config } from "../../src/config.js";
 import { capture } from "../../src/capture.js";
 import { EgressPolicy } from "../../src/egress.js";
-import { encrypt } from "../../src/crypto.js";
+import { encrypt, decrypt } from "../../src/crypto.js";
 import { PNG } from "pngjs";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { hash } from "bcryptjs";
@@ -21,6 +21,9 @@ import os from "node:os";
 import path from "node:path";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import { seedPreview } from "../../src/preview-seed.js";
+import { compareVisual } from "../../src/comparison.js";
+import { telegramSummary } from "../../src/notifications.js";
 const dbURL = new URL(process.env.TEST_DATABASE_URL ?? "");
 assert.ok(
   ["127.0.0.1", "localhost"].includes(dbURL.hostname),
@@ -286,6 +289,9 @@ test("hybrid precision: 0.35% → PostgreSQL → API → notification, one event
   assert.equal(sent.length, 1);
   assert.equal(sent[0].percent, "0.3500000000");
   assert.ok(sent[0].textSummary.includes("Price 11"));
+  assert.ok(telegramSummary(sent[0]).includes("%0,35"));
+  assert.ok(sent[0].checkedAt instanceof Date);
+  assert.equal(sent[0].attempt, 1);
   // Unchanged pixels are valid captures with 0%, no alert and a separate latest capture.
   await runMonitor(pool, cfg, monitor.id, {
     force: true,
@@ -1738,4 +1744,345 @@ test("notification retries stop permanently at five attempts with bounded expone
     sent++;
   });
   assert.equal(sent, 5);
+});
+
+test("private preview seed migrates all versions, is idempotent, preserves changed passwords and stays paused without notifications", async () => {
+  const name = "fusion_preview_" + randomUUID().replaceAll("-", "");
+  const url = new URL(dbURL);
+  url.pathname = "/" + name;
+  const seededPool = makePool(url.href);
+  const dir = await mkdtemp(path.join(os.tmpdir(), "fusion-preview-seed-"));
+  try {
+    await admin.query(`CREATE DATABASE ${name}`);
+    await migrate(seededPool);
+    const seededCfg = { ...cfg, DATABASE_URL: url.href, DATA_DIR: dir };
+    await seedPreview(seededPool, seededCfg, "synthetic-preview-password");
+    assert.equal(
+      (await seededPool.query("SELECT count(*) FROM fusion_migrations")).rows[0]
+        .count,
+      "3",
+    );
+    assert.equal(
+      (await seededPool.query("SELECT count(*) FROM users")).rows[0].count,
+      "1",
+    );
+    const monitor = (await seededPool.query("SELECT * FROM fusion_monitors"))
+      .rows[0];
+    assert.ok(monitor.paused && monitor.text_enabled && monitor.visual_enabled);
+    assert.equal(monitor.monitor_state, "paused");
+    const event = (
+      await seededPool.query(
+        "SELECT * FROM fusion_events WHERE status='changed'",
+      )
+    ).rows[0];
+    assert.equal(event.visual_percent, "0.3500000000");
+    const images = (
+      await seededPool.query(
+        "SELECT screenshot FROM fusion_captures ORDER BY text_content",
+      )
+    ).rows;
+    const buffers = await Promise.all(
+      images.map((row) => readFile(path.join(dir, row.screenshot))),
+    );
+    const comparison = compareVisual(buffers[0], buffers[1], "0.30", 0.1);
+    assert.equal(comparison.percent, "0.3500000000");
+    assert.equal(comparison.changed, true);
+    await seededPool.query("UPDATE users SET password=$1", [
+      "synthetic-changed-hash",
+    ]);
+    await seedPreview(seededPool, seededCfg, "synthetic-other-password");
+    assert.equal(
+      (await seededPool.query("SELECT password FROM users")).rows[0].password,
+      "synthetic-changed-hash",
+    );
+    assert.equal(
+      (await seededPool.query("SELECT count(*) FROM fusion_monitors")).rows[0]
+        .count,
+      "1",
+    );
+    assert.equal(
+      (await seededPool.query("SELECT count(*) FROM fusion_events")).rows[0]
+        .count,
+      "2",
+    );
+    await workerCycle(seededPool, seededCfg, {
+      capture: async () => {
+        throw Error("Paused fixture must never make a request");
+      },
+      send: async () => {
+        throw Error("Preview must never send automatically");
+      },
+    });
+    assert.equal(
+      (await seededPool.query("SELECT count(*) FROM fusion_outbox")).rows[0]
+        .count,
+      "0",
+    );
+    assert.equal(
+      (await seededPool.query("SELECT count(*) FROM fusion_channels")).rows[0]
+        .count,
+      "0",
+    );
+  } finally {
+    await seededPool.end();
+    await admin.query(`DROP DATABASE IF EXISTS ${name}`);
+    await rm(dir, { recursive: true, force: true });
+  }
+});
+
+test("same-origin production preview preserves Secure cookies, validates Host/Origin and supports owned API/history/screenshots/logout", async () => {
+  const publicURL = "https://synthetic-preview-fixture-3000.app.github.dev";
+  const host = new URL(publicURL).host;
+  const previewCfg = {
+    ...cfg,
+    NODE_ENV: "production" as const,
+    PUBLIC_URL: publicURL,
+    DATA_DIR: path.join(root, ".hidden-preview-artifacts"),
+  };
+  const previewApp = createApp(
+    pool,
+    previewCfg,
+    new EgressPolicy(async () => [{ address: "8.8.8.8", family: 4 }]),
+    {
+      frontendDir: path.resolve("../frontend/dist"),
+      allowedHosts: [host],
+    },
+  );
+  const email = "preview-transport@example.com";
+  await pool.query(
+    "INSERT INTO users(email,password,firstname) VALUES($1,$2,'Preview')",
+    [email, await hash(password, 4)],
+  );
+  const call = (method: "get" | "post", url: string, cookie?: string) => {
+    const r = request(previewApp)
+      [method](url)
+      .set("Host", host)
+      .set("Origin", publicURL)
+      .set("X-Fusion-Request", "1");
+    if (cookie) r.set("Cookie", cookie);
+    return r;
+  };
+  await request(previewApp).get("/").set("Host", "example.com").expect(400);
+  const page = await call("get", "/").expect(200);
+  assert.ok(page.text.includes("Changd"));
+  assert.ok(
+    page.headers["content-security-policy"].includes("script-src 'self'"),
+  );
+  const login = await call("post", "/api/v1/login")
+    .send({ email, password })
+    .expect(200);
+  const cookieHeader = login.headers["set-cookie"][0];
+  assert.ok(
+    cookieHeader.includes("Secure") &&
+      cookieHeader.includes("HttpOnly") &&
+      cookieHeader.includes("SameSite=Strict"),
+  );
+  const cookie = cookieHeader.split(";")[0];
+  await call("get", "/api/v1/users/me", cookie).expect(200);
+  await call("post", "/api/v1/jobs", cookie)
+    .set("Origin", "https://example.com")
+    .send({})
+    .expect(403);
+  const monitor = (
+    await call("post", "/api/v1/jobs", cookie)
+      .send({
+        name: "Private preview fixture",
+        url: "https://example.com",
+        text_enabled: true,
+        visual_enabled: true,
+        visual_threshold: "0.30",
+        browser_steps: [
+          {
+            action: "wait_visible",
+            selector: "//main",
+            selector_type: "xpath",
+          },
+        ],
+      })
+      .expect(201)
+  ).body;
+  await call("post", `/api/v1/jobs/${monitor.id}/run`, cookie)
+    .send({})
+    .expect(202);
+  await runMonitor(pool, previewCfg, monitor.id, {
+    force: true,
+    capture: async () => ({ text: "before", screenshot: image(0) }),
+  });
+  await runMonitor(pool, previewCfg, monitor.id, {
+    force: true,
+    capture: async () => ({ text: "after", screenshot: image(35) }),
+  });
+  const history = (
+    await call(
+      "get",
+      `/api/v1/jobs/${monitor.id}/history?page=1`,
+      cookie,
+    ).expect(200)
+  ).body;
+  assert.equal(history.total, 2);
+  const changed = history.items.find((e: any) => e.status === "changed");
+  assert.ok(
+    changed,
+    JSON.stringify(
+      history.items.map((e: any) => ({ status: e.status, error: e.error })),
+    ),
+  );
+  assert.equal(changed.visual_percent, "0.3500000000");
+  assert.ok(changed.text_changed && changed.visual_changed);
+  const filename = (
+    await pool.query("SELECT screenshot FROM fusion_captures WHERE id=$1", [
+      changed.after_id,
+    ])
+  ).rows[0].screenshot;
+  const screenshotResponse = await call(
+    "get",
+    `/api/v1/screenshots/${filename}`,
+    cookie,
+  ).expect(200);
+  assert.equal(
+    screenshotResponse.headers["cache-control"],
+    "private, no-store",
+  );
+  await call("get", "/.preview/credentials.json", cookie).expect(404);
+  await call("get", "/api/v1/notifications", cookie).expect(200);
+  await call("post", "/api/v1/logout", cookie).send({}).expect(200);
+  await call("get", "/api/v1/users/me", cookie).expect(401);
+});
+
+test("Codespaces Telegram requires an explicit successful owned test before automatic delivery, and changed credentials revoke approval", async () => {
+  const previewApp = createApp(
+    pool,
+    cfg,
+    new EgressPolicy(async () => [{ address: "8.8.8.8", family: 4 }]),
+    { requireNotificationTest: true },
+  );
+  const email = "telegram-preview@example.com";
+  await pool.query(
+    "INSERT INTO users(email,password,firstname) VALUES($1,$2,'Preview')",
+    [email, await hash(password, 4)],
+  );
+  const agent = request.agent(previewApp);
+  await agent
+    .post("/api/v1/login")
+    .set("X-Fusion-Request", "1")
+    .send({ email, password })
+    .expect(200);
+  const config = { token: "123456:" + "x".repeat(24), chat_id: "-123456" };
+  const channel = (
+    await agent
+      .post("/api/v1/notifications")
+      .set("X-Fusion-Request", "1")
+      .send({
+        name: "Telegram preview fixture",
+        provider: "telegram",
+        enabled: true,
+        config,
+      })
+      .expect(201)
+  ).body;
+  assert.equal(channel.test_required, true);
+  assert.equal(channel.config.token, undefined);
+  const monitor = (
+    await agent
+      .post("/api/v1/jobs")
+      .set("X-Fusion-Request", "1")
+      .send({
+        name: "Telegram gated fixture",
+        url: "https://example.com",
+        channel_ids: [channel.id],
+      })
+      .expect(201)
+  ).body;
+  const take = (text: string) =>
+    runMonitor(pool, cfg, monitor.id, {
+      force: true,
+      capture: async () => ({ text, screenshot: null }),
+    });
+  await take("before");
+  await take("after");
+  const sent: string[] = [];
+  const send = async (_provider: any, _config: any, event: any) => {
+    if (event.monitorId === monitor.id) sent.push(event.eventType);
+  };
+  await dispatch(pool, cfg, send);
+  assert.equal(sent.length, 0);
+  const blocked = (
+    await pool.query(
+      "SELECT status,last_error FROM fusion_outbox WHERE channel_id=$1",
+      [channel.id],
+    )
+  ).rows[0];
+  assert.equal(blocked.status, "failed");
+  assert.equal(blocked.last_error, "Test notification required");
+  await agent
+    .post(`/api/v1/notifications/${channel.id}/test`)
+    .set("X-Fusion-Request", "1")
+    .send({ monitor_id: monitor.id })
+    .expect(202);
+  await dispatch(pool, cfg, send);
+  assert.deepEqual(sent, ["test"]);
+  assert.equal(
+    (await agent.get("/api/v1/notifications").expect(200)).body[0]
+      .test_required,
+    false,
+  );
+  await take("next content");
+  await dispatch(pool, cfg, send);
+  assert.deepEqual(sent, ["test", "changed"]);
+  await agent
+    .put(`/api/v1/notifications/${channel.id}`)
+    .set("X-Fusion-Request", "1")
+    .send({
+      name: "Telegram preview fixture",
+      provider: "telegram",
+      enabled: true,
+      config: { ...config, token: "123456:" + "y".repeat(24) },
+    })
+    .expect(200);
+  assert.equal(
+    (await agent.get("/api/v1/notifications").expect(200)).body[0]
+      .test_required,
+    true,
+  );
+  await take("latest content");
+  await dispatch(pool, cfg, send);
+  assert.deepEqual(sent, ["test", "changed"]);
+  const smtp = {
+    host: "smtp.example.com",
+    port: 587,
+    password: "synthetic-fixture",
+    username: "fixture",
+    from: "alerts@example.com",
+    to: "recipient@example.com",
+  };
+  const mail = (
+    await agent
+      .post("/api/v1/notifications")
+      .set("X-Fusion-Request", "1")
+      .send({
+        name: "SMTP edit fixture",
+        provider: "smtp",
+        enabled: false,
+        config: smtp,
+      })
+      .expect(201)
+  ).body;
+  await agent
+    .put(`/api/v1/notifications/${mail.id}`)
+    .set("X-Fusion-Request", "1")
+    .send({
+      name: "SMTP edit fixture",
+      provider: "smtp",
+      enabled: false,
+      config: { ...smtp, password: "" },
+    })
+    .expect(200);
+  const stored = (
+    await pool.query("SELECT config FROM fusion_channels WHERE id=$1", [
+      mail.id,
+    ])
+  ).rows[0].config;
+  assert.ok(
+    decrypt(stored.encrypted, cfg.CHANNEL_KEY).password === smtp.password,
+  );
 });

@@ -19,3 +19,5 @@
 **/playwright-report
 .git
 .onboarding
+**/.preview
+**/__pycache__

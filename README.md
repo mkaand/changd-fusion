@@ -1,5 +1,15 @@
 # Changd Fusion
 
+## Özel Codespaces önizlemesi
+
+[Mevcut geliştirme dalında Codespace başlatın](https://codespaces.new/mkaand/changd-fusion/tree/feat/changd-fusion-sprint-1).
+Kurulum PostgreSQL, migration 001–003, API, React arayüzü ve monitoring worker'ı otomatik hazırlar.
+Yalnızca **3000 / Private** portunu Safari'de açın; geçici giriş bilgileri Codespace editöründeki
+`.preview/login.txt` dosyasındadır. GitHub erişim kontrolü ve uygulama login'i birlikte korunur.
+Private port yetkisi otomatik sağlanamazsa tek seferlik `node .devcontainer/authorize.mjs` komutu
+GitHub OAuth yetkilendirmesini ve yeniden başlangıcı yönetir; ham token paylaşılmaz.
+[Başlangıç, güvenlik sınırları ve sorun giderme rehberi](docs/private-preview.md).
+
 Changd Fusion is a self-hosted website monitor based on [Changd by Paul Aschmann](https://github.com/paschmann/changd). It preserves Changd's Ant Design interface while bringing text and visual detection into **one monitor, one browser capture, one schedule, and one combined change event**.
 
 ## Implemented functionality (Sprints 1–2)

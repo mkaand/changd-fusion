@@ -48,6 +48,13 @@ test("DNS mixes, credential URLs, protocols and arbitrary ports are blocked", as
     "http://localhost.",
   ])
     await assert.rejects(policy.target(url));
+  await assert.rejects(
+    new EgressPolicy(async () => {
+      throw Error("synthetic-private-resolver-detail");
+    }).target("https://example.com"),
+    (error) =>
+      error instanceof Error && error.message === "DNS resolution failed",
+  );
 });
 test("redirects are revalidated and browser proxy refuses private subresources", async () => {
   const server = http.createServer((_req, res) => {

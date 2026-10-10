@@ -22,4 +22,6 @@ screenshots/
 deployment_key.txt
 deployment_scripts/
 .onboarding/
+.preview/
+__pycache__/
 .DS_Store

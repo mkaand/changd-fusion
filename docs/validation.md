@@ -1,4 +1,18 @@
-# Sprint 2 validation
+# Private preview ve Telegram doğrulaması
+
+2026-10-10, izole Codex Cloud. Güncel toplam **100 test**: 41 backend unit/security/provider, 27 PostgreSQL/gerçek Chromium integration, 20 React ve 12 preview/privacy script testi. Sıfır başarısız/atlanmış/iptal edilmiş test. İki production build ve iki tam dependency audit geçti; audit sonuçları sıfır bildirilen zafiyet.
+
+API, UI ve Codespaces development image build'leri geçti. Rootless production image testinde CPU/RAM/PID cgroup sınırları, CSS/XPath Browser Steps, üç capture modu ve Seccomp-BPF sandbox doğrulandı. Ayrı Codespaces image sandbox smoke da geçti.
+
+Yerel, yalnızca bu projeye ait disposable Compose yığınında PostgreSQL 16.13 + migration 001/002/003 + production-mode API/React + worker gerçekten başlatıldı. Private-port API yanıtı bu yerel testte kontrollü mock'tu; hiçbir port internete açılmadı. Gerçek app login/logout, Secure/HttpOnly/Strict cookie, monitör/Steps oluşturma, Check-now kuyruğu, private-IP reddi, sentetik NUMERIC 0.35 geçmişi ve authenticated before/after/diff PNG erişimi kontrol edildi. Website capture veya gerçek provider delivery başlatılmadı. Supervisor/worker SIGTERM kapanışı exit 0 verdi; yalnızca bu testin container/network/volume'u kaldırıldı.
+
+Bu çalışmada bulunan ve düzeltilen kusurlar: hidden `.preview/data` altında screenshot sunumunun başarısız olması (owner-authorized canonical artifact root ile düzeltildi), Telegram/SMTP edit işlemlerine yanlış provider credential alanı eklenmesi ve ham DNS resolver hatalarının genel 500'e dönüşmesi. Regresyon testleri hidden artifact root, credential koruma ve güvenli DNS hata mesajını kapsar.
+
+Cloud'un 32 GiB diski eski uygulama Docker katmanlarıyla dolunca build ve testler ENOSPC ile başarısız oldu. Yalnızca tanımlanmış, kullanılmayan Changd Fusion image/cache kayıtları temizlendi; mevcut DB volume'larına ve diğer container'lara dokunulmadı. Son build/testler yeniden geçti. İç içe Cloud Docker ağında dış DNS `EAI_AGAIN` verdi; kuyruk smoke testi website isteği yapmadan public-address fixture ile çalıştırıldı. SSRF veya sandbox kontrolleri gevşetilmedi.
+
+Gerçek GitHub Codespace, private HTTPS gateway ve iPhone Safari doğrulaması için GitHub Codespaces oluşturma yetkisi gerekir. Yerel mock ve Chromium mobile testleri gerçek Safari/GitHub authentication doğrulaması olarak sunulmaz. Güncel CI ve Codespace oluşturma sonucuna Draft PR #1'den ulaşılabilir. Kurulum ve sınırlamalar: [private-preview.md](private-preview.md).
+
+## Sprint 2 validation (önceki temel)
 
 Executed on 2026-10-10 in isolated Codex Cloud with synthetic accounts, controlled local endpoints and disposable PostgreSQL databases. No production system or real provider credential was used.
 

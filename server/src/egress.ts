@@ -34,6 +34,9 @@ export class EgressPolicy {
           );
         }),
       ]);
+    } catch (error) {
+      if (error instanceof HttpError) throw error;
+      throw new HttpError(400, "DNS resolution failed");
     } finally {
       if (timer) clearTimeout(timer);
     }

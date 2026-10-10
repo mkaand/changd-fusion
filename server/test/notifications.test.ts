@@ -11,6 +11,8 @@ import { EgressPolicy } from "../src/egress.js";
 import { mkdtemp, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { PNG } from "pngjs";
+const fixtureImage = PNG.sync.write(new PNG({ width: 10, height: 10 }));
 const event: EventMessage = {
   id: "synthetic-event",
   name: "Example monitor <script>",
@@ -32,7 +34,7 @@ test("SMTP requires verified TLS and attaches available images", async () => {
     store = new Storage(root);
   let transportOptions: any, mail: any;
   try {
-    const image = await store.save(Buffer.from("synthetic-image"));
+    const image = await store.save(fixtureImage);
     await deliver(
       "smtp",
       {
@@ -76,7 +78,7 @@ test("Telegram sends summary and an image album using mocked Bot API", async () 
     store = new Storage(root);
   const calls: any[] = [];
   try {
-    const image = await store.save(Buffer.from("synthetic-image"));
+    const image = await store.save(fixtureImage);
     await deliver(
       "telegram",
       { token: "123456:" + "x".repeat(24), chat_id: "-123456" },
@@ -90,9 +92,9 @@ test("Telegram sends summary and an image album using mocked Bot API", async () 
     );
     assert.equal(calls.length, 2);
     assert.equal(calls[0].method, "sendMessage");
-    assert.ok(calls[0].body.includes("0.35%"));
+    assert.ok(calls[0].body.includes("%0,35"));
     assert.equal(calls[1].method, "sendMediaGroup");
-    assert.ok(calls[1].body.includes("synthetic-image"));
+    assert.ok(calls[1].body.includes("after.png"));
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -100,9 +102,7 @@ test("Telegram sends summary and an image album using mocked Bot API", async () 
 test("attention summaries identify the safe failure and oversized attachments are omitted; one Telegram image uses sendPhoto", async () => {
   const store = {
     read: async (name: string) =>
-      name === "oversized"
-        ? Buffer.alloc(4 * 1024 * 1024 + 1)
-        : Buffer.from("synthetic-image"),
+      name === "oversized" ? Buffer.alloc(4 * 1024 * 1024 + 1) : fixtureImage,
   } as Storage;
   const calls: any[] = [];
   const attention = {
@@ -134,5 +134,5 @@ test("attention summaries identify the safe failure and oversized attachments ar
     ["sendMessage", "sendPhoto"],
   );
   assert.ok(calls[1].body.length < 1024);
-  assert.ok(calls[0].body.toString().includes("persistent failure"));
+  assert.ok(calls[0].body.toString().includes("Kalıcı İzleme Hatası"));
 });

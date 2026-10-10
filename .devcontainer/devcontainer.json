@@ -1,0 +1,31 @@
+{
+  "name": "Changd Fusion — private preview",
+  "dockerComposeFile": "compose.yaml",
+  "service": "preview",
+  "workspaceFolder": "/workspaces/changd-fusion",
+  "remoteUser": "node",
+  "initializeCommand": "python3 .devcontainer/initialize.py",
+  "postCreateCommand": "node .devcontainer/setup.mjs",
+  "postStartCommand": "node .devcontainer/start.mjs",
+  "waitFor": "postStartCommand",
+  "forwardPorts": [3000],
+  "portsAttributes": {
+    "3000": {
+      "label": "Changd Fusion · PRIVATE",
+      "onAutoForward": "openBrowser",
+      "protocol": "http"
+    }
+  },
+  "otherPortsAttributes": { "onAutoForward": "ignore" },
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "remote.restoreForwardedPorts": false,
+        "remote.autoForwardPorts": false
+      }
+    },
+    "codespaces": { "openFiles": [".preview/login.txt"] }
+  },
+  "shutdownAction": "stopCompose",
+  "hostRequirements": { "cpus": 2, "memory": "8gb", "storage": "32gb" }
+}

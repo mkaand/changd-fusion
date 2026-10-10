@@ -20,6 +20,7 @@ import { vaultSchema, sealValues } from "./vault.js";
 import { randomUUID } from "node:crypto";
 import pino from "pino";
 import { Decimal } from "decimal.js";
+import path from "node:path";
 const uuid = z.string().uuid();
 const threshold = z
   .union([
@@ -108,11 +109,23 @@ export function createApp(
   pool: Pool,
   cfg: Config,
   policy = new EgressPolicy(),
+  options: {
+    frontendDir?: string;
+    allowedHosts?: string[];
+    requireNotificationTest?: boolean;
+  } = {},
 ) {
   const app = express();
   const log = pino({ level: cfg.LOG_LEVEL });
   app.disable("x-powered-by");
   app.use(helmet());
+  if (options.allowedHosts) {
+    app.use((req, _res, next) => {
+      if (!options.allowedHosts!.includes(req.get("Host") ?? ""))
+        return next(new HttpError(400, "Host not permitted"));
+      next();
+    });
+  }
   app.use(express.json({ limit: "32kb" }));
   app.use(
     rateLimit({
@@ -658,7 +671,9 @@ export function createApp(
     if (!refs.rowCount) throw new HttpError(404, "Screenshot not found");
     const file = await new Storage(cfg.DATA_DIR).file(name);
     res.setHeader("Cache-Control", "private, no-store");
-    res.sendFile(file);
+    // Only the owner-authorized, canonical artifact is served. An ignored/hidden DATA_DIR
+    // is a valid storage root; credentials and arbitrary dotfiles remain inaccessible.
+    res.sendFile(path.basename(file), { root: path.dirname(file) });
   });
   const publicChannel = (row: any) => {
     const value = decrypt(row.config.encrypted, cfg.CHANNEL_KEY);
@@ -669,6 +684,9 @@ export function createApp(
       provider: row.provider,
       enabled: row.enabled,
       config: safe,
+      test_required: Boolean(
+        row.config.preview_test_required && !row.config.preview_verified,
+      ),
     };
   };
   app.get("/api/v1/notifications", async (_req, res) =>
@@ -692,7 +710,12 @@ export function createApp(
         res.locals.user.user_id,
         b.name,
         b.provider,
-        JSON.stringify({ encrypted: encrypt(value, cfg.CHANNEL_KEY) }),
+        JSON.stringify({
+          encrypted: encrypt(value, cfg.CHANNEL_KEY),
+          ...(b.provider === "telegram" && options.requireNotificationTest
+            ? { preview_test_required: true, preview_verified: false }
+            : {}),
+        }),
         b.enabled,
       ],
     );
@@ -708,7 +731,7 @@ export function createApp(
       ...incoming,
       ...(b.provider === current.provider
         ? Object.fromEntries(
-            ["password", "token"]
+            (b.provider === "smtp" ? ["password"] : ["token"])
               .filter((k) => !incoming?.[k])
               .map((k) => [k, old[k]]),
           )
@@ -721,7 +744,21 @@ export function createApp(
         res.locals.user.user_id,
         b.name,
         b.provider,
-        JSON.stringify({ encrypted: encrypt(value, cfg.CHANNEL_KEY) }),
+        JSON.stringify({
+          encrypted: encrypt(value, cfg.CHANNEL_KEY),
+          ...(b.provider === "telegram" &&
+          (options.requireNotificationTest ||
+            current.config.preview_test_required)
+            ? {
+                preview_test_required: true,
+                preview_verified: Boolean(
+                  current.config.preview_verified &&
+                    old.token === (value as any).token &&
+                    old.chat_id === (value as any).chat_id,
+                ),
+              }
+            : {}),
+        }),
         b.enabled,
       ],
     );
@@ -818,6 +855,15 @@ export function createApp(
     });
     res.status(202).json({ queued: true });
   });
+  if (options.frontendDir) {
+    app.use(
+      express.static(options.frontendDir, { dotfiles: "deny", index: false }),
+    );
+    app.get(["/", "/jobs/:id"], (_req, res) => {
+      res.setHeader("Cache-Control", "no-store");
+      res.sendFile("index.html", { root: options.frontendDir! });
+    });
+  }
   app.use((_req, _res, next) => next(new HttpError(404, "Not found")));
   app.use((error: any, _req: Request, res: Response, _next: NextFunction) => {
     const status =

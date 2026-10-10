@@ -74,6 +74,9 @@ export function Channels({
             <strong>{c.name}</strong>
             <Tag>{c.provider}</Tag>
             <Tag>{c.enabled ? "Enabled" : "Disabled"}</Tag>
+            {c.test_required && (
+              <Tag color="warning">Önce test bildirimi gönderin</Tag>
+            )}
             <Button onClick={() => create(c)}>Edit</Button>
             <Button
               disabled={!monitors.length}
@@ -159,6 +162,28 @@ export function Channels({
               >
                 <Input />
               </Form.Item>
+              <Form.Item
+                name={["config", "timezone"]}
+                label="Telegram saat dilimi"
+                initialValue="Europe/Istanbul"
+              >
+                <Select
+                  options={[
+                    {
+                      value: "Europe/Istanbul",
+                      label: "Türkiye — Europe/Istanbul",
+                    },
+                    { value: "UTC", label: "UTC" },
+                    { value: "Europe/Berlin", label: "Europe/Berlin" },
+                    { value: "America/New_York", label: "America/New_York" },
+                  ]}
+                />
+              </Form.Item>
+              <p>
+                Telegram mesajları Türkçedir. Bot bilgileri şifrelenir; token
+                geri gönderilmez. Kaydettikten sonra Test notification düğmesini
+                kendiniz kullanın.
+              </p>
             </>
           ) : (
             <>

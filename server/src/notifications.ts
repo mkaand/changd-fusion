@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { EgressPolicy } from "./egress.js";
 import { Storage } from "./storage.js";
+import { pngDimensions } from "./image.js";
 export const smtpSchema = z
   .object({
     host: z.string().min(1).max(253),
@@ -18,6 +19,18 @@ export const telegramSchema = z
   .object({
     token: z.string().regex(/^\d+:[A-Za-z0-9_-]{20,}$/),
     chat_id: z.string().regex(/^-?\d+$/),
+    timezone: z
+      .string()
+      .max(100)
+      .default("Europe/Istanbul")
+      .refine((value) => {
+        try {
+          new Intl.DateTimeFormat("tr-TR", { timeZone: value });
+          return true;
+        } catch {
+          return false;
+        }
+      }, "Invalid timezone"),
   })
   .strict();
 export type EventMessage = {
@@ -35,6 +48,10 @@ export type EventMessage = {
   images: string[];
   attentionState?: string | null;
   attentionMessage?: string | null;
+  checkedAt?: Date | string;
+  eventType?: string;
+  attempt?: number;
+  imageLabels?: ("before" | "after" | "diff")[];
 };
 export const escapeHTML = (s: string) =>
   s.replace(
@@ -56,6 +73,95 @@ export function visualSummary(event: EventMessage) {
 }
 export function summary(event: EventMessage) {
   return `${event.name}\n${event.attentionState ? event.attentionState.replaceAll("_", " ") + ": " + (event.attentionMessage ?? "Requires attention") + "\n" : ""}${event.textChanged ? "Text changed: " + event.textSummary + "\n" : ""}${event.visualChanged ? visualSummary(event) + "\n" : ""}${event.link}`;
+}
+// Plain text only: never enable Telegram HTML/Markdown parsing for user content.
+export function truncateText(value: string, limit: number) {
+  let result = "";
+  for (const c of value.replace(
+    /[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u202a-\u202e\u2066-\u2069]/g,
+    "",
+  )) {
+    if (result.length + c.length > limit - 1) return result + "…";
+    result += c;
+  }
+  return result;
+}
+export function telegramSummary(
+  event: EventMessage,
+  timezone = "Europe/Istanbul",
+) {
+  const attention: Record<string, [string, string]> = {
+    persistent_failure: [
+      "⚠️ Kalıcı İzleme Hatası",
+      "⚠️ Durum: İzleme art arda başarısız oldu. Ayarları kontrol edin.",
+    ],
+    authentication_required: [
+      "🔐 Yeniden Giriş Gerekli",
+      "🔐 Durum: Oturum veya giriş ayarları kontrol edilmeli.",
+    ],
+    challenge_detected: [
+      "🧩 Challenge Şüphesi",
+      "🧩 Durum: CAPTCHA / anti-bot kontrolü olabilir. Otomatik çözüm denenmedi.",
+    ],
+  };
+  const state = attention[event.attentionState ?? ""];
+  const test = event.eventType === "test";
+  const lines = [
+    `🔔 Changd Fusion | ${state?.[0] ?? (test ? "Test Bildirimi" : "Değişiklik Tespit Edildi!")}`,
+    "",
+    `🌐 Monitör: ${truncateText(event.name, 120)}`,
+    state?.[1] ??
+      (test
+        ? "🟢 Durum: Bildirim kanalı test ediliyor"
+        : "🟢 Durum: İçerik değişti"),
+  ];
+  if (event.textChanged && !test && !state)
+    lines.push(
+      `📝 Metin: ${truncateText(event.textSummary || "Metin değişikliği bulundu", 900)}`,
+    );
+  if (event.dimensionChanged && !state) {
+    const size = (s: EventMessage["beforeDimensions"]) =>
+      s ? `${s.width}×${s.height}` : "bilinmiyor";
+    lines.push(
+      `📐 Boyut: ${size(event.beforeDimensions)} → ${size(event.afterDimensions)}`,
+      "🖼️ Piksel yüzdesi hesaplanmadı; yeni görüntü temel alındı.",
+    );
+  } else if (event.visualChanged && !state) {
+    lines.push(
+      `🖼️ Görsel fark: %${formatPercent(event.percent ?? "0").replace(".", ",")}`,
+    );
+  }
+  if (event.checkedAt) {
+    const date = new Date(event.checkedAt);
+    if (Number.isFinite(date.getTime())) {
+      const parts = new Intl.DateTimeFormat("tr-TR", {
+        timeZone: timezone,
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        hourCycle: "h23",
+      }).formatToParts(date);
+      const part = (name: string) => parts.find((p) => p.type === name)?.value;
+      lines.push(
+        `🕒 Kontrol: ${part("day")}.${part("month")}.${part("year")} ${part("hour")}:${part("minute")} (${timezone})`,
+      );
+    }
+  }
+  if ((event.attempt ?? 1) > 1)
+    lines.push(`🔄 Bildirim yeniden denemesi: ${event.attempt}/5`);
+  try {
+    const url = new URL(event.link);
+    if (
+      url.protocol === "https:" &&
+      !url.username &&
+      !url.password &&
+      url.href.length <= 512
+    )
+      lines.push(`🔗 Monitörü aç: ${url.href}`);
+  } catch {}
+  return truncateText(lines.join("\n"), 4000);
 }
 export function emailHTML(e: EventMessage) {
   return `<h1>${escapeHTML(e.name)}</h1>${e.attentionState ? `<p>${escapeHTML(e.attentionState.replaceAll("_", " "))}: ${escapeHTML(e.attentionMessage ?? "Requires attention")}</p>` : ""}${e.textChanged ? `<h2>Text changes</h2><pre>${escapeHTML(e.textSummary)}</pre>` : ""}${e.visualChanged ? `<p>${escapeHTML(visualSummary(e))}</p>` : ""}<p><a href="${escapeHTML(e.link)}">Open monitor</a></p>${e.images.length ? "<p>Before, after and available diff images are attached.</p>" : ""}`;
@@ -122,7 +228,8 @@ export async function deliver(
 ) {
   const candidates = await Promise.all(
     event.images.slice(0, 3).map(async (name, i) => ({
-      filename: ["before.png", "after.png", "diff.png"][i],
+      filename:
+        (event.imageLabels?.[i] ?? ["before", "after", "diff"][i]) + ".png",
       content: await storage.read(name),
     })),
   );
@@ -184,29 +291,39 @@ export async function deliver(
       Buffer.from(
         JSON.stringify({
           chat_id: c.chat_id,
-          text: summary(event).slice(0, 4000),
+          text: telegramSummary(event, c.timezone),
           link_preview_options: { is_disabled: true },
         }),
       ),
       "application/json",
     );
-    if (files.length === 1) {
+    // Telegram photo limits also constrain dimensions/aspect ratio, even for small compressed PNGs.
+    const photos = files.filter((f) => {
+      const { width, height } = pngDimensions(f.content);
+      return (
+        width + height <= 10_000 &&
+        Math.max(width, height) / Math.min(width, height) <= 20
+      );
+    });
+    const documents = files.filter((f) => !photos.includes(f));
+    const sendFile = async (f: (typeof files)[number], asDocument = false) => {
       const boundary = "fusion-" + randomUUID();
-      const f = files[0];
       const body = Buffer.concat([
         Buffer.from(
-          `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${c.chat_id}\r\n--${boundary}\r\nContent-Disposition: form-data; name="photo"; filename="${f.filename}"\r\nContent-Type: image/png\r\n\r\n`,
+          `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${c.chat_id}\r\n--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${({ "before.png": "Önce", "after.png": "Sonra", "diff.png": "Fark" } as Record<string, string>)[f.filename]}\r\n--${boundary}\r\nContent-Disposition: form-data; name="${asDocument ? "document" : "photo"}"; filename="${f.filename}"\r\nContent-Type: image/png\r\n\r\n`,
         ),
         f.content,
         Buffer.from(`\r\n--${boundary}--\r\n`),
       ]);
       await send(
         c.token,
-        "sendPhoto",
+        asDocument ? "sendDocument" : "sendPhoto",
         body,
         `multipart/form-data; boundary=${boundary}`,
       );
-    } else if (files.length > 1) {
+    };
+    if (photos.length === 1) await sendFile(photos[0]);
+    else if (photos.length > 1) {
       // One album request keeps the before/after/diff images together.
       const boundary = "fusion-" + randomUUID();
       const parts: Buffer[] = [];
@@ -220,10 +337,20 @@ export async function deliver(
       field(
         "media",
         JSON.stringify(
-          files.map((_, i) => ({ type: "photo", media: `attach://image${i}` })),
+          photos.map((f, i) => ({
+            type: "photo",
+            media: `attach://image${i}`,
+            caption: (
+              {
+                "before.png": "Önce",
+                "after.png": "Sonra",
+                "diff.png": "Fark",
+              } as Record<string, string>
+            )[f.filename],
+          })),
         ),
       );
-      files.forEach((f, i) =>
+      photos.forEach((f, i) =>
         parts.push(
           Buffer.from(
             `--${boundary}\r\nContent-Disposition: form-data; name="image${i}"; filename="${f.filename}"\r\nContent-Type: image/png\r\n\r\n`,
@@ -240,5 +367,6 @@ export async function deliver(
         `multipart/form-data; boundary=${boundary}`,
       );
     }
+    for (const file of documents) await sendFile(file, true);
   } else throw Error("Unsupported provider");
 }
