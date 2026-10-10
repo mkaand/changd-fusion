@@ -14,8 +14,8 @@
     "worker:prod": "node dist/worker-main.js",
     "migrate": "tsx src/migrate.ts",
     "create-admin": "tsx src/create-admin.ts",
-    "test": "tsx --test test/*.test.ts",
-    "test:integration": "tsx --test test/integration/*.test.ts"
+    "test": "tsx --test --test-timeout=30000 test/*.test.ts",
+    "test:integration": "node scripts/integration-runner.mjs"
   },
   "dependencies": {
     "bcryptjs": "3.0.3",

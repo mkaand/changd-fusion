@@ -1,4 +1,5 @@
 import { test, before, after } from "node:test";
+import { closeServer } from "../helpers/server.js";
 import assert from "node:assert/strict";
 import request from "supertest";
 import { makePool, type Pool } from "../../src/db.js";
@@ -334,6 +335,7 @@ test("same-monitor concurrency is rejected and configuration mutations cannot ra
       return { text: "Price 11", screenshot: image(35) };
     },
   });
+  try {
   await started;
   assert.equal(
     await runMonitor(pool, cfg, monitor.id, {
@@ -349,8 +351,10 @@ test("same-monitor concurrency is rejected and configuration mutations cannot ra
     .set("X-Fusion-Request", "1")
     .send({})
     .expect(409);
-  release();
-  await active;
+  } finally {
+    release();
+    await active;
+  }
 });
 test("outbox retries and restart status preserve event uniqueness", async () => {
   await ownerAgent
@@ -430,8 +434,8 @@ test("real Playwright hybrid capture uses one session, selectors, masks, normali
     );
     assert.equal(xpath.text, "Price 10");
   } finally {
-    await new Promise<void>((r) => fixture.close(() => r()));
-    await new Promise<void>((r) => privateServer.close(() => r()));
+    await closeServer(fixture);
+    await closeServer(privateServer);
   }
 });
 test("controlled HTML and API monitoring preserve functionality with canonical JSON", async () => {
@@ -469,7 +473,7 @@ test("controlled HTML and API monitoring preserve functionality with canonical J
       "<main>Hello</main>",
     );
   } finally {
-    await new Promise<void>((r) => fixture.close(() => r()));
+    await closeServer(fixture);
   }
 });
 test("retention keeps referenced historical screenshots and current baseline", async () => {
@@ -577,11 +581,13 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
   const origin = "http://127.0.0.1:" + (ui.address() as AddressInfo).port;
   const oldURL = cfg.PUBLIC_URL;
   cfg.PUBLIC_URL = origin;
-  const browser = await chromium.launch({
-    chromiumSandbox: true,
-    executablePath: cfg.PLAYWRIGHT_EXECUTABLE_PATH,
-  });
+  let browser: Awaited<ReturnType<typeof chromium.launch>> | undefined;
   try {
+    browser = await chromium.launch({
+      chromiumSandbox: true,
+      executablePath: cfg.PLAYWRIGHT_EXECUTABLE_PATH,
+      timeout: 15000,
+    });
     const page = await browser.newPage();
     const errors: string[] = [];
     page.on("pageerror", (e) => errors.push(e.message));
@@ -606,9 +612,11 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     assert.deepEqual(errors, []);
   } finally {
     cfg.PUBLIC_URL = oldURL;
-    await browser.close();
-    await new Promise<void>((r) => ui.close(() => r()));
-    await new Promise<void>((r) => apiServer.close(() => r()));
+    try {
+      await browser?.close();
+    } finally {
+      await Promise.all([closeServer(ui), closeServer(apiServer)]);
+    }
   }
 });
 
