@@ -52,7 +52,7 @@ it("validates a Telegram bot only after explicit user action", async () => {
   expect(api).toHaveBeenCalledWith("/notifications/fixture/validate", "POST", {});
   expect(report).toHaveBeenCalledWith("Bot validated: Fixture (@fixture_bot)");
 });
-it("Telegram sends nothing on mount and queues a test only after explicit user action", async () => {
+it("Telegram sends nothing on mount and requires an explicit monitor selection", async () => {
   vi.mocked(api).mockResolvedValue({ queued: true });
   const user = userEvent.setup();
   const report = vi.fn();
@@ -65,9 +65,6 @@ it("Telegram sends nothing on mount and queues a test only after explicit user a
     />,
   );
   expect(api).not.toHaveBeenCalled();
-  await user.click(screen.getByRole("button", { name: "Test notification" }));
-  expect(api).toHaveBeenCalledTimes(1);
-  expect(api).toHaveBeenCalledWith("/notifications/fixture/test", "POST", {
-    monitor_id: "monitor",
-  });
+  expect(screen.getByRole("button", { name: "Test notification" })).toBeDisabled();
+  expect(screen.getByLabelText("Test notification monitor")).toBeInTheDocument();
 });

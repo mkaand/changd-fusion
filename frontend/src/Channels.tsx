@@ -26,7 +26,8 @@ export function Channels({
   const [open, setOpen] = useState(false),
     [editing, setEditing] = useState<any>(),
     [saving, setSaving] = useState(false),
-    [validating, setValidating] = useState<string>();
+    [validating, setValidating] = useState<string>(),
+    [testMonitorId, setTestMonitorId] = useState<string>();
   const [form] = Form.useForm();
   const provider = Form.useWatch("provider", form);
   const create = (channel?: any) => {
@@ -94,11 +95,11 @@ export function Channels({
               >Validate Bot</Button>
             )}
             <Button
-              disabled={!monitors.length}
+              disabled={!testMonitorId}
               onClick={async () => {
                 try {
                   await api("/notifications/" + c.id + "/test", "POST", {
-                    monitor_id: monitors[0].id,
+                    monitor_id: testMonitorId,
                   });
                   report(
                     "Test notification queued. Delivery status appears in that monitor’s history.",
@@ -127,6 +128,14 @@ export function Channels({
           </Space>
         </Card>
       ))}
+      {!!channels.length && <Select
+        aria-label="Test notification monitor"
+        placeholder="Select a monitor for test notifications"
+        value={testMonitorId}
+        onChange={setTestMonitorId}
+        options={monitors.map((m) => ({ value: m.id, label: m.name || m.id }))}
+        style={{ minWidth: 260, maxWidth: "100%" }}
+      />}
       <Modal
         title={editing ? "Edit channel" : "Add channel"}
         open={open}
