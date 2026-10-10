@@ -68,3 +68,17 @@ jobs:
           node-version: 24.19.0
       - run: node --test scripts/privacy-scan.test.mjs
       - run: node scripts/privacy-scan.mjs --history=origin/master
+  docker:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.19.0
+      - name: Build production API and UI images
+        run: docker build -t changd-fusion-api:ci ./server && docker build -t changd-fusion-ui:ci ./frontend
+        timeout-minutes: 10
+      - name: Rootless resource limits and sandboxed Browser Steps smoke
+        run: node scripts/docker-smoke.mjs
+        timeout-minutes: 2
