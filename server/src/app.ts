@@ -45,6 +45,10 @@ const monitorInput = z
     ignore_text: z.array(z.string().max(500)).max(30).default([]),
     normalize_whitespace: z.boolean().default(true),
     ignore_case: z.boolean().default(false),
+    capture_mode: z
+      .enum(["viewport", "full_page", "element"])
+      .default("viewport"),
+    capture_selector: z.string().max(1000).default(""),
     visual_threshold: threshold.default("0.35"),
     pixel_threshold: z.coerce.number().min(0).max(1).default(0.1),
     interval_seconds: z.number().int().min(30).max(604800).default(300),
@@ -52,6 +56,9 @@ const monitorInput = z
     channel_ids: z.array(uuid).max(20).default([]),
   })
   .strict()
+  .refine((m) => m.capture_mode !== "element" || !!m.capture_selector.trim(), {
+    message: "Element capture requires a CSS selector",
+  })
   .refine((m) => m.text_enabled || m.visual_enabled, {
     message: "Enable at least one detection method",
   })

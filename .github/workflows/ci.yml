@@ -52,20 +52,31 @@ jobs:
         if: always()
         run: node scripts/privacy-scan.mjs
         timeout-minutes: 1
-      - name: Previous run sandbox diagnostics
-        if: always()
-        continue-on-error: true
-        timeout-minutes: 1
-        env:
-          GH_TOKEN: ${{ github.token }}
+  previous-runner-diagnostic:
+    # Temporary reproduction of the original runner; removed after diagnosis.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.19.0
+      - run: npm ci && npx playwright install --with-deps chromium
+        working-directory: server
+        timeout-minutes: 5
+      - name: Reproduce original sandbox launch with bounded cleanup
+        working-directory: server
         run: |
-          gh run view 38005493269 --repo "$GITHUB_REPOSITORY" --log > "$RUNNER_TEMP/previous-ci.log"
-          python3 - <<'PY'
-          import os
-          from pathlib import Path
-          log = Path(os.environ['RUNNER_TEMP'], 'previous-ci.log').read_text()
-          # Emit only fixed diagnostic markers. Never republish raw logs or credentials.
-          for marker in ['No usable sandbox', 'Operation not permitted', 'Failed to move to new namespace', 'AppArmor', 'Target page, context or browser has been closed', 'Running as root without --no-sandbox', 'Executable doesn\'t exist']:
-              if marker in log:
-                  print('::warning title=Previous CI diagnostic::' + marker)
-          PY
+          node --input-type=module <<'JS'
+          import { chromium } from 'playwright';
+          let browser;
+          try {
+            browser = await chromium.launch({ chromiumSandbox: true, timeout: 15000 });
+            console.log('Original runner sandbox launch passed');
+          } catch (error) {
+            console.error(error.message);
+            process.exitCode = 1;
+          } finally {
+            await browser?.close();
+          }
+          JS

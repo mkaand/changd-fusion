@@ -5,6 +5,8 @@ export const defaults = {
   visual_enabled: false,
   selector_type: "css",
   visual_threshold: "0.35",
+  capture_mode: "viewport",
+  capture_selector: "",
   pixel_threshold: 0.1,
   interval_seconds: 300,
   normalize_whitespace: true,
@@ -24,7 +26,8 @@ export function MonitorForm({
 }) {
   const kind = Form.useWatch("kind", form),
     text = Form.useWatch("text_enabled", form),
-    visual = Form.useWatch("visual_enabled", form);
+    visual = Form.useWatch("visual_enabled", form),
+    captureMode = Form.useWatch("capture_mode", form);
   return (
     <Form form={form} layout="vertical" initialValues={defaults}>
       <Form.Item name="name" label="Monitor name" rules={[{ required: true }]}>
@@ -118,6 +121,30 @@ export function MonitorForm({
       )}
       {visual && (
         <>
+          <Form.Item
+            name="capture_mode"
+            label="Screenshot capture mode"
+            extra="Fixed 1280×900 viewport, scale 1. Full-page and region captures are subject to server image limits."
+          >
+            <Select
+              options={[
+                { value: "viewport", label: "Viewport (default)" },
+                { value: "full_page", label: "Full page" },
+                { value: "element", label: "Selected element / region" },
+              ]}
+            />
+          </Form.Item>
+          {captureMode === "element" && (
+            <Form.Item
+              name="capture_selector"
+              label="Screenshot CSS selector"
+              rules={[{ required: true, whitespace: true }]}
+              extra="Must match exactly one visible element. Independent of the text extraction selector."
+            >
+              <Input placeholder="#content" maxLength={1000} />
+            </Form.Item>
+          )}
+
           <Form.Item
             name="visual_threshold"
             label="Visual alert threshold (%)"

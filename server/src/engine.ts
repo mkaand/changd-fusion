@@ -8,6 +8,7 @@ import {
 } from "./comparison.js";
 import type { Config } from "./config.js";
 import { Storage } from "./storage.js";
+import { pngDimensions } from "./image.js";
 import { publicFailure } from "./errors.js";
 export async function runMonitor(
   pool: Pool,
@@ -49,6 +50,12 @@ export async function runMonitor(
         (m.visual_enabled && !current.screenshot)
       )
         throw Error("Incomplete capture");
+      if (current.screenshot)
+        pngDimensions(current.screenshot, {
+          width: cfg.MAX_CAPTURE_WIDTH,
+          height: cfg.MAX_CAPTURE_HEIGHT,
+          pixels: cfg.MAX_CAPTURE_PIXELS,
+        });
       const before = m.baseline_id
         ? (
             await c.query(
@@ -92,7 +99,7 @@ export async function runMonitor(
           [captureId, id, current.text, image],
         );
         const event = await c.query(
-          "INSERT INTO fusion_events(monitor_id,before_id,after_id,text_changed,visual_changed,visual_percent,diff_screenshot,text_diff,status) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id",
+          "INSERT INTO fusion_events(monitor_id,before_id,after_id,text_changed,visual_changed,visual_percent,diff_screenshot,text_diff,status,dimension_changed,before_dimensions,after_dimensions) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id",
           [
             id,
             before?.id ?? null,
@@ -103,11 +110,20 @@ export async function runMonitor(
             diff,
             JSON.stringify(text.parts),
             status,
+            visual?.dimensionChanged ?? false,
+            visual ? JSON.stringify(visual.beforeDimensions) : null,
+            visual ? JSON.stringify(visual.afterDimensions) : null,
           ],
         );
         await c.query(
-          "UPDATE fusion_monitors SET latest_capture_id=$2,baseline_id=CASE WHEN $3 THEN $2 ELSE baseline_id END,last_percent=$4,last_run=now(),next_run=now()+interval_seconds*interval '1 second',failure_count=0,last_error=null WHERE id=$1",
-          [id, captureId, status !== "unchanged", visual?.percent ?? null],
+          "UPDATE fusion_monitors SET latest_capture_id=$2,baseline_id=CASE WHEN $3 THEN $2 ELSE baseline_id END,last_percent=$4,last_dimension_change=$5,last_run=now(),next_run=now()+interval_seconds*interval '1 second',failure_count=0,last_error=null WHERE id=$1",
+          [
+            id,
+            captureId,
+            status !== "unchanged",
+            visual?.percent ?? null,
+            visual?.dimensionChanged ?? false,
+          ],
         );
         if (status === "changed")
           await c.query(

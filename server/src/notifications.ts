@@ -27,6 +27,9 @@ export type EventMessage = {
   textChanged: boolean;
   visualChanged: boolean;
   percent: string | null;
+  dimensionChanged?: boolean;
+  beforeDimensions?: { width: number; height: number } | null;
+  afterDimensions?: { width: number; height: number } | null;
   textSummary: string;
   link: string;
   images: string[];
@@ -39,12 +42,21 @@ export const escapeHTML = (s: string) =>
         c
       ]!,
   );
-export const formatPercent = (value: string) => value.replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
+export const formatPercent = (value: string) =>
+  value.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+export function visualSummary(event: EventMessage) {
+  if (event.dimensionChanged) {
+    const size = (s: EventMessage["beforeDimensions"]) =>
+      s ? `${s.width}×${s.height}` : "unknown";
+    return `Screenshot dimensions changed: ${size(event.beforeDimensions)} → ${size(event.afterDimensions)}. Pixel percentage unavailable; new capture becomes baseline.`;
+  }
+  return `Visual change: ${formatPercent(event.percent ?? "0")}%`;
+}
 export function summary(event: EventMessage) {
-  return `${event.name}\n${event.textChanged ? "Text changed: " + event.textSummary + "\n" : ""}${event.visualChanged ? "Visual change: " + formatPercent(event.percent ?? "0") + "%\n" : ""}${event.link}`;
+  return `${event.name}\n${event.textChanged ? "Text changed: " + event.textSummary + "\n" : ""}${event.visualChanged ? visualSummary(event) + "\n" : ""}${event.link}`;
 }
 export function emailHTML(e: EventMessage) {
-  return `<h1>${escapeHTML(e.name)}</h1>${e.textChanged ? `<h2>Text changes</h2><pre>${escapeHTML(e.textSummary)}</pre>` : ""}${e.visualChanged ? `<p>Visual change: ${escapeHTML(formatPercent(e.percent ?? "0"))}%</p>` : ""}<p><a href="${escapeHTML(e.link)}">Open monitor</a></p>${e.images.length ? "<p>Before, after and available diff images are attached.</p>" : ""}`;
+  return `<h1>${escapeHTML(e.name)}</h1>${e.textChanged ? `<h2>Text changes</h2><pre>${escapeHTML(e.textSummary)}</pre>` : ""}${e.visualChanged ? `<p>${escapeHTML(visualSummary(e))}</p>` : ""}<p><a href="${escapeHTML(e.link)}">Open monitor</a></p>${e.images.length ? "<p>Before, after and available diff images are attached.</p>" : ""}`;
 }
 export type TelegramSend = (
   token: string,
@@ -65,6 +77,7 @@ export const telegramSend: TelegramSend = async (
         hostname: "api.telegram.org",
         path: `/bot${token}/${method}`,
         method: "POST",
+        signal: AbortSignal.timeout(15000),
         lookup: (_h, opts, cb: any) =>
           opts.all
             ? cb(null, [{ address: t.address, family: t.family }])
@@ -106,12 +119,10 @@ export async function deliver(
   } = {},
 ) {
   const files = await Promise.all(
-    event.images
-      .slice(0, 3)
-      .map(async (name, i) => ({
-        filename: ["before.png", "after.png", "diff.png"][i],
-        content: await storage.read(name),
-      })),
+    event.images.slice(0, 3).map(async (name, i) => ({
+      filename: ["before.png", "after.png", "diff.png"][i],
+      content: await storage.read(name),
+    })),
   );
   if (provider === "smtp") {
     const c = smtpSchema.parse(config);

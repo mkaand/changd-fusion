@@ -7,11 +7,13 @@ export async function dispatch(
   pool: Pool,
   cfg: Config,
   send: typeof deliver = deliver,
+  options: { stopped?: () => boolean } = {},
 ) {
   const candidates = await pool.query(
     "SELECT id FROM fusion_outbox WHERE status IN ('pending','sending') AND next_attempt<=now() ORDER BY next_attempt LIMIT 10",
   );
   for (const { id } of candidates.rows) {
+    if (options.stopped?.()) break;
     const c = await pool.connect();
     let locked = false;
     try {
@@ -23,7 +25,7 @@ export async function dispatch(
       ).rows[0].locked;
       if (!locked) continue;
       const r = await c.query(
-        `SELECT o.*,ch.provider,ch.config,ch.enabled,m.name,m.id monitor_id,e.text_changed,e.visual_changed,e.visual_percent,e.text_diff,e.diff_screenshot,
+        `SELECT o.*,ch.provider,ch.config,ch.enabled,m.name,m.id monitor_id,e.text_changed,e.visual_changed,e.visual_percent,e.dimension_changed,e.before_dimensions,e.after_dimensions,e.text_diff,e.diff_screenshot,
     b.screenshot before_image,a.screenshot after_image FROM fusion_outbox o JOIN fusion_channels ch ON ch.id=o.channel_id JOIN fusion_events e ON e.id=o.event_id
     JOIN fusion_monitors m ON m.id=e.monitor_id LEFT JOIN fusion_captures b ON b.id=e.before_id LEFT JOIN fusion_captures a ON a.id=e.after_id
     WHERE o.id=$1 AND o.status IN ('pending','sending') AND o.next_attempt<=now() AND ch.user_id=m.user_id`,
@@ -49,6 +51,9 @@ export async function dispatch(
         textChanged: row.text_changed,
         visualChanged: row.visual_changed,
         percent: row.visual_percent,
+        dimensionChanged: row.dimension_changed,
+        beforeDimensions: row.before_dimensions,
+        afterDimensions: row.after_dimensions,
         textSummary: row.text_diff
           .filter((p: any) => p.added || p.removed)
           .map((p: any) => (p.added ? "+ " : "- ") + p.value)

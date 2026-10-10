@@ -1,6 +1,7 @@
 import { chromium, type Browser } from "playwright";
 import { EgressPolicy, browserProxy, safeFetch } from "./egress.js";
 import { normalizeText } from "./comparison.js";
+import { checkDimensions, pngDimensions } from "./image.js";
 import type { Config } from "./config.js";
 export type Monitor = {
   id: string;
@@ -17,6 +18,8 @@ export type Monitor = {
   ignore_text: string[];
   normalize_whitespace: boolean;
   ignore_case: boolean;
+  capture_mode: "viewport" | "full_page" | "element";
+  capture_selector: string;
   visual_threshold: string;
   pixel_threshold: string;
   interval_seconds: number;
@@ -40,6 +43,7 @@ export async function capture(
   cfg: Config,
   policy = new EgressPolicy(),
 ): Promise<Capture> {
+  const deadline = Date.now() + cfg.CAPTURE_TIMEOUT_MS;
   await policy.target(m.url);
   if (m.kind !== "browser") {
     const response = await safeFetch(m.url, policy, cfg.CAPTURE_TIMEOUT_MS);
@@ -59,17 +63,26 @@ export async function capture(
   try {
     browser = await chromium.launch({
       headless: true,
+      timeout: Math.max(1, deadline - Date.now()),
       chromiumSandbox: true,
       executablePath: cfg.PLAYWRIGHT_EXECUTABLE_PATH,
       proxy: { server: proxy.url, bypass: "<-loopback>" },
     });
     const context = await browser.newContext({
       viewport: { width: 1280, height: 900 },
+      deviceScaleFactor: 1,
+      locale: "en-US",
+      timezoneId: "UTC",
+      reducedMotion: "reduce",
+      colorScheme: "light",
       serviceWorkers: "block",
       acceptDownloads: false,
       ignoreHTTPSErrors: false,
     });
-    timer = setTimeout(() => void context.close(), cfg.CAPTURE_TIMEOUT_MS);
+    timer = setTimeout(
+      () => void context.close().catch(() => {}),
+      Math.max(1, deadline - Date.now()),
+    );
     context.setDefaultTimeout(Math.min(cfg.CAPTURE_TIMEOUT_MS, 10000));
     await context.route("**/*", async (route) => {
       try {
@@ -101,15 +114,60 @@ export async function capture(
       : null;
     if (m.text_enabled && m.selector && (await locator.count()) === 0)
       throw Error("Extraction selector matched no elements");
-    // One page/context yields both DOM text and screenshot. Fixed viewport bounds resource use.
-    const screenshot = m.visual_enabled
-      ? await page.screenshot({
-          type: "png",
-          fullPage: false,
-          animations: "disabled",
-          mask: m.mask_selectors.map((s) => page.locator(s)),
-        })
-      : null;
+    // Freeze animations and use the same page for DOM and all screenshot modes.
+    let screenshot: Buffer | null = null;
+    if (m.visual_enabled) {
+      await page.addStyleTag({
+        content:
+          "* { animation: none !important; transition: none !important; caret-color: transparent !important; }",
+      });
+      const limits = {
+        width: cfg.MAX_CAPTURE_WIDTH,
+        height: cfg.MAX_CAPTURE_HEIGHT,
+        pixels: cfg.MAX_CAPTURE_PIXELS,
+      };
+      const options = {
+        type: "png" as const,
+        animations: "disabled" as const,
+        timeout: Math.max(1, deadline - Date.now()),
+        mask: m.mask_selectors.map((s) => page.locator(s)),
+      };
+      if (m.capture_mode === "element") {
+        const region = page.locator(m.capture_selector);
+        if ((await region.count()) !== 1)
+          throw Error("Capture selector must match exactly one element");
+        await region.scrollIntoViewIfNeeded();
+        const bounds = await region.boundingBox();
+        if (!bounds) throw Error("Capture region is not visible");
+        checkDimensions(
+          { width: Math.ceil(bounds.width), height: Math.ceil(bounds.height) },
+          limits,
+        );
+        screenshot = await region.screenshot(options);
+      } else {
+        const size =
+          m.capture_mode === "full_page"
+            ? await page.evaluate(() => ({
+                width: Math.max(
+                  document.documentElement.scrollWidth,
+                  document.body.scrollWidth,
+                  1280,
+                ),
+                height: Math.max(
+                  document.documentElement.scrollHeight,
+                  document.body.scrollHeight,
+                  900,
+                ),
+              }))
+            : { width: 1280, height: 900 };
+        checkDimensions(size, limits);
+        screenshot = await page.screenshot({
+          ...options,
+          fullPage: m.capture_mode === "full_page",
+        });
+      }
+      pngDimensions(screenshot, limits);
+    }
     if (text && text.length > 2_000_000)
       throw Error("Extracted text too large");
     return { text, screenshot };

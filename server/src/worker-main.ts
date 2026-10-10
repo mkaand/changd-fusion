@@ -8,11 +8,23 @@ const cfg = readConfig(),
   log = pino({ level: cfg.LOG_LEVEL });
 let stopped = false;
 let cleanup = 0;
-process.on("SIGTERM", () => {
+let shutdownTimer: NodeJS.Timeout | undefined;
+function stop() {
   stopped = true;
+  // Capture has its own deadline. This is a final process-level backstop for broken drivers/providers.
+  shutdownTimer ??= setTimeout(() => {
+    log.error(
+      { code: "worker_shutdown_deadline" },
+      "Graceful shutdown exceeded deadline",
+    );
+    process.exit(1);
+  }, cfg.CAPTURE_TIMEOUT_MS + 30000).unref();
+}
+process.on("SIGTERM", () => {
+  stop();
 });
 process.on("SIGINT", () => {
-  stopped = true;
+  stop();
 });
 try {
   while (!stopped) {
@@ -29,4 +41,5 @@ try {
   }
 } finally {
   await pool.end();
+  if (shutdownTimer) clearTimeout(shutdownTimer);
 }

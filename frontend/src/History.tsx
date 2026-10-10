@@ -14,17 +14,61 @@ import { api, percent } from "./api";
 export function ImageComparison({
   before,
   after,
+  dimensionChanged = false,
 }: {
   before: string;
   after: string;
+  dimensionChanged?: boolean;
 }) {
-  const [position, setPosition] = useState(50);
+  const [position, setPosition] = useState(50),
+    [failed, setFailed] = useState(false);
+  const imageProps = {
+    loading: "lazy" as const,
+    decoding: "async" as const,
+    onError: () => setFailed(true),
+  };
   const url = (name: string) => "/api/v1/screenshots/" + name;
+  if (dimensionChanged)
+    return (
+      <div className="dimension-images">
+        <figure>
+          <figcaption>Before</figcaption>
+          <img
+            {...imageProps}
+            className="capture"
+            src={url(before)}
+            alt="Before capture"
+          />
+        </figure>
+        <figure>
+          <figcaption>After</figcaption>
+          <img
+            {...imageProps}
+            className="capture"
+            src={url(after)}
+            alt="After capture"
+          />
+        </figure>
+        {failed && (
+          <Alert
+            title="An image is unavailable. Refresh history to try again."
+            type="warning"
+          />
+        )}
+      </div>
+    );
   return (
     <>
+      {failed && (
+        <Alert
+          title="An image is unavailable. Refresh history to try again."
+          type="warning"
+        />
+      )}
       <div className="compare">
-        <img src={url(before)} alt="Before capture" />
+        <img {...imageProps} src={url(before)} alt="Before capture" />
         <img
+          {...imageProps}
           className="after"
           style={{ clipPath: `inset(0 ${100 - position}% 0 0)` }}
           src={url(after)}
@@ -33,7 +77,10 @@ export function ImageComparison({
         <div className="divider" style={{ left: position + "%" }} />
       </div>
       <Slider
-        aria-label="Before / After comparison"
+        ariaLabelForHandle="Before / After comparison"
+        ariaValueTextFormatterForHandle={(value) =>
+          `${value}% after, ${100 - value}% before`
+        }
         value={position}
         onChange={setPosition}
       />
@@ -91,7 +138,9 @@ export function History({ id, refresh }: { id: string; refresh: number }) {
       </Space>
       {error && <Alert title={error} type="error" />}
       {loading ? (
-        <Spin />
+        <div role="status" aria-label="Loading monitoring history">
+          <Spin />
+        </div>
       ) : events.length === 0 ? (
         <Empty description="No captures yet. The worker will start the baseline capture." />
       ) : (
@@ -115,6 +164,14 @@ export function History({ id, refresh }: { id: string; refresh: number }) {
               )}
               {e.text_changed && <Tag color="blue">Text changed</Tag>}
             </Space>
+            {e.dimension_changed && (
+              <Alert
+                showIcon
+                type="info"
+                title="Screenshot dimensions changed"
+                description={`${e.before_dimensions?.width}×${e.before_dimensions?.height} → ${e.after_dimensions?.width}×${e.after_dimensions?.height}. Pixel percentage is unavailable. The new capture becomes the baseline.`}
+              />
+            )}
             {e.error && <Alert title={e.error} type="error" />}
             {e.text_diff?.length > 0 && (
               <pre className="text-diff">
@@ -130,11 +187,17 @@ export function History({ id, refresh }: { id: string; refresh: number }) {
               </pre>
             )}
             {e.before_image && e.after_image ? (
-              <ImageComparison before={e.before_image} after={e.after_image} />
+              <ImageComparison
+                before={e.before_image}
+                after={e.after_image}
+                dimensionChanged={e.dimension_changed}
+              />
             ) : (
               e.after_image && (
                 <img
                   className="capture"
+                  loading="lazy"
+                  decoding="async"
                   src={"/api/v1/screenshots/" + e.after_image}
                   alt="Baseline capture"
                 />
@@ -145,6 +208,8 @@ export function History({ id, refresh }: { id: string; refresh: number }) {
                 <summary>Difference image</summary>
                 <img
                   className="capture"
+                  loading="lazy"
+                  decoding="async"
                   src={"/api/v1/screenshots/" + e.diff_screenshot}
                   alt="Visual differences"
                 />

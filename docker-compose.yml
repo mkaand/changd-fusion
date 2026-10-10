@@ -12,6 +12,11 @@ x-app: &app
     REGISTRATION_ENABLED: ${REGISTRATION_ENABLED:-false}
     HISTORY_DAYS: ${HISTORY_DAYS:-90}
     DATA_DIR: /data
+    CAPTURE_TIMEOUT_MS: ${CAPTURE_TIMEOUT_MS:-30000}
+    CHROMIUM_CONCURRENCY: ${CHROMIUM_CONCURRENCY:-1}
+    MAX_CAPTURE_WIDTH: ${MAX_CAPTURE_WIDTH:-4096}
+    MAX_CAPTURE_HEIGHT: ${MAX_CAPTURE_HEIGHT:-8192}
+    MAX_CAPTURE_PIXELS: ${MAX_CAPTURE_PIXELS:-8000000}
   volumes:
     - captures:/data
   networks: [fusion]
@@ -35,14 +40,20 @@ services:
     <<: *app
     command: ["node", "dist/migrate.js"]
     depends_on:
-      db: {condition: service_healthy}
+      db: { condition: service_healthy }
   api:
     <<: *app
     command: ["node", "dist/index.js"]
     depends_on:
-      migrate: {condition: service_completed_successfully}
+      migrate: { condition: service_completed_successfully }
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8000/api/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:8000/api/v1/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
       interval: 10s
       timeout: 5s
       retries: 12
@@ -51,18 +62,21 @@ services:
     <<: *app
     command: ["node", "dist/worker-main.js"]
     depends_on:
-      migrate: {condition: service_completed_successfully}
+      migrate: { condition: service_completed_successfully }
     # Chromium runs as a non-root user with its sandbox enabled. Never use --no-sandbox.
     # Runtime must allow unprivileged user namespaces; see docs/security.md.
     security_opt: ["seccomp=./docker/chromium-seccomp.json"]
-    shm_size: 256mb
+    cpus: ${WORKER_CPUS:-1.0}
+    mem_limit: ${WORKER_MEMORY:-1g}
+    pids_limit: ${WORKER_PIDS:-256}
+    shm_size: ${WORKER_SHM:-256mb}
     restart: unless-stopped
-    stop_grace_period: 90s
+    stop_grace_period: ${WORKER_STOP_GRACE:-180s}
   ui:
     build: ./frontend
     ports: ["127.0.0.1:3000:8080"]
     depends_on:
-      api: {condition: service_healthy}
+      api: { condition: service_healthy }
     restart: unless-stopped
     networks: [fusion]
 volumes:

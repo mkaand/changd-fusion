@@ -37,8 +37,8 @@ let pool: Pool,
   channelId: string,
   root: string;
 const password = "synthetic-fixture-password";
-function image(changed = 0) {
-  const p = new PNG({ width: 100, height: 100 });
+function image(changed = 0, width = 100, height = 100) {
+  const p = new PNG({ width, height });
   p.data.fill(255);
   for (let i = 0; i < changed; i++) {
     p.data[i * 4] = p.data[i * 4 + 1] = p.data[i * 4 + 2] = 0;
@@ -96,7 +96,7 @@ test("fresh migration is repeatable and decimal columns are NUMERIC", async () =
   assert.equal(r.rows[0].data_type, "numeric");
   assert.equal(
     (await pool.query("SELECT count(*) FROM fusion_migrations")).rows[0].count,
-    "1",
+    "2",
   );
 });
 test("JWT, admin checks, CSRF, disabled registration and removed scheduler endpoint", async () => {
@@ -336,21 +336,21 @@ test("same-monitor concurrency is rejected and configuration mutations cannot ra
     },
   });
   try {
-  await started;
-  assert.equal(
-    await runMonitor(pool, cfg, monitor.id, {
-      force: true,
-      capture: async () => {
-        throw Error("must not execute");
-      },
-    }),
-    false,
-  );
-  await ownerAgent
-    .post("/api/v1/jobs/" + monitor.id + "/reset")
-    .set("X-Fusion-Request", "1")
-    .send({})
-    .expect(409);
+    await started;
+    assert.equal(
+      await runMonitor(pool, cfg, monitor.id, {
+        force: true,
+        capture: async () => {
+          throw Error("must not execute");
+        },
+      }),
+      false,
+    );
+    await ownerAgent
+      .post("/api/v1/jobs/" + monitor.id + "/reset")
+      .set("X-Fusion-Request", "1")
+      .send({})
+      .expect(409);
   } finally {
     release();
     await active;
@@ -375,6 +375,15 @@ test("outbox retries and restart status preserve event uniqueness", async () => 
     [r.rows[0].id],
   );
   let deliveries = 0;
+  await dispatch(
+    pool,
+    cfg,
+    async () => {
+      deliveries++;
+    },
+    { stopped: () => true },
+  );
+  assert.equal(deliveries, 0);
   await dispatch(pool, cfg, async () => {
     deliveries++;
   });
@@ -590,7 +599,11 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     });
     const page = await browser.newPage();
     const errors: string[] = [];
-    page.on("pageerror", (e) => errors.push(e.message));
+    page.on("pageerror", (e) => {
+      errors.push(e.message);
+      console.error("UI fixture runtime error:", e.message);
+    });
+    page.setDefaultTimeout(8000);
     await page.goto(origin);
     await page.getByLabel("Email", { exact: true }).fill("owner@example.com");
     await page.getByLabel("Password", { exact: true }).fill(password);
@@ -669,5 +682,269 @@ test("administrator authorization is database-backed; token role claims are igno
     await pool.query("UPDATE users SET user_type=0 WHERE user_id=$1", [
       me.user_id,
     ]);
+  }
+});
+
+test("dimension events persist explicit sizes, preserve both images, advance baseline once and notify without fake percentages", async () => {
+  const m = (
+    await ownerAgent
+      .post("/api/v1/jobs")
+      .set("X-Fusion-Request", "1")
+      .send({
+        name: "Dimension fixture",
+        url: "https://example.com",
+        text_enabled: true,
+        visual_enabled: true,
+        visual_threshold: "100",
+        channel_ids: [channelId],
+      })
+      .expect(201)
+  ).body;
+  const take = (width: number, text: string) => async () => ({
+    text,
+    screenshot: image(0, width, 100),
+  });
+  await runMonitor(pool, cfg, m.id, {
+    force: true,
+    capture: take(100, "before"),
+  });
+  await runMonitor(pool, cfg, m.id, {
+    force: true,
+    capture: take(90, "after"),
+  });
+  const h = (await ownerAgent.get(`/api/v1/jobs/${m.id}/history`).expect(200))
+    .body;
+  const changed = h.find((e: any) => e.status === "changed");
+  assert.equal(changed.dimension_changed, true);
+  assert.equal(changed.visual_percent, null);
+  assert.equal(changed.visual_changed, true);
+  assert.equal(changed.text_changed, true);
+  assert.equal(changed.diff_screenshot, null);
+  assert.deepEqual(changed.before_dimensions, { width: 100, height: 100 });
+  assert.deepEqual(changed.after_dimensions, { width: 90, height: 100 });
+  await ownerAgent
+    .get("/api/v1/screenshots/" + changed.before_image)
+    .expect(200);
+  await ownerAgent
+    .get("/api/v1/screenshots/" + changed.after_image)
+    .expect(200);
+  const baseline = (await ownerAgent.get(`/api/v1/jobs/${m.id}`)).body
+    .baseline_id;
+  const delivered: any[] = [];
+  await dispatch(pool, cfg, async (_p, _c, e) => {
+    if (e.monitorId === m.id) delivered.push(e);
+  });
+  assert.equal(delivered.length, 1);
+  const { summary, emailHTML } = await import("../../src/notifications.js");
+  assert.match(summary(delivered[0]), /100×100 → 90×100/);
+  assert.match(emailHTML(delivered[0]), /Pixel percentage unavailable/);
+  assert.ok(!summary(delivered[0]).includes("100%"));
+  await runMonitor(pool, cfg, m.id, {
+    force: true,
+    capture: take(90, "after"),
+  });
+  assert.equal(
+    (await ownerAgent.get(`/api/v1/jobs/${m.id}`)).body.baseline_id,
+    baseline,
+  );
+  assert.equal(
+    (
+      await pool.query("SELECT count(*) FROM fusion_outbox WHERE event_id=$1", [
+        changed.id,
+      ])
+    ).rows[0].count,
+    "1",
+  );
+});
+
+test("capture modes use one browser page for text and image; limits, selector errors and timeouts preserve baseline", async () => {
+  let slowHits = 0;
+  const fixture = http.createServer((req, res) => {
+    if (req.url === "/slow") {
+      slowHits++;
+      return;
+    }
+    res.setHeader("Content-Type", "text/html");
+    res.end(
+      '<style>body{margin:0}#region{width:320px;height:240px;background:#fff}#tall{height:1800px}</style><main id="region">Hybrid region</main><div id="tall"></div>',
+    );
+  });
+  await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
+  const port = (fixture.address() as AddressInfo).port;
+  const policy = new EgressPolicy(
+    async () => [{ address: "127.0.0.1", family: 4 }],
+    (ip) => ip === "127.0.0.1",
+    new Set([port]),
+  );
+  const base = {
+    ...monitor,
+    url: `http://fixture.test:${port}`,
+    text_enabled: true,
+    visual_enabled: true,
+    selector: "#region",
+    selector_type: "css",
+    ignore_selectors: [],
+    mask_selectors: [],
+    ignore_text: [],
+    normalize_whitespace: true,
+    ignore_case: false,
+  };
+  try {
+    for (const mode of ["viewport", "full_page", "element"] as const) {
+      const result = await capture(
+        { ...base, capture_mode: mode, capture_selector: "#region" },
+        cfg,
+        policy,
+      );
+      assert.equal(result.text, "Hybrid region");
+      const png = PNG.sync.read(result.screenshot!);
+      assert.equal(png.width, mode === "element" ? 320 : 1280);
+      assert.equal(
+        png.height,
+        mode === "element" ? 240 : mode === "full_page" ? 2040 : 900,
+      );
+    }
+    await assert.rejects(
+      capture(
+        { ...base, capture_mode: "element", capture_selector: ".missing" },
+        cfg,
+        policy,
+      ),
+      /exactly one element/,
+    );
+    const before = (await ownerAgent.get(`/api/v1/jobs/${monitor.id}`)).body;
+    await runMonitor(pool, cfg, monitor.id, {
+      force: true,
+      capture: async () =>
+        capture(
+          { ...base, capture_mode: "full_page" },
+          { ...cfg, MAX_CAPTURE_PIXELS: 1280 * 900 },
+          policy,
+        ),
+    });
+    const after = (await ownerAgent.get(`/api/v1/jobs/${monitor.id}`)).body;
+    assert.equal(after.baseline_id, before.baseline_id);
+    assert.equal(after.latest_capture_id, before.latest_capture_id);
+    assert.match(after.last_error, /image dimension\/pixel limits/);
+    const started = Date.now();
+    await assert.rejects(
+      capture(
+        { ...base, url: `http://fixture.test:${port}/slow` },
+        { ...cfg, CAPTURE_TIMEOUT_MS: 1500 },
+        policy,
+      ),
+    );
+    assert.ok(
+      Date.now() - started < 10000,
+      "Timeout must close Chromium and its proxy promptly",
+    );
+    assert.equal(slowHits, 1);
+    await assert.rejects(
+      capture(
+        base,
+        { ...cfg, PLAYWRIGHT_EXECUTABLE_PATH: "/missing-synthetic-chromium" },
+        policy,
+      ),
+    );
+  } finally {
+    await closeServer(fixture);
+  }
+  await ownerAgent
+    .post("/api/v1/jobs")
+    .set("X-Fusion-Request", "1")
+    .send({
+      name: "Missing selector",
+      url: "https://example.com",
+      visual_enabled: true,
+      capture_mode: "element",
+    })
+    .expect(400);
+  const m = (
+    await ownerAgent
+      .post("/api/v1/jobs")
+      .set("X-Fusion-Request", "1")
+      .send({
+        name: "Region configuration",
+        url: "https://example.com",
+        visual_enabled: true,
+        capture_mode: "element",
+        capture_selector: "#region",
+      })
+      .expect(201)
+  ).body;
+  assert.equal(m.capture_mode, "element");
+  await ownerAgent
+    .delete(`/api/v1/jobs/${m.id}`)
+    .set("X-Fusion-Request", "1")
+    .expect(200);
+});
+
+test("worker concurrency follows configured browser limit and stopping prevents new captures", async () => {
+  const ids: string[] = [];
+  try {
+    for (let i = 0; i < 3; i++) {
+      ids.push(
+        (
+          await ownerAgent
+            .post("/api/v1/jobs")
+            .set("X-Fusion-Request", "1")
+            .send({
+              name: "Concurrency fixture " + i,
+              url: "https://example.com",
+              kind: "html",
+            })
+            .expect(201)
+        ).body.id,
+      );
+    }
+    for (const limit of [1, 2]) {
+      await pool.query(
+        "UPDATE fusion_monitors SET next_run=now() WHERE id=ANY($1::uuid[])",
+        [ids],
+      );
+      let active = 0,
+        max = 0,
+        calls = 0;
+      await workerCycle(
+        pool,
+        { ...cfg, CHROMIUM_CONCURRENCY: limit },
+        {
+          capture: async () => {
+            active++;
+            calls++;
+            max = Math.max(max, active);
+            try {
+              await new Promise((resolve) => setTimeout(resolve, 20));
+              return { text: "fixture", screenshot: null };
+            } finally {
+              active--;
+            }
+          },
+          send: async () => {},
+        },
+      );
+      assert.equal(max, limit);
+      assert.equal(calls, 3);
+    }
+    let calls = 0;
+    await pool.query(
+      "UPDATE fusion_monitors SET next_run=now() WHERE id=ANY($1::uuid[])",
+      [ids],
+    );
+    await workerCycle(pool, cfg, {
+      stopped: () => true,
+      capture: async () => {
+        calls++;
+        return { text: "", screenshot: null };
+      },
+      send: async () => {},
+    });
+    assert.equal(calls, 0);
+  } finally {
+    for (const id of ids)
+      await ownerAgent
+        .delete(`/api/v1/jobs/${id}`)
+        .set("X-Fusion-Request", "1")
+        .expect(200);
   }
 });

@@ -144,9 +144,11 @@ export async function safeFetch(
 // DNS validation occurs at connection time and sockets connect to the validated IP.
 export async function browserProxy(policy: EgressPolicy) {
   const sockets = new Set<net.Socket>();
+  let closed = false;
   const server = http.createServer(async (req, res) => {
     try {
       const t = await policy.target(req.url ?? "");
+      if (closed || res.destroyed) return;
       if (t.url.protocol !== "http:") throw Error("Invalid proxy request");
       const upstream = http.request(
         {
@@ -180,6 +182,7 @@ export async function browserProxy(policy: EgressPolicy) {
   server.on("connect", async (req, client, head) => {
     try {
       const t = await policy.target("https://" + req.url);
+      if (closed || client.destroyed) return;
       const upstream = net.connect({
         host: t.address,
         port: Number(t.url.port || 443),
@@ -208,6 +211,7 @@ export async function browserProxy(policy: EgressPolicy) {
   return {
     url: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
     close: async () => {
+      closed = true;
       for (const s of sockets) s.destroy();
       await new Promise<void>((resolve) => server.close(() => resolve()));
     },

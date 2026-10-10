@@ -16,9 +16,14 @@ export async function workerCycle(
   const due = await pool.query(
     "SELECT id FROM fusion_monitors WHERE enabled AND next_run<=now() ORDER BY next_run LIMIT 5",
   );
-  for (const { id } of due.rows) {
-    if (options.stopped?.()) break;
-    await runMonitor(pool, cfg, id, { capture: options.capture });
-  }
-  await dispatch(pool, cfg, options.send);
+  let next = 0;
+  await Promise.all(
+    Array.from({ length: cfg.CHROMIUM_CONCURRENCY }, async () => {
+      while (next < due.rows.length && !options.stopped?.()) {
+        const { id } = due.rows[next++];
+        await runMonitor(pool, cfg, id, { capture: options.capture });
+      }
+    }),
+  );
+  await dispatch(pool, cfg, options.send, { stopped: options.stopped });
 }

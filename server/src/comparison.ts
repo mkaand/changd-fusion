@@ -2,6 +2,7 @@ import { Decimal } from "decimal.js";
 import { PNG } from "pngjs";
 import pixelmatch from "pixelmatch";
 import { diffLines } from "diff";
+import { pngDimensions } from "./image.js";
 export function exceedsThreshold(percent: string, threshold: string): boolean {
   // Strictly greater: zero never changes, equality does not alert. No pre-evaluation rounding.
   return new Decimal(percent).greaterThan(threshold);
@@ -12,14 +13,19 @@ export function compareVisual(
   threshold: string,
   pixelThreshold: number,
 ) {
+  const beforeDimensions = pngDimensions(before),
+    afterDimensions = pngDimensions(after);
   const a = PNG.sync.read(before),
     b = PNG.sync.read(after);
   if (a.width * a.height > 16_000_000 || b.width * b.height > 16_000_000)
     throw Error("Image exceeds pixel limit");
   if (a.width !== b.width || a.height !== b.height)
     return {
-      percent: "100",
-      changed: exceedsThreshold("100", threshold),
+      percent: null,
+      // A structural event is independent of the percentage threshold; no pixel measurement exists.
+      changed: true,
+      beforeDimensions,
+      afterDimensions,
       dimensionChanged: true,
       diff: null,
     };
@@ -33,6 +39,8 @@ export function compareVisual(
     percent: precise.toFixed(10),
     changed: precise.greaterThan(threshold),
     dimensionChanged: false,
+    beforeDimensions,
+    afterDimensions,
     diff: PNG.sync.write(diff),
   };
 }

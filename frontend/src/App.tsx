@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, lazy, Suspense } from "react";
 import {
   Layout,
   Menu,
@@ -24,8 +24,12 @@ import {
 import { api, percent } from "./api";
 import { Login } from "./Login";
 import { MonitorForm, defaults } from "./MonitorForm";
-import { History } from "./History";
-import { Channels } from "./Channels";
+const History = lazy(() =>
+  import("./History").then((m) => ({ default: m.History })),
+);
+const Channels = lazy(() =>
+  import("./Channels").then((m) => ({ default: m.Channels })),
+);
 import logo from "./assets/logo.svg";
 const { Header, Sider, Content } = Layout;
 export default function FusionApp() {
@@ -178,6 +182,7 @@ export default function FusionApp() {
           collapsed={collapsed}
           onCollapse={setCollapsed}
           breakpoint="lg"
+          collapsedWidth={64}
           theme="light"
         >
           <Menu
@@ -195,164 +200,209 @@ export default function FusionApp() {
         </Sider>
         <Content className="content">
           {error && <Alert title={error} type="error" showIcon />}
-          {page === "notifications" ? (
-            <Channels
-              channels={channels}
-              monitors={monitors}
-              reload={() => void reload()}
-              report={(s) => void message.info(s)}
-            />
-          ) : page === "detail" && current ? (
-            <>
-              <Button onClick={() => navigate("jobs")}>← Monitors</Button>
-              <Space className="page-header" wrap>
-                <Typography.Title level={2}>{current.name}</Typography.Title>
-                <Button onClick={() => void edit(current)}>Edit</Button>
-                <Button
-                  type="primary"
-                  onClick={() => void action(current.id, "run")}
-                >
-                  Check now
-                </Button>
-                <Button onClick={() => void action(current.id, "reset")}>
-                  Reset baseline
-                </Button>
-              </Space>
-              <Card>
-                <Space wrap>
-                  <Tag
-                    color={
-                      current.last_error
-                        ? "red"
-                        : current.enabled
-                          ? "green"
-                          : "default"
-                    }
+          <Suspense
+            fallback={
+              <div role="status" aria-label="Loading page">
+                <Spin />
+              </div>
+            }
+          >
+            {page === "notifications" ? (
+              <Channels
+                channels={channels}
+                monitors={monitors}
+                reload={() => void reload()}
+                report={(s) => void message.info(s)}
+              />
+            ) : page === "detail" && current ? (
+              <>
+                <Button onClick={() => navigate("jobs")}>← Monitors</Button>
+                <Space className="page-header" wrap>
+                  <Typography.Title level={2}>{current.name}</Typography.Title>
+                  <Button onClick={() => void edit(current)}>Edit</Button>
+                  <Button
+                    type="primary"
+                    onClick={() => void action(current.id, "run")}
                   >
-                    {current.last_error
-                      ? "Retrying"
-                      : current.enabled
-                        ? "Active"
-                        : "Paused"}
-                  </Tag>
-                  {current.text_enabled && <Tag>Text</Tag>}
-                  {current.visual_enabled && (
-                    <Tag>Visual: {percent(current.last_percent)}</Tag>
-                  )}
-                  <span>Every {current.interval_seconds}s</span>
+                    Check now
+                  </Button>
+                  <Button onClick={() => void action(current.id, "reset")}>
+                    Reset baseline
+                  </Button>
                 </Space>
-                <Typography.Paragraph>{current.url}</Typography.Paragraph>
-                {current.last_error && (
-                  <Alert title={current.last_error} type="error" />
-                )}
-                <Typography.Text type="secondary">
-                  Baseline advances only after a combined change event. Failed
-                  captures preserve the baseline.
-                </Typography.Text>
-              </Card>
-              <History id={current.id} refresh={refresh} />
-            </>
-          ) : (
-            <>
-              <Space className="page-header" wrap>
-                <Typography.Title level={2}>Monitors</Typography.Title>
-                <Button
-                  type="primary"
-                  icon={<PlusOutlined />}
-                  onClick={() => void edit()}
+                <Card>
+                  <Space wrap>
+                    <Tag
+                      color={
+                        current.last_error
+                          ? "red"
+                          : current.enabled
+                            ? "green"
+                            : "default"
+                      }
+                    >
+                      {current.last_error
+                        ? "Retrying"
+                        : current.enabled
+                          ? "Active"
+                          : "Paused"}
+                    </Tag>
+                    {current.text_enabled && <Tag>Text</Tag>}
+                    {current.visual_enabled && (
+                      <Tag>
+                        {current.last_dimension_change
+                          ? "Dimensions changed"
+                          : "Visual: " + percent(current.last_percent)}
+                      </Tag>
+                    )}
+                    {current.visual_enabled && (
+                      <Tag>{current.capture_mode.replace("_", " ")}</Tag>
+                    )}
+                    <span>Every {current.interval_seconds}s</span>
+                  </Space>
+                  <Typography.Paragraph>{current.url}</Typography.Paragraph>
+                  {current.last_error && (
+                    <Alert title={current.last_error} type="error" />
+                  )}
+                  <Typography.Text type="secondary">
+                    Baseline advances only after a combined change event. Failed
+                    captures preserve the baseline.
+                  </Typography.Text>
+                </Card>
+                <History id={current.id} refresh={refresh} />
+              </>
+            ) : (
+              <>
+                <Space className="page-header" wrap>
+                  <Typography.Title level={2}>Monitors</Typography.Title>
+                  <Button
+                    type="primary"
+                    icon={<PlusOutlined />}
+                    onClick={() => void edit()}
+                  >
+                    New monitor
+                  </Button>
+                  <Button onClick={() => void reload()}>Refresh</Button>
+                </Space>
+                <div
+                  className="dashboard-summary"
+                  aria-label="Monitor overview"
                 >
-                  New monitor
-                </Button>
-                <Button onClick={() => void reload()}>Refresh</Button>
-              </Space>
-              <Card>
-                <Table
-                  rowKey="id"
-                  loading={loading}
-                  dataSource={monitors}
-                  scroll={{ x: 760 }}
-                  locale={{
-                    emptyText: (
-                      <Empty description="Create a monitor to track text and visual changes together." />
-                    ),
-                  }}
-                  columns={[
-                    {
-                      title: "Monitor",
-                      dataIndex: "name",
-                      render: (name: string, m: any) => (
-                        <Button type="link" onClick={() => void detail(m.id)}>
-                          {name}
-                        </Button>
+                  <Card size="small">
+                    <strong>{monitors.length}</strong> monitors
+                  </Card>
+                  <Card size="small">
+                    <strong>
+                      {
+                        monitors.filter((m) => m.enabled && !m.last_error)
+                          .length
+                      }
+                    </strong>{" "}
+                    active
+                  </Card>
+                  <Card size="small">
+                    <strong>
+                      {monitors.filter((m) => m.last_error).length}
+                    </strong>{" "}
+                    retrying
+                  </Card>
+                </div>
+                <Card>
+                  <Table
+                    rowKey="id"
+                    loading={loading}
+                    dataSource={monitors}
+                    scroll={{ x: 660 }}
+                    pagination={{ pageSize: 10, hideOnSinglePage: true }}
+                    locale={{
+                      emptyText: (
+                        <Empty description="Create a monitor to track text and visual changes together." />
                       ),
-                    },
-                    {
-                      title: "Detection",
-                      render: (_, m: any) => (
-                        <Space>
-                          {m.text_enabled && <Tag>Text</Tag>}
-                          {m.visual_enabled && <Tag color="blue">Visual</Tag>}
-                          {m.kind !== "browser" && <Tag>{m.kind}</Tag>}
-                        </Space>
-                      ),
-                    },
-                    {
-                      title: "Visual change",
-                      dataIndex: "last_percent",
-                      render: percent,
-                    },
-                    {
-                      title: "Status",
-                      render: (_, m: any) => (
-                        <Tag
-                          color={
-                            m.last_error
-                              ? "red"
-                              : m.enabled
-                                ? "green"
-                                : "default"
-                          }
-                        >
-                          {m.last_error
-                            ? "Retrying"
-                            : m.enabled
-                              ? "Active"
-                              : "Paused"}
-                        </Tag>
-                      ),
-                    },
-                    {
-                      title: "Next check",
-                      dataIndex: "next_run",
-                      render: (s: string) => new Date(s).toLocaleString(),
-                    },
-                    {
-                      title: "Actions",
-                      render: (_, m: any) => (
-                        <Space>
-                          <Button onClick={() => void edit(m)}>Edit</Button>
-                          <Button
-                            danger
-                            onClick={() =>
-                              Modal.confirm({
-                                title: "Delete monitor and history?",
-                                onOk: async () => {
-                                  await api("/jobs/" + m.id, "DELETE");
-                                  await reload();
-                                },
-                              })
+                    }}
+                    columns={[
+                      {
+                        title: "Monitor",
+                        dataIndex: "name",
+                        render: (name: string, m: any) => (
+                          <Button type="link" onClick={() => void detail(m.id)}>
+                            {name}
+                          </Button>
+                        ),
+                      },
+                      {
+                        title: "Detection",
+                        render: (_, m: any) => (
+                          <Space>
+                            {m.text_enabled && <Tag>Text</Tag>}
+                            {m.visual_enabled && <Tag color="blue">Visual</Tag>}
+                            {m.kind !== "browser" && <Tag>{m.kind}</Tag>}
+                          </Space>
+                        ),
+                      },
+                      {
+                        title: "Visual change",
+                        dataIndex: "last_percent",
+                        render: (v: string, m: any) =>
+                          m.last_dimension_change ? (
+                            <Tag>Dimensions changed</Tag>
+                          ) : (
+                            percent(v)
+                          ),
+                      },
+                      {
+                        title: "Status",
+                        render: (_, m: any) => (
+                          <Tag
+                            color={
+                              m.last_error
+                                ? "red"
+                                : m.enabled
+                                  ? "green"
+                                  : "default"
                             }
                           >
-                            Delete
-                          </Button>
-                        </Space>
-                      ),
-                    },
-                  ]}
-                />
-              </Card>
-            </>
-          )}
+                            {m.last_error
+                              ? "Retrying"
+                              : m.enabled
+                                ? "Active"
+                                : "Paused"}
+                          </Tag>
+                        ),
+                      },
+                      {
+                        responsive: ["lg"],
+                        title: "Next check",
+                        dataIndex: "next_run",
+                        render: (s: string) => new Date(s).toLocaleString(),
+                      },
+                      {
+                        title: "Actions",
+                        render: (_, m: any) => (
+                          <Space>
+                            <Button onClick={() => void edit(m)}>Edit</Button>
+                            <Button
+                              danger
+                              onClick={() =>
+                                Modal.confirm({
+                                  title: "Delete monitor and history?",
+                                  onOk: async () => {
+                                    await api("/jobs/" + m.id, "DELETE");
+                                    await reload();
+                                  },
+                                })
+                              }
+                            >
+                              Delete
+                            </Button>
+                          </Space>
+                        ),
+                      },
+                    ]}
+                  />
+                </Card>
+              </>
+            )}
+          </Suspense>
         </Content>
       </Layout>
       <Modal
