@@ -5,11 +5,14 @@ export async function api<T = any>(
 ): Promise<T> {
   const response = await fetch("/api/v1" + path, {
     method,
+    signal: AbortSignal.timeout(15000),
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", "X-Fusion-Request": "1" },
     body: data === undefined ? undefined : JSON.stringify(data),
   });
   const result = await response.json();
+  if (response.status === 401 && result.error === "Authentication required")
+    window.dispatchEvent(new Event("fusion-session-expired"));
   if (!response.ok) throw new Error(result.error ?? "Request failed");
   return result;
 }

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState, lazy, Suspense } from "react";
 import {
   Layout,
+  Input,
+  Select,
   Menu,
   Button,
   Card,
@@ -22,6 +24,8 @@ import {
   PlusOutlined,
 } from "@ant-design/icons";
 import { api, percent } from "./api";
+import { monitorState, monitorStates, filterMonitors } from "./monitor-status";
+import { useThemeAdapter } from "./theme";
 import { Login } from "./Login";
 import { MonitorForm, defaults } from "./MonitorForm";
 const History = lazy(() =>
@@ -30,9 +34,21 @@ const History = lazy(() =>
 const Channels = lazy(() =>
   import("./Channels").then((m) => ({ default: m.Channels })),
 );
+const PrivateValues = lazy(() =>
+  import("./PrivateValues").then((m) => ({ default: m.PrivateValues })),
+);
+const Deliveries = lazy(() =>
+  import("./Deliveries").then((m) => ({ default: m.Deliveries })),
+);
+const AccountSecurity = lazy(() =>
+  import("./AccountSecurity").then((m) => ({ default: m.AccountSecurity })),
+);
 import logo from "./assets/logo.svg";
 const { Header, Sider, Content } = Layout;
 export default function FusionApp() {
+  const themeAdapter = useThemeAdapter();
+  const [query, setQuery] = useState(""),
+    [stateFilter, setStateFilter] = useState<string>();
   const { message } = AntApp.useApp();
   const [user, setUser] = useState<any>(),
     [authLoading, setAuthLoading] = useState(true),
@@ -48,6 +64,16 @@ export default function FusionApp() {
     [editing, setEditing] = useState<any>(),
     [saving, setSaving] = useState(false);
   const [form] = Form.useForm();
+  useEffect(() => {
+    const expire = () => {
+      setUser(null);
+      setSelected(undefined);
+      setMonitors([]);
+      setChannels([]);
+    };
+    window.addEventListener("fusion-session-expired", expire);
+    return () => window.removeEventListener("fusion-session-expired", expire);
+  }, []);
   const getUser = useCallback(async () => {
     try {
       setUser(await api("/users/me"));
@@ -165,11 +191,18 @@ export default function FusionApp() {
         </a>
         <Space>
           <span className="user-name">{user.firstname || "Account"}</span>
+          <Suspense>
+            <AccountSecurity signedOut={() => setUser(null)} />
+          </Suspense>
           <Button
             icon={<LogoutOutlined />}
             onClick={async () => {
-              await api("/logout", "POST", {});
-              setUser(null);
+              try {
+                await api("/logout", "POST", {});
+                setUser(null);
+              } catch (e) {
+                void message.error((e as Error).message);
+              }
             }}
           >
             Sign out
@@ -183,7 +216,7 @@ export default function FusionApp() {
           onCollapse={setCollapsed}
           breakpoint="lg"
           collapsedWidth={64}
-          theme="light"
+          theme={themeAdapter.resolved}
         >
           <Menu
             selectedKeys={[page === "detail" ? "jobs" : page]}
@@ -199,7 +232,14 @@ export default function FusionApp() {
           />
         </Sider>
         <Content className="content">
-          {error && <Alert title={error} type="error" showIcon />}
+          {error && (
+            <Alert
+              title={error}
+              type="error"
+              showIcon
+              action={<Button onClick={() => void reload()}>Retry</Button>}
+            />
+          )}
           <Suspense
             fallback={
               <div role="status" aria-label="Loading page">
@@ -208,12 +248,15 @@ export default function FusionApp() {
             }
           >
             {page === "notifications" ? (
-              <Channels
-                channels={channels}
-                monitors={monitors}
-                reload={() => void reload()}
-                report={(s) => void message.info(s)}
-              />
+              <>
+                <Channels
+                  channels={channels}
+                  monitors={monitors}
+                  reload={() => void reload()}
+                  report={(s) => void message.info(s)}
+                />
+                <Deliveries admin={user.user_type === 2} />
+              </>
             ) : page === "detail" && current ? (
               <>
                 <Button onClick={() => navigate("jobs")}>← Monitors</Button>
@@ -236,16 +279,12 @@ export default function FusionApp() {
                       color={
                         current.last_error
                           ? "red"
-                          : current.enabled
+                          : current.enabled && !current.paused
                             ? "green"
                             : "default"
                       }
                     >
-                      {current.last_error
-                        ? "Retrying"
-                        : current.enabled
-                          ? "Active"
-                          : "Paused"}
+                      {monitorState(current).replaceAll("_", " ")}
                     </Tag>
                     {current.text_enabled && <Tag>Text</Tag>}
                     {current.visual_enabled && (
@@ -269,6 +308,42 @@ export default function FusionApp() {
                     captures preserve the baseline.
                   </Typography.Text>
                 </Card>
+                <Card size="small" className="event">
+                  <Space wrap>
+                    <span>
+                      Last attempted:{" "}
+                      {current.last_run
+                        ? new Date(current.last_run).toLocaleString()
+                        : "Never"}
+                    </span>
+                    <span>
+                      Last successful:{" "}
+                      {current.last_success_at
+                        ? new Date(current.last_success_at).toLocaleString()
+                        : "No baseline yet"}
+                    </span>
+                    <span>
+                      Next:{" "}
+                      {current.enabled && !current.paused
+                        ? new Date(current.next_run).toLocaleString()
+                        : "Not scheduled"}
+                    </span>
+                    <span>Failures: {current.failure_count}</span>
+                    <span>Duration: {current.execution_ms ?? "—"} ms</span>
+                  </Space>
+                  {current.warning_code && (
+                    <Alert
+                      type="warning"
+                      title={"Warning: " + current.warning_code}
+                    />
+                  )}
+                </Card>
+                {current.kind === "browser" && (
+                  <details>
+                    <summary>Private browser values</summary>
+                    <PrivateValues monitor={current} />
+                  </details>
+                )}
                 <History id={current.id} refresh={refresh} />
               </>
             ) : (
@@ -294,8 +369,9 @@ export default function FusionApp() {
                   <Card size="small">
                     <strong>
                       {
-                        monitors.filter((m) => m.enabled && !m.last_error)
-                          .length
+                        monitors.filter(
+                          (m) => m.enabled && !m.paused && !m.last_error,
+                        ).length
                       }
                     </strong>{" "}
                     active
@@ -307,11 +383,33 @@ export default function FusionApp() {
                     retrying
                   </Card>
                 </div>
+                <Space wrap className="dashboard-tools">
+                  <Input.Search
+                    type="search"
+                    aria-label="Search monitors"
+                    placeholder="Search name or URL"
+                    value={query}
+                    onChange={(e) => setQuery(e.target.value)}
+                    allowClear
+                  />
+                  <Select
+                    aria-label="Filter monitoring status"
+                    placeholder="All statuses"
+                    allowClear
+                    value={stateFilter}
+                    onChange={setStateFilter}
+                    style={{ width: 220 }}
+                    options={monitorStates.map((value) => ({
+                      value,
+                      label: value.replaceAll("_", " "),
+                    }))}
+                  />
+                </Space>
                 <Card>
                   <Table
                     rowKey="id"
                     loading={loading}
-                    dataSource={monitors}
+                    dataSource={filterMonitors(monitors, query, stateFilter)}
                     scroll={{ x: 660 }}
                     pagination={{ pageSize: 10, hideOnSinglePage: true }}
                     locale={{
@@ -323,6 +421,8 @@ export default function FusionApp() {
                       {
                         title: "Monitor",
                         dataIndex: "name",
+                        sorter: (a: any, b: any) =>
+                          a.name.localeCompare(b.name),
                         render: (name: string, m: any) => (
                           <Button type="link" onClick={() => void detail(m.id)}>
                             {name}
@@ -351,23 +451,41 @@ export default function FusionApp() {
                       },
                       {
                         title: "Status",
+                        sorter: (a: any, b: any) =>
+                          monitorState(a).localeCompare(monitorState(b)),
                         render: (_, m: any) => (
-                          <Tag
-                            color={
-                              m.last_error
-                                ? "red"
-                                : m.enabled
-                                  ? "green"
-                                  : "default"
-                            }
-                          >
-                            {m.last_error
-                              ? "Retrying"
-                              : m.enabled
-                                ? "Active"
-                                : "Paused"}
-                          </Tag>
+                          <Space wrap>
+                            <Tag
+                              color={
+                                m.last_error
+                                  ? "red"
+                                  : m.enabled && !m.paused
+                                    ? "green"
+                                    : "default"
+                              }
+                            >
+                              {monitorState(m).replaceAll("_", " ")}
+                            </Tag>
+                            {m.warning_code && <Tag color="gold">Warning</Tag>}
+                          </Space>
                         ),
+                      },
+                      {
+                        title: "Last change",
+                        dataIndex: "last_change_at",
+                        responsive: ["lg"],
+                        sorter: (a: any, b: any) =>
+                          Date.parse(a.last_change_at ?? "1970-01-01") -
+                          Date.parse(b.last_change_at ?? "1970-01-01"),
+                        render: (s: string) =>
+                          s ? new Date(s).toLocaleString() : "—",
+                      },
+                      {
+                        title: "Last checked",
+                        dataIndex: "last_run",
+                        responsive: ["lg"],
+                        render: (s: string) =>
+                          s ? new Date(s).toLocaleString() : "Never",
                       },
                       {
                         responsive: ["lg"],

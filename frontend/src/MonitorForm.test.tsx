@@ -19,7 +19,10 @@ it("text and visual settings share one form with independent region and text sel
   ).toHaveAttribute("aria-checked", "true");
   await user.click(screen.getByLabelText("Screenshot capture mode"));
   await user.click(screen.getByText("Selected element / region"));
-  await user.type(screen.getByLabelText("Screenshot CSS selector"), "#region");
+  await user.type(
+    screen.getByLabelText("Screenshot region selector"),
+    "#region",
+  );
   expect(current.getFieldValue("capture_mode")).toBe("element");
   expect(current.getFieldValue("capture_selector")).toBe("#region");
   expect(current.getFieldValue("visual_threshold")).toBe("0.35");

@@ -9,6 +9,8 @@ import {
   Typography,
   Slider,
   Spin,
+  Pagination,
+  Button,
 } from "antd";
 import { api, percent } from "./api";
 export function ImageComparison({
@@ -92,16 +94,27 @@ export function ImageComparison({
 }
 export function History({ id, refresh }: { id: string; refresh: number }) {
   const [events, setEvents] = useState<any[]>([]),
+    [page, setPage] = useState(1),
+    [total, setTotal] = useState(0),
+    [retry, setRetry] = useState(0),
     [filter, setFilter] = useState<string | undefined>(),
     [error, setError] = useState(""),
     [loading, setLoading] = useState(true);
   useEffect(() => {
     let alive = true;
     setLoading(true);
-    api("/jobs/" + id + "/history" + (filter ? "?status=" + filter : ""))
+    api(
+      "/jobs/" +
+        id +
+        "/history?page=" +
+        page +
+        "&page_size=20" +
+        (filter ? "&status=" + filter : ""),
+    )
       .then((r) => {
         if (alive) {
-          setEvents(r);
+          setEvents(r.items);
+          setTotal(r.total);
           setError("");
         }
       })
@@ -114,7 +127,7 @@ export function History({ id, refresh }: { id: string; refresh: number }) {
     return () => {
       alive = false;
     };
-  }, [id, filter, refresh]);
+  }, [id, filter, refresh, page, retry]);
   return (
     <>
       <Space className="history-header">
@@ -123,7 +136,10 @@ export function History({ id, refresh }: { id: string; refresh: number }) {
           aria-label="History filter"
           placeholder="All events"
           allowClear
-          onChange={setFilter}
+          onChange={(v) => {
+            setFilter(v);
+            setPage(1);
+          }}
           style={{ width: 180 }}
           options={[
             "changed",
@@ -136,7 +152,13 @@ export function History({ id, refresh }: { id: string; refresh: number }) {
           ].map((value) => ({ value, label: value }))}
         />
       </Space>
-      {error && <Alert title={error} type="error" />}
+      {error && (
+        <Alert
+          title={error}
+          type="error"
+          action={<Button onClick={() => setRetry((v) => v + 1)}>Retry</Button>}
+        />
+      )}
       {loading ? (
         <div role="status" aria-label="Loading monitoring history">
           <Spin />
@@ -171,6 +193,19 @@ export function History({ id, refresh }: { id: string; refresh: number }) {
                 title="Screenshot dimensions changed"
                 description={`${e.before_dimensions?.width}×${e.before_dimensions?.height} → ${e.after_dimensions?.width}×${e.after_dimensions?.height}. Pixel percentage is unavailable. The new capture becomes the baseline.`}
               />
+            )}
+            {e.configuration_changed && (
+              <Alert
+                type="info"
+                title="Capture configuration changed"
+                description="Previous images remain in history. The next successful capture establishes the new baseline."
+              />
+            )}
+            {e.attention_state && (
+              <Tag color="red">
+                {e.attention_state.replaceAll("_", " ")}{" "}
+                {e.warning_code ? "(" + e.warning_code + ")" : ""}
+              </Tag>
             )}
             {e.error && <Alert title={e.error} type="error" />}
             {e.text_diff?.length > 0 && (
@@ -234,6 +269,14 @@ export function History({ id, refresh }: { id: string; refresh: number }) {
           </Card>
         ))
       )}
+      <Pagination
+        current={page}
+        total={total}
+        pageSize={20}
+        showSizeChanger={false}
+        onChange={setPage}
+        hideOnSinglePage
+      />
     </>
   );
 }

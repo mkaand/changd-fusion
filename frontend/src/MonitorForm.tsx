@@ -1,4 +1,5 @@
 import { Form, Input, Select, Switch, InputNumber, Alert } from "antd";
+import { BrowserStepsEditor } from "./BrowserStepsEditor";
 export const defaults = {
   kind: "browser",
   text_enabled: true,
@@ -7,6 +8,12 @@ export const defaults = {
   visual_threshold: "0.35",
   capture_mode: "viewport",
   capture_selector: "",
+  capture_selector_type: "css",
+  browser_steps: [],
+  step_budget_ms: 20000,
+  paused: false,
+  notify_failures: false,
+  notify_attention: false,
   pixel_threshold: 0.1,
   interval_seconds: 300,
   normalize_whitespace: true,
@@ -54,6 +61,7 @@ export function MonitorForm({
                 visual_enabled: false,
                 capture_mode: "viewport",
                 capture_selector: "",
+                browser_steps: [],
               });
           }}
         />
@@ -80,6 +88,7 @@ export function MonitorForm({
       {!text && !visual && (
         <Alert title="Enable Text, Visual, or both." type="warning" />
       )}
+      {kind === "browser" && <BrowserStepsEditor form={form} />}
       {kind === "browser" && text && (
         <>
           <Form.Item name="selector_type" label="Extraction method">
@@ -137,14 +146,27 @@ export function MonitorForm({
             />
           </Form.Item>
           {captureMode === "element" && (
-            <Form.Item
-              name="capture_selector"
-              label="Screenshot CSS selector"
-              rules={[{ required: true, whitespace: true }]}
-              extra="Must match exactly one visible element. Independent of the text extraction selector."
-            >
-              <Input placeholder="#content" maxLength={1000} />
-            </Form.Item>
+            <>
+              <Form.Item
+                name="capture_selector_type"
+                label="Region selector type"
+              >
+                <Select
+                  options={[
+                    { value: "css", label: "CSS" },
+                    { value: "xpath", label: "XPath" },
+                  ]}
+                />
+              </Form.Item>
+              <Form.Item
+                name="capture_selector"
+                label="Screenshot region selector"
+                rules={[{ required: true, whitespace: true }]}
+                extra="Must match exactly one visible element. Independent of the text extraction selector."
+              >
+                <Input placeholder="#content or //main" maxLength={1000} />
+              </Form.Item>
+            </>
           )}
 
           <Form.Item
@@ -169,6 +191,25 @@ export function MonitorForm({
       >
         <InputNumber min={30} max={604800} />
       </Form.Item>
+      <div className="form-row">
+        <Form.Item name="paused" label="Pause schedule" valuePropName="checked">
+          <Switch />
+        </Form.Item>
+        <Form.Item
+          name="notify_failures"
+          label="Persistent failure alerts"
+          valuePropName="checked"
+        >
+          <Switch />
+        </Form.Item>
+        <Form.Item
+          name="notify_attention"
+          label="Authentication / challenge alerts"
+          valuePropName="checked"
+        >
+          <Switch />
+        </Form.Item>
+      </div>
       <Form.Item name="channel_ids" label="Notification channels">
         <Select
           mode="multiple"
