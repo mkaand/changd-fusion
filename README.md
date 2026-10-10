@@ -8,7 +8,9 @@ Yalnızca **3000 / Private** portunu Safari'de açın; geçici giriş bilgileri 
 `.preview/login.txt` dosyasındadır. GitHub erişim kontrolü ve uygulama login'i birlikte korunur.
 Private port yetkisi otomatik sağlanamazsa tek seferlik `node .devcontainer/authorize.mjs` komutu
 GitHub OAuth yetkilendirmesini ve yeniden başlangıcı yönetir; ham token paylaşılmaz.
-[Başlangıç, güvenlik sınırları ve sorun giderme rehberi](docs/private-preview.md).
+Recovery Mode’daki mevcut Codespace için önce Source Control menüsünden **Pull**, sonra
+**Codespaces: Rebuild Container** kullanın; Codespace veya DB volume’unu silmeyin.
+[Başlangıç, kurtarma, güvenlik sınırları ve sorun giderme rehberi](docs/private-preview.md).
 
 Changd Fusion is a self-hosted website monitor based on [Changd by Paul Aschmann](https://github.com/paschmann/changd). It preserves Changd's Ant Design interface while bringing text and visual detection into **one monitor, one browser capture, one schedule, and one combined change event**.
 

@@ -289,7 +289,7 @@ test("hybrid precision: 0.35% → PostgreSQL → API → notification, one event
   assert.equal(sent.length, 1);
   assert.equal(sent[0].percent, "0.3500000000");
   assert.ok(sent[0].textSummary.includes("Price 11"));
-  assert.ok(telegramSummary(sent[0]).includes("%0,35"));
+  assert.ok(telegramSummary(sent[0]).includes("0.35%"));
   assert.ok(sent[0].checkedAt instanceof Date);
   assert.equal(sent[0].attempt, 1);
   // Unchanged pixels are valid captures with 0%, no alert and a separate latest capture.

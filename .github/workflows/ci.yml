@@ -73,7 +73,7 @@ jobs:
       - run: node scripts/privacy-scan.mjs --history=origin/master
   docker:
     runs-on: ubuntu-22.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
@@ -88,3 +88,8 @@ jobs:
       - name: Codespaces image sandbox smoke
         run: npm ci --prefix server --ignore-scripts --no-audit --no-fund && node scripts/preview-docker-smoke.mjs
         timeout-minutes: 2
+      - name: Real Dev Container creation, HOME ownership and cross-UID resume
+        run: npm install --prefix "$RUNNER_TEMP/fusion-devcontainer-cli" --no-audit --no-fund @devcontainers/cli@0.89.0 && node scripts/devcontainer-smoke.mjs
+        env:
+          DEVCONTAINER_CLI: ${{ runner.temp }}/fusion-devcontainer-cli/node_modules/.bin/devcontainer
+        timeout-minutes: 10

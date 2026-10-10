@@ -1,3 +1,19 @@
+# Codespaces recovery verification
+
+Current default Telegram language is **English**, with emoji, exact `0.35%` formatting and configurable IANA timezone (default Europe/Istanbul). Earlier Turkish-message records below describe the previous implementation and are superseded.
+
+The observed HOME error is reproduced locally by mounting an empty root-owned `/home` over the image's home directory. A dedicated node-owned home volume fixes this even with a read-only parent home mount. Actual Dev Containers CLI 0.89.0 exercises initialization, automatic `npm ci` and both builds, the one-shot restricted ownership bootstrap, PostgreSQL migrations 001–003, VS Code first-run notice write and repeat/resume. A host-created runtime is deliberately owned by UID 2000; node UID 1000 reads it after repair with unchanged DB-secret SHA256. No Codespaces port API is mocked in this lifecycle check; postStart is replaced by ownership validation because no real Codespaces context is available. Actual preview startup without that context must fail closed. A separate in-container smoke runs the real production API, built frontend and worker against the disposable database with an example.com origin and no forwarded port: Secure login/logout, Steps monitor creation/Check-now queue, history/0.35%, private before/after/diff artifacts and SSRF rejection are verified. All fixtures are paused; no public website capture or provider delivery occurs.
+
+The application remains non-root. A bounded networkless root bootstrap has only private runtime/home mounts and CHOWN/FOWNER/DAC_OVERRIDE capabilities, and never accesses or resets PostgreSQL. Database volume and existing runtime credential bytes survive rebuild.
+
+Automated totals: **102 tests** (41 backend + 27 PostgreSQL/browser + 20 frontend + 12 preview + 2 privacy), with no skips. Additional real CLI/Docker lifecycle and sandbox checks are reported separately rather than counted as unit tests. Both dependency audits cover development dependencies. Source/build/history privacy scans and original MIT/migration checksums are preserved.
+
+The user's real Codespace is not visible to this task's GitHub integration; repository Codespaces API returns HTTP 403. Local lifecycle success and CI cannot prove actual private GitHub gateway, Recovery Mode exit or iPhone Safari success. Recovery requires GUI Pull on the existing branch followed by Codespaces: Rebuild Container; no deletion or terminal debugging is required.
+
+Intermediate local PostgreSQL/Docker attempts failed when Cloud disk filled. Only this project's superseded images/cache and disposable test resources were removed; mandatory checks are rerun after disk recovery. No user Codespace, production data or unrelated container/volume is touched.
+
+---
+
 # Private preview ve Telegram doğrulaması
 
 2026-10-10, izole Codex Cloud. Güncel toplam **100 test**: 41 backend unit/security/provider, 27 PostgreSQL/gerçek Chromium integration, 20 React ve 12 preview/privacy script testi. Sıfır başarısız/atlanmış/iptal edilmiş test. İki production build ve iki tam dependency audit geçti; audit sonuçları sıfır bildirilen zafiyet.

@@ -22,7 +22,7 @@ const event: EventMessage = {
   checkedAt: "2026-10-10T10:23:00Z",
   eventType: "changed",
 };
-test("combined Telegram event is Turkish, decimal-exact and uses Istanbul time", () => {
+test("combined Telegram event is English, decimal-exact and uses Istanbul time", () => {
   const text = telegramSummary(event);
   for (const value of [
     "🔔",
@@ -30,12 +30,12 @@ test("combined Telegram event is Turkish, decimal-exact and uses Istanbul time",
     "📝",
     "🖼️",
     "🔗",
-    "%0,35",
-    "10.10.2026 13:23 (Europe/Istanbul)",
+    "0.35%",
+    "2026-10-10 13:23 (Europe/Istanbul)",
     "Örnek Ürün Takibi",
   ])
     assert.ok(text.includes(value), value);
-  assert.equal((text.match(/Değişiklik Tespit/g) ?? []).length, 1);
+  assert.equal((text.match(/Change Detected/g) ?? []).length, 1);
 });
 test("text-only Telegram event has no fabricated visual result", () => {
   const text = telegramSummary({
@@ -43,14 +43,14 @@ test("text-only Telegram event has no fabricated visual result", () => {
     visualChanged: false,
     percent: null,
   });
-  assert.ok(text.includes("📝 Metin:"));
+  assert.ok(text.includes("📝 Text:"));
   assert.ok(!text.includes("🖼️"));
 });
 test("visual-only Telegram event keeps tiny, zero and 100 percent precision", () => {
   for (const [percent, expected] of [
-    ["0.0000000001", "%0,0000000001"],
-    ["0.0000000000", "%0"],
-    ["100.0000000000", "%100"],
+    ["0.0000000001", "0.0000000001%"],
+    ["0.0000000000", "0%"],
+    ["100.0000000000", "100%"],
   ]) {
     const text = telegramSummary({ ...event, textChanged: false, percent });
     assert.ok(text.includes(expected));
@@ -65,14 +65,14 @@ test("dimension-change Telegram event describes both images without 100 percent"
     beforeDimensions: { width: 1280, height: 900 },
     afterDimensions: { width: 1280, height: 1800 },
   });
-  assert.ok(text.includes("📐 Boyut: 1280×900 → 1280×1800"));
-  assert.ok(text.includes("Piksel yüzdesi hesaplanmadı"));
+  assert.ok(text.includes("📐 Dimensions: 1280×900 → 1280×1800"));
+  assert.ok(text.includes("Pixel percentage unavailable"));
   assert.ok(!text.includes("%"));
 });
 for (const [state, expected] of [
-  ["authentication_required", "🔐 Yeniden Giriş Gerekli"],
-  ["persistent_failure", "⚠️ Kalıcı İzleme Hatası"],
-  ["challenge_detected", "🧩 Challenge Şüphesi"],
+  ["authentication_required", "🔐 Sign-in Required"],
+  ["persistent_failure", "⚠️ Persistent Monitoring Failure"],
+  ["challenge_detected", "🧩 Possible Challenge"],
 ]) {
   test(`Telegram attention state ${state} never includes internal errors or content differences`, () => {
     const text = telegramSummary({
@@ -84,7 +84,8 @@ for (const [state, expected] of [
     assert.ok(!text.includes("synthetic-private"));
     assert.ok(!text.includes("📝"));
     assert.ok(!text.includes("%"));
-    if (state === "challenge_detected") assert.ok(text.includes("olabilir"));
+    if (state === "challenge_detected")
+      assert.ok(text.includes("may be present"));
   });
 }
 test("Telegram timezone is validated, defaults to Istanbul and respects daylight saving", () => {
@@ -139,8 +140,8 @@ test("Telegram mock sends one summary per combined event, no parse mode and safe
   const body = calls[0].body;
   assert.equal(body.parse_mode, undefined);
   assert.ok(body.text.includes("<b>Örnek</b>"));
-  assert.ok(body.text.includes("🔄 Bildirim yeniden denemesi: 2/5"));
-  assert.ok(body.text.includes("🔗 Monitörü aç"));
+  assert.ok(body.text.includes("🔄 Notification retry: 2/5"));
+  assert.ok(body.text.includes("🔗 Open monitor"));
   assert.ok(body.text.length <= 4000);
   assert.ok(!body.text.includes(token));
   assert.equal(truncateText("😃".repeat(10), 10), "😃😃😃😃…");
@@ -151,7 +152,7 @@ test("test notifications are explicitly labelled and credential-bearing links ar
     eventType: "test",
     link: "https://fixture:synthetic@ example.com",
   });
-  assert.ok(text.includes("Test Bildirimi"));
+  assert.ok(text.includes("Test Notification"));
   assert.ok(!text.includes("📝"));
   assert.ok(!text.includes("synthetic"));
   assert.ok(

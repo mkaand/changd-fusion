@@ -19,5 +19,11 @@ RUN --mount=type=secret,id=build_ca \
     && tar -xzf /tmp/gh.tar.gz -C /tmp \
     && install -m 0755 "/tmp/gh_2.102.0_linux_${TARGETARCH}/bin/gh" /usr/local/bin/gh \
     && rm -r /tmp/gh.tar.gz "/tmp/gh_2.102.0_linux_${TARGETARCH}"
+# Codespaces can mount /home independently of the image. Seed a dedicated home
+# volume with the exact fixed UID/GID used by lifecycle hooks and the application.
+ENV HOME=/home/node XDG_CONFIG_HOME=/home/node/.config
+RUN install -d -o node -g node -m 0700 /home/node \
+    /home/node/.config /home/node/.config/vscode-dev-containers \
+    /home/node/.vscode-server /home/node/.vscode-server-insiders
 USER node
 WORKDIR /workspaces/changd-fusion

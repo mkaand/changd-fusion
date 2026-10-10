@@ -25,7 +25,7 @@ export const telegramSchema = z
       .default("Europe/Istanbul")
       .refine((value) => {
         try {
-          new Intl.DateTimeFormat("tr-TR", { timeZone: value });
+          new Intl.DateTimeFormat("en-GB", { timeZone: value });
           return true;
         } catch {
           return false;
@@ -86,55 +86,62 @@ export function truncateText(value: string, limit: number) {
   }
   return result;
 }
+// English is the default; keep translations outside provider transport/security logic.
+export const telegramEnglish = {
+  attention: {
+    persistent_failure: [
+      "⚠️ Persistent Monitoring Failure",
+      "⚠️ Status: Monitoring failed repeatedly. Check the configuration.",
+    ],
+    authentication_required: [
+      "🔐 Sign-in Required",
+      "🔐 Status: Check the session or sign-in settings.",
+    ],
+    challenge_detected: [
+      "🧩 Possible Challenge",
+      "🧩 Status: A CAPTCHA or anti-bot check may be present. No bypass was attempted.",
+    ],
+  } as Record<string, [string, string]>,
+  captions: {
+    "before.png": "Before",
+    "after.png": "After",
+    "diff.png": "Diff",
+  } as Record<string, string>,
+};
+
 export function telegramSummary(
   event: EventMessage,
   timezone = "Europe/Istanbul",
 ) {
-  const attention: Record<string, [string, string]> = {
-    persistent_failure: [
-      "⚠️ Kalıcı İzleme Hatası",
-      "⚠️ Durum: İzleme art arda başarısız oldu. Ayarları kontrol edin.",
-    ],
-    authentication_required: [
-      "🔐 Yeniden Giriş Gerekli",
-      "🔐 Durum: Oturum veya giriş ayarları kontrol edilmeli.",
-    ],
-    challenge_detected: [
-      "🧩 Challenge Şüphesi",
-      "🧩 Durum: CAPTCHA / anti-bot kontrolü olabilir. Otomatik çözüm denenmedi.",
-    ],
-  };
-  const state = attention[event.attentionState ?? ""];
+  const state = telegramEnglish.attention[event.attentionState ?? ""];
   const test = event.eventType === "test";
   const lines = [
-    `🔔 Changd Fusion | ${state?.[0] ?? (test ? "Test Bildirimi" : "Değişiklik Tespit Edildi!")}`,
+    `🔔 Changd Fusion | ${state?.[0] ?? (test ? "Test Notification" : "Change Detected!")}`,
     "",
-    `🌐 Monitör: ${truncateText(event.name, 120)}`,
+    `🌐 Monitor: ${truncateText(event.name, 120)}`,
     state?.[1] ??
       (test
-        ? "🟢 Durum: Bildirim kanalı test ediliyor"
-        : "🟢 Durum: İçerik değişti"),
+        ? "🟢 Status: Testing the notification channel"
+        : "🟢 Status: Content changed"),
   ];
   if (event.textChanged && !test && !state)
     lines.push(
-      `📝 Metin: ${truncateText(event.textSummary || "Metin değişikliği bulundu", 900)}`,
+      `📝 Text: ${truncateText(event.textSummary || "Text change detected", 900)}`,
     );
   if (event.dimensionChanged && !state) {
     const size = (s: EventMessage["beforeDimensions"]) =>
-      s ? `${s.width}×${s.height}` : "bilinmiyor";
+      s ? `${s.width}×${s.height}` : "unknown";
     lines.push(
-      `📐 Boyut: ${size(event.beforeDimensions)} → ${size(event.afterDimensions)}`,
-      "🖼️ Piksel yüzdesi hesaplanmadı; yeni görüntü temel alındı.",
+      `📐 Dimensions: ${size(event.beforeDimensions)} → ${size(event.afterDimensions)}`,
+      "🖼️ Pixel percentage unavailable; the new capture becomes baseline.",
     );
   } else if (event.visualChanged && !state) {
-    lines.push(
-      `🖼️ Görsel fark: %${formatPercent(event.percent ?? "0").replace(".", ",")}`,
-    );
+    lines.push(`🖼️ Visual difference: ${formatPercent(event.percent ?? "0")}%`);
   }
   if (event.checkedAt) {
     const date = new Date(event.checkedAt);
     if (Number.isFinite(date.getTime())) {
-      const parts = new Intl.DateTimeFormat("tr-TR", {
+      const parts = new Intl.DateTimeFormat("en-GB", {
         timeZone: timezone,
         year: "numeric",
         month: "2-digit",
@@ -145,12 +152,12 @@ export function telegramSummary(
       }).formatToParts(date);
       const part = (name: string) => parts.find((p) => p.type === name)?.value;
       lines.push(
-        `🕒 Kontrol: ${part("day")}.${part("month")}.${part("year")} ${part("hour")}:${part("minute")} (${timezone})`,
+        `🕒 Checked: ${part("year")}-${part("month")}-${part("day")} ${part("hour")}:${part("minute")} (${timezone})`,
       );
     }
   }
   if ((event.attempt ?? 1) > 1)
-    lines.push(`🔄 Bildirim yeniden denemesi: ${event.attempt}/5`);
+    lines.push(`🔄 Notification retry: ${event.attempt}/5`);
   try {
     const url = new URL(event.link);
     if (
@@ -159,7 +166,7 @@ export function telegramSummary(
       !url.password &&
       url.href.length <= 512
     )
-      lines.push(`🔗 Monitörü aç: ${url.href}`);
+      lines.push(`🔗 Open monitor: ${url.href}`);
   } catch {}
   return truncateText(lines.join("\n"), 4000);
 }
@@ -310,7 +317,7 @@ export async function deliver(
       const boundary = "fusion-" + randomUUID();
       const body = Buffer.concat([
         Buffer.from(
-          `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${c.chat_id}\r\n--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${({ "before.png": "Önce", "after.png": "Sonra", "diff.png": "Fark" } as Record<string, string>)[f.filename]}\r\n--${boundary}\r\nContent-Disposition: form-data; name="${asDocument ? "document" : "photo"}"; filename="${f.filename}"\r\nContent-Type: image/png\r\n\r\n`,
+          `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${c.chat_id}\r\n--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${telegramEnglish.captions[f.filename]}\r\n--${boundary}\r\nContent-Disposition: form-data; name="${asDocument ? "document" : "photo"}"; filename="${f.filename}"\r\nContent-Type: image/png\r\n\r\n`,
         ),
         f.content,
         Buffer.from(`\r\n--${boundary}--\r\n`),
@@ -340,13 +347,7 @@ export async function deliver(
           photos.map((f, i) => ({
             type: "photo",
             media: `attach://image${i}`,
-            caption: (
-              {
-                "before.png": "Önce",
-                "after.png": "Sonra",
-                "diff.png": "Fark",
-              } as Record<string, string>
-            )[f.filename],
+            caption: telegramEnglish.captions[f.filename],
           })),
         ),
       );

@@ -75,7 +75,7 @@ export function Channels({
             <Tag>{c.provider}</Tag>
             <Tag>{c.enabled ? "Enabled" : "Disabled"}</Tag>
             {c.test_required && (
-              <Tag color="warning">Önce test bildirimi gönderin</Tag>
+              <Tag color="warning">Send a test notification first</Tag>
             )}
             <Button onClick={() => create(c)}>Edit</Button>
             <Button
@@ -180,9 +180,9 @@ export function Channels({
                 />
               </Form.Item>
               <p>
-                Telegram mesajları Türkçedir. Bot bilgileri şifrelenir; token
-                geri gönderilmez. Kaydettikten sonra Test notification düğmesini
-                kendiniz kullanın.
+                Telegram messages are in English. Bot credentials are encrypted;
+                the token is never returned. After saving, send a test
+                notification yourself.
               </p>
             </>
           ) : (

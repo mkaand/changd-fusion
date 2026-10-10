@@ -28,7 +28,9 @@ it("Telegram editor defaults to Istanbul and never prepopulates the write-only t
   await user.click(screen.getByRole("button", { name: "Edit" }));
   expect(screen.getByLabelText("Bot token")).toHaveValue("");
   expect(screen.getByText("Türkiye — Europe/Istanbul")).toBeInTheDocument();
-  expect(screen.getByText(/Telegram mesajları Türkçedir/)).toBeInTheDocument();
+  expect(
+    screen.getByText(/Telegram messages are in English/),
+  ).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "OK" }));
   expect(api).toHaveBeenCalledWith(
     "/notifications/fixture",

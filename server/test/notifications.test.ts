@@ -92,7 +92,7 @@ test("Telegram sends summary and an image album using mocked Bot API", async () 
     );
     assert.equal(calls.length, 2);
     assert.equal(calls[0].method, "sendMessage");
-    assert.ok(calls[0].body.includes("%0,35"));
+    assert.ok(calls[0].body.includes("0.35%"));
     assert.equal(calls[1].method, "sendMediaGroup");
     assert.ok(calls[1].body.includes("after.png"));
   } finally {
@@ -134,5 +134,5 @@ test("attention summaries identify the safe failure and oversized attachments ar
     ["sendMessage", "sendPhoto"],
   );
   assert.ok(calls[1].body.length < 1024);
-  assert.ok(calls[0].body.toString().includes("Kalıcı İzleme Hatası"));
+  assert.ok(calls[0].body.toString().includes("Persistent Monitoring Failure"));
 });

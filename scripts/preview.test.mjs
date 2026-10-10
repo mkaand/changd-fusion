@@ -234,3 +234,69 @@ test("stale or foreign PID files cannot signal unrelated processes", async () =>
     await rm(root, { recursive: true, force: true });
   }
 });
+
+test("devcontainer pins node identity and persists a writable HOME independently of Codespaces home mounts", async () => {
+  const config = JSON.parse(
+    await readFile(".devcontainer/devcontainer.json", "utf8"),
+  );
+  assert.equal(config.updateRemoteUserUID, false);
+  assert.equal(config.containerUser, "node");
+  assert.equal(config.remoteUser, "node");
+  assert.equal(config.containerEnv.HOME, "/home/node");
+  assert.equal(config.remoteEnv.HOME, "/home/node");
+  const dockerfile = await readFile(".devcontainer/Dockerfile", "utf8");
+  assert.ok(dockerfile.includes("ENV HOME=/home/node"));
+  assert.ok(dockerfile.includes("/home/node/.config/vscode-dev-containers"));
+  assert.ok(dockerfile.includes("USER node"));
+  const compose = await readFile(".devcontainer/compose.yaml", "utf8");
+  assert.ok(compose.includes("preview_home:/home/node"));
+  assert.ok(compose.includes('user: "1000:1000"'));
+  assert.ok(
+    compose.includes(
+      "permissions: { condition: service_completed_successfully }",
+    ),
+  );
+  assert.ok(compose.includes("network_mode: none"));
+  assert.ok(compose.includes("cap_drop: [ALL]"));
+  assert.ok(!compose.includes("privileged:"));
+  for (const hook of ["setup", "start"])
+    assert.ok(
+      (await readFile(`.devcontainer/${hook}.mjs`, "utf8")).includes(
+        'import "./validate.mjs"',
+      ),
+    );
+});
+
+test("host initializer refuses FIFO and hardlinked secrets without changing their targets", async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "fusion-preview-init-"));
+  try {
+    const script =
+      "import importlib.util,pathlib,sys; spec=importlib.util.spec_from_file_location('i','.devcontainer/initialize.py'); m=importlib.util.module_from_spec(spec); spec.loader.exec_module(m); m.initialize(pathlib.Path(sys.argv[1]))";
+    await mkdir(path.join(root, ".preview"), { mode: 0o700 });
+    execFileSync("mkfifo", [path.join(root, ".preview/db-password")]);
+    assert.throws(() =>
+      execFileSync("python3", ["-c", script, root], {
+        stdio: "pipe",
+        timeout: 5000,
+      }),
+    );
+    await rm(path.join(root, ".preview/db-password"));
+    await privateWrite(path.join(root, "target"), "synthetic-preserved");
+    execFileSync("ln", [
+      path.join(root, "target"),
+      path.join(root, ".preview/db-password"),
+    ]);
+    assert.throws(() =>
+      execFileSync("python3", ["-c", script, root], {
+        stdio: "pipe",
+        timeout: 5000,
+      }),
+    );
+    assert.equal(
+      await privateFile(path.join(root, "target")),
+      "synthetic-preserved",
+    );
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});

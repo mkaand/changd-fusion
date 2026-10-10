@@ -1,5 +1,5 @@
 {
-  "name": "Changd Fusion — private preview",
+  "name": "Changd Fusion \u2014 private preview",
   "dockerComposeFile": "compose.yaml",
   "service": "preview",
   "workspaceFolder": "/workspaces/changd-fusion",
@@ -11,12 +11,14 @@
   "forwardPorts": [3000],
   "portsAttributes": {
     "3000": {
-      "label": "Changd Fusion · PRIVATE",
+      "label": "Changd Fusion \u00b7 PRIVATE",
       "onAutoForward": "openBrowser",
       "protocol": "http"
     }
   },
-  "otherPortsAttributes": { "onAutoForward": "ignore" },
+  "otherPortsAttributes": {
+    "onAutoForward": "ignore"
+  },
   "customizations": {
     "vscode": {
       "settings": {
@@ -24,8 +26,23 @@
         "remote.autoForwardPorts": false
       }
     },
-    "codespaces": { "openFiles": [".preview/login.txt"] }
+    "codespaces": {
+      "openFiles": [".preview/login.txt"]
+    }
   },
   "shutdownAction": "stopCompose",
-  "hostRequirements": { "cpus": 2, "memory": "8gb", "storage": "32gb" }
+  "hostRequirements": {
+    "cpus": 2,
+    "memory": "8gb",
+    "storage": "32gb"
+  },
+  "containerUser": "node",
+  "updateRemoteUserUID": false,
+  "containerEnv": {
+    "HOME": "/home/node"
+  },
+  "remoteEnv": {
+    "HOME": "/home/node",
+    "XDG_CONFIG_HOME": "/home/node/.config"
+  }
 }
