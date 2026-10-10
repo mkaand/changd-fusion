@@ -5,6 +5,7 @@ import {
   realpath,
   unlink,
   readdir,
+  stat,
 } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
@@ -17,6 +18,8 @@ export class Storage {
     await mkdir(this.root, { recursive: true, mode: 0o700 });
   }
   async save(buffer: Buffer) {
+    if (buffer.length > 16 * 1024 * 1024)
+      throw Error("Artifact exceeds storage limit");
     await this.init();
     const name = randomUUID() + ".png";
     await writeFile(path.join(this.root, name), buffer, {
@@ -33,7 +36,10 @@ export class Storage {
     return file;
   }
   async read(name: string) {
-    return readFile(await this.file(name));
+    const file = await this.file(name);
+    if ((await stat(file)).size > 16 * 1024 * 1024)
+      throw Error("Artifact exceeds storage limit");
+    return readFile(file);
   }
   async remove(name: string) {
     try {

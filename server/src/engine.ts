@@ -9,6 +9,8 @@ import {
 import type { Config } from "./config.js";
 import { Storage } from "./storage.js";
 import { pngDimensions } from "./image.js";
+import { openValues } from "./vault.js";
+import { AttentionFailure } from "./attention.js";
 import { publicFailure } from "./errors.js";
 export async function runMonitor(
   pool: Pool,
@@ -38,12 +40,31 @@ export async function runMonitor(
     ).rows[0].locked;
     if (!locked) return false;
     const result = await c.query(
-      "SELECT * FROM fusion_monitors WHERE id=$1 AND enabled AND ($2 OR next_run<=now())",
+      "SELECT * FROM fusion_monitors WHERE id=$1 AND enabled AND NOT paused AND ($2 OR next_run<=now())",
       [id, !!options.force],
     );
     if (!result.rowCount) return false;
     const m: Monitor = result.rows[0];
+    const started = Date.now();
+    await c.query("UPDATE fusion_monitors SET last_run=now() WHERE id=$1", [
+      id,
+    ]);
     try {
+      if ((m.browser_steps ?? []).some((s) => s.action === "fill_private")) {
+        const vault = (
+          await c.query(
+            "SELECT * FROM fusion_monitor_vault WHERE monitor_id=$1 AND user_id=$2",
+            [id, m.user_id],
+          )
+        ).rows[0];
+        if (!vault)
+          throw new AttentionFailure(
+            "authentication_required",
+            "confirmed",
+            "Configure private values before running this workflow.",
+          );
+        m.private_values = openValues(vault, cfg.CHANNEL_KEY, m);
+      }
       const current: Capture = await (options.capture ?? capture)(m, cfg);
       if (
         (m.text_enabled && current.text === null) ||
@@ -99,7 +120,7 @@ export async function runMonitor(
           [captureId, id, current.text, image],
         );
         const event = await c.query(
-          "INSERT INTO fusion_events(monitor_id,before_id,after_id,text_changed,visual_changed,visual_percent,diff_screenshot,text_diff,status,dimension_changed,before_dimensions,after_dimensions) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING id",
+          "INSERT INTO fusion_events(monitor_id,before_id,after_id,text_changed,visual_changed,visual_percent,diff_screenshot,text_diff,status,dimension_changed,before_dimensions,after_dimensions,execution_ms,warning_code) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id",
           [
             id,
             before?.id ?? null,
@@ -113,16 +134,21 @@ export async function runMonitor(
             visual?.dimensionChanged ?? false,
             visual ? JSON.stringify(visual.beforeDimensions) : null,
             visual ? JSON.stringify(visual.afterDimensions) : null,
+            Date.now() - started,
+            current.warning ?? null,
           ],
         );
         await c.query(
-          "UPDATE fusion_monitors SET latest_capture_id=$2,baseline_id=CASE WHEN $3 THEN $2 ELSE baseline_id END,last_percent=$4,last_dimension_change=$5,last_run=now(),next_run=now()+interval_seconds*interval '1 second',failure_count=0,last_error=null WHERE id=$1",
+          "UPDATE fusion_monitors SET latest_capture_id=$2,baseline_id=CASE WHEN $3 THEN $2 ELSE baseline_id END,last_percent=$4,last_dimension_change=$5,last_run=now(),next_run=now()+interval_seconds*interval '1 second',failure_count=0,last_error=null,last_success_at=now(),last_change_at=CASE WHEN $6='changed' THEN now() ELSE last_change_at END,monitor_state=$6,execution_ms=$7,warning_code=$8 WHERE id=$1",
           [
             id,
             captureId,
             status !== "unchanged",
             visual?.percent ?? null,
             visual?.dimensionChanged ?? false,
+            status === "baseline" ? "healthy" : status,
+            Date.now() - started,
+            current.warning ?? null,
           ],
         );
         if (status === "changed")
@@ -137,16 +163,40 @@ export async function runMonitor(
       }
     } catch (e) {
       for (const file of saved) await storage.remove(file);
+      const state =
+        e instanceof AttentionFailure
+          ? e.state
+          : m.failure_count + 1 >= 3
+            ? "persistent_failure"
+            : "temporary_failure";
+      const warning = e instanceof AttentionFailure ? e.confidence : null;
+      const shouldNotify =
+        state !== m.monitor_state &&
+        (state === "persistent_failure"
+          ? m.notify_failures
+          : e instanceof AttentionFailure && m.notify_attention);
       await c.query("BEGIN");
       try {
         await c.query(
-          "UPDATE fusion_monitors SET failure_count=failure_count+1,last_error=$2,last_run=now(),next_run=now()+least(3600,30*power(2,least(failure_count,7)))*interval '1 second' WHERE id=$1",
-          [id, publicFailure(e)],
+          "UPDATE fusion_monitors SET failure_count=failure_count+1,last_error=$2,last_run=now(),next_run=now()+greatest($5,least(3600,30*power(2,least(failure_count,7))))*interval '1 second',monitor_state=$3,execution_ms=$4,warning_code=$6 WHERE id=$1",
+          [
+            id,
+            publicFailure(e),
+            state,
+            Date.now() - started,
+            e instanceof AttentionFailure ? 900 : 0,
+            warning,
+          ],
         );
-        await c.query(
-          "INSERT INTO fusion_events(monitor_id,status,error) VALUES($1,'failed',$2)",
-          [id, publicFailure(e)],
+        const event = await c.query(
+          "INSERT INTO fusion_events(monitor_id,status,error,attention_state,warning_code,execution_ms) VALUES($1,'failed',$2,$3,$4,$5) RETURNING id",
+          [id, publicFailure(e), state, warning, Date.now() - started],
         );
+        if (shouldNotify)
+          await c.query(
+            "INSERT INTO fusion_outbox(event_id,channel_id) SELECT $1,mc.channel_id FROM fusion_monitor_channels mc JOIN fusion_channels ch ON ch.id=mc.channel_id WHERE mc.monitor_id=$2 AND ch.enabled AND ch.user_id=$3 ON CONFLICT DO NOTHING",
+            [event.rows[0].id, id, m.user_id],
+          );
         await c.query("COMMIT");
       } catch (error) {
         await c.query("ROLLBACK");
@@ -185,6 +235,9 @@ export async function retainHistory(pool: Pool, cfg: Config) {
     return;
   }
   try {
+    await guard.query(
+      "DELETE FROM fusion_sessions WHERE expires_at<now()-interval '1 day' OR revoked_at<now()-interval '1 day'",
+    );
     // Retain events with pending/failed deliveries, and captures used by current baselines/latest captures.
     await guard.query(
       "DELETE FROM fusion_events e WHERE created_at<now()-$1*interval '1 day' AND NOT EXISTS(SELECT 1 FROM fusion_outbox o WHERE o.event_id=e.id AND o.status<>'sent')",

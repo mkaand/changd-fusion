@@ -97,3 +97,42 @@ test("Telegram sends summary and an image album using mocked Bot API", async () 
     await rm(root, { recursive: true, force: true });
   }
 });
+test("attention summaries identify the safe failure and oversized attachments are omitted; one Telegram image uses sendPhoto", async () => {
+  const store = {
+    read: async (name: string) =>
+      name === "oversized"
+        ? Buffer.alloc(4 * 1024 * 1024 + 1)
+        : Buffer.from("synthetic-image"),
+  } as Storage;
+  const calls: any[] = [];
+  const attention = {
+    ...event,
+    textChanged: false,
+    visualChanged: false,
+    attentionState: "persistent_failure",
+    attentionMessage: "Check configuration and retry.",
+    images: ["oversized", "small"],
+  };
+  assert.match(summary(attention), /persistent failure/);
+  assert.match(
+    emailHTML({ ...attention, attentionMessage: "<script>" }),
+    /&lt;script&gt;/,
+  );
+  await deliver(
+    "telegram",
+    { token: "123456:" + "x".repeat(24), chat_id: "-123456" },
+    attention,
+    store,
+    {
+      telegram: async (_token, method, body) => {
+        calls.push({ method, body });
+      },
+    },
+  );
+  assert.deepEqual(
+    calls.map((c) => c.method),
+    ["sendMessage", "sendPhoto"],
+  );
+  assert.ok(calls[1].body.length < 1024);
+  assert.ok(calls[0].body.toString().includes("persistent failure"));
+});

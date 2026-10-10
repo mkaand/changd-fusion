@@ -25,7 +25,7 @@ export async function dispatch(
       ).rows[0].locked;
       if (!locked) continue;
       const r = await c.query(
-        `SELECT o.*,ch.provider,ch.config,ch.enabled,m.name,m.id monitor_id,e.text_changed,e.visual_changed,e.visual_percent,e.dimension_changed,e.before_dimensions,e.after_dimensions,e.text_diff,e.diff_screenshot,
+        `SELECT o.*,ch.provider,ch.config,ch.enabled,m.name,m.id monitor_id,e.text_changed,e.visual_changed,e.visual_percent,e.dimension_changed,e.before_dimensions,e.after_dimensions,e.text_diff,e.diff_screenshot,e.attention_state,e.error,
     b.screenshot before_image,a.screenshot after_image FROM fusion_outbox o JOIN fusion_channels ch ON ch.id=o.channel_id JOIN fusion_events e ON e.id=o.event_id
     JOIN fusion_monitors m ON m.id=e.monitor_id LEFT JOIN fusion_captures b ON b.id=e.before_id LEFT JOIN fusion_captures a ON a.id=e.after_id
     WHERE o.id=$1 AND o.status IN ('pending','sending') AND o.next_attempt<=now() AND ch.user_id=m.user_id`,
@@ -60,6 +60,8 @@ export async function dispatch(
           .join("\n")
           .slice(0, 3000),
         link: new URL("/jobs/" + row.monitor_id, cfg.PUBLIC_URL).href,
+        attentionState: row.attention_state,
+        attentionMessage: row.error,
         images: [row.before_image, row.after_image, row.diff_screenshot].filter(
           Boolean,
         ),

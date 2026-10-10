@@ -5,6 +5,7 @@ export const makePool = (url: string) => {
     max: 8,
     connectionTimeoutMillis: 5000,
     statement_timeout: 10000,
+    idle_in_transaction_session_timeout: 10000,
   });
   // Idle connection failures must not terminate the service or expose connection strings.
   pool.on("error", () =>
@@ -20,15 +21,22 @@ export async function transaction<T>(
   fn: (c: pg.PoolClient) => Promise<T>,
 ): Promise<T> {
   const c = await pool.connect();
+  let clean = false;
   try {
     await c.query("BEGIN");
     const value = await fn(c);
     await c.query("COMMIT");
+    clean = true;
     return value;
   } catch (e) {
-    await c.query("ROLLBACK");
+    try {
+      await c.query("ROLLBACK");
+      clean = true;
+    } catch {
+      /* Destroy an uncertain transaction below. */
+    }
     throw e;
   } finally {
-    c.release();
+    c.release(!clean);
   }
 }

@@ -15,6 +15,8 @@ import { EgressPolicy } from "./egress.js";
 import { encrypt, decrypt } from "./crypto.js";
 import { smtpSchema, telegramSchema } from "./notifications.js";
 import { Storage } from "./storage.js";
+import { stepsSchema } from "./browser-steps.js";
+import { vaultSchema, sealValues } from "./vault.js";
 import { randomUUID } from "node:crypto";
 import pino from "pino";
 import { Decimal } from "decimal.js";
@@ -49,6 +51,12 @@ const monitorInput = z
       .enum(["viewport", "full_page", "element"])
       .default("viewport"),
     capture_selector: z.string().max(1000).default(""),
+    capture_selector_type: z.enum(["css", "xpath"]).default("css"),
+    browser_steps: stepsSchema,
+    step_budget_ms: z.number().int().min(100).max(60000).default(20000),
+    paused: z.boolean().default(false),
+    notify_failures: z.boolean().default(false),
+    notify_attention: z.boolean().default(false),
     visual_threshold: threshold.default("0.35"),
     pixel_threshold: z.coerce.number().min(0).max(1).default(0.1),
     interval_seconds: z.number().int().min(30).max(604800).default(300),
@@ -57,8 +65,17 @@ const monitorInput = z
   })
   .strict()
   .refine((m) => m.capture_mode !== "element" || !!m.capture_selector.trim(), {
-    message: "Element capture requires a CSS selector",
+    message: "Element capture requires a selector",
   })
+  .refine((m) => m.kind === "browser" || m.browser_steps.length === 0, {
+    message: "Browser steps require a browser monitor",
+  })
+  .refine(
+    (m) =>
+      !m.browser_steps.some((s) => s.action === "fill_private") ||
+      (!m.visual_enabled && new URL(m.url).protocol === "https:"),
+    { message: "Private steps require HTTPS text-only capture" },
+  )
   .refine((m) => m.text_enabled || m.visual_enabled, {
     message: "Enable at least one detection method",
   })
@@ -131,8 +148,28 @@ export function createApp(
     standardHeaders: "draft-8",
     legacyHeaders: false,
   });
-  const setSession = (res: Response, userId: string) => {
-    const token = jwt.sign({ sub: userId }, cfg.JWT_SECRET, {
+  const setSession = async (
+    res: Response,
+    userId: string,
+    expectedPassword?: string,
+  ) => {
+    const sessionId = randomUUID();
+    await transaction(pool, async (c) => {
+      const user = await c.query(
+        "SELECT password FROM users WHERE user_id=$1 AND status=1 FOR UPDATE",
+        [userId],
+      );
+      if (
+        !user.rowCount ||
+        (expectedPassword && user.rows[0].password !== expectedPassword)
+      )
+        throw new HttpError(401, "Authentication required");
+      await c.query(
+        "INSERT INTO fusion_sessions(id,user_id,expires_at) VALUES($1,$2,now()+interval '2 hours')",
+        [sessionId, userId],
+      );
+    });
+    const token = jwt.sign({ sub: userId, jti: sessionId }, cfg.JWT_SECRET, {
       algorithm: "HS256",
       expiresIn: "2h",
       issuer: "changd-fusion",
@@ -165,7 +202,7 @@ export function createApp(
     await pool.query("UPDATE users SET last_login=now() WHERE user_id=$1", [
       user.user_id,
     ]);
-    setSession(res, user.user_id);
+    await setSession(res, user.user_id, user.password);
     res.json({ ok: true });
   });
   app.post("/api/v1/register", loginLimiter, async (req, res) => {
@@ -177,12 +214,8 @@ export function createApp(
       [body.email, await hash(body.password, 12), "", ""],
     );
     if (!r.rowCount) throw new HttpError(409, "Unable to register account");
-    setSession(res, r.rows[0].user_id);
+    await setSession(res, r.rows[0].user_id);
     res.status(201).json({ ok: true });
-  });
-  app.post("/api/v1/logout", (_req, res) => {
-    res.clearCookie("fusion_session", { path: "/" });
-    res.json({ ok: true });
   });
   app.use("/api/v1", async (req, res, next) => {
     const cookie = req
@@ -200,18 +233,45 @@ export function createApp(
         issuer: "changd-fusion",
         audience: "changd-fusion-ui",
       });
-      if (typeof decoded === "string" || typeof decoded.sub !== "string")
+      if (
+        typeof decoded === "string" ||
+        typeof decoded.sub !== "string" ||
+        !uuid.safeParse(decoded.jti).success ||
+        typeof decoded.exp !== "number"
+      )
         throw Error();
       const result = await pool.query(
-        "SELECT user_id,firstname,lastname,email,user_type FROM users WHERE user_id=$1 AND status=1",
-        [decoded.sub],
+        "SELECT u.user_id,u.firstname,u.lastname,u.email,u.user_type FROM users u JOIN fusion_sessions s ON s.user_id=u.user_id WHERE u.user_id=$1 AND u.status=1 AND s.id=$2 AND s.revoked_at IS NULL AND s.expires_at>now()",
+        [decoded.sub, decoded.jti],
       );
       if (!result.rowCount) throw Error();
       res.locals.user = result.rows[0];
+      res.locals.sessionId = decoded.jti;
       next();
     } catch {
       next(new HttpError(401, "Authentication required"));
     }
+  });
+  app.post("/api/v1/logout", async (_req, res) => {
+    await pool.query(
+      "UPDATE fusion_sessions SET revoked_at=now() WHERE id=$1 AND user_id=$2",
+      [res.locals.sessionId, res.locals.user.user_id],
+    );
+    res.clearCookie("fusion_session", { path: "/" });
+    res.json({ ok: true });
+  });
+  app.post("/api/v1/logout-all", async (_req, res) => {
+    await transaction(pool, async (c) => {
+      await c.query("SELECT user_id FROM users WHERE user_id=$1 FOR UPDATE", [
+        res.locals.user.user_id,
+      ]);
+      await c.query(
+        "UPDATE fusion_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",
+        [res.locals.user.user_id],
+      );
+    });
+    res.clearCookie("fusion_session", { path: "/" });
+    res.json({ ok: true });
   });
   app.get("/api/v1/users/me", (_req, res) => res.json(res.locals.user));
   app.get("/api/v1/users", async (_req, res) => {
@@ -238,15 +298,23 @@ export function createApp(
       .strict()
       .parse(req.body);
     const id = res.locals.user.user_id;
-    const r = await pool.query("SELECT password FROM users WHERE user_id=$1", [
-      id,
-    ]);
-    if (!(await compare(b.current_password, r.rows[0].password)))
-      throw new HttpError(401, "Invalid password");
-    await pool.query("UPDATE users SET password=$2 WHERE user_id=$1", [
-      id,
-      await hash(b.password, 12),
-    ]);
+    await transaction(pool, async (c) => {
+      const r = await c.query(
+        "SELECT password FROM users WHERE user_id=$1 FOR UPDATE",
+        [id],
+      );
+      if (!(await compare(b.current_password, r.rows[0].password)))
+        throw new HttpError(401, "Invalid password");
+      await c.query("UPDATE users SET password=$2 WHERE user_id=$1", [
+        id,
+        await hash(b.password, 12),
+      ]);
+      await c.query(
+        "UPDATE fusion_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",
+        [id],
+      );
+    });
+    res.clearCookie("fusion_session", { path: "/" });
     res.json({ ok: true });
   });
   const owner = async (id: string, userId: string) => {
@@ -331,6 +399,14 @@ export function createApp(
         `INSERT INTO fusion_monitors(user_id,${names.join(",")}) VALUES($1,${names.map((_, i) => "$" + (i + 2)).join(",")}) RETURNING *`,
         [res.locals.user.user_id, ...values],
       );
+      if (!fields.enabled || fields.paused) {
+        r.rows[0] = (
+          await c.query(
+            "UPDATE fusion_monitors SET monitor_state=$2 WHERE id=$1 RETURNING *",
+            [r.rows[0].id, !fields.enabled ? "disabled" : "paused"],
+          )
+        ).rows[0];
+      }
       await replaceChannels(
         c,
         r.rows[0].id,
@@ -363,13 +439,42 @@ export function createApp(
       id,
       res.locals.user.user_id,
       async (c) => {
+        const previous = (
+          await c.query("SELECT * FROM fusion_monitors WHERE id=$1", [id])
+        ).rows[0];
+        const harmless = new Set([
+          "name",
+          "interval_seconds",
+          "enabled",
+          "paused",
+          "notify_failures",
+          "notify_attention",
+          "visual_threshold",
+          "pixel_threshold",
+          "step_budget_ms",
+        ]);
+        const configurationChanged = Object.entries(fields).some(
+          ([k, v]) =>
+            !harmless.has(k) &&
+            JSON.stringify(previous[k]) !== JSON.stringify(v),
+        );
+        if (new URL(previous.url).origin !== new URL(fields.url).origin)
+          await c.query(
+            "DELETE FROM fusion_monitor_vault WHERE monitor_id=$1",
+            [id],
+          );
+        if (configurationChanged)
+          await c.query(
+            "INSERT INTO fusion_events(monitor_id,status,configuration_changed) VALUES($1,'reset',true)",
+            [id],
+          );
         const names = Object.keys(fields);
         const values = Object.values(fields).map((v) =>
           Array.isArray(v) ? JSON.stringify(v) : v,
         );
         const r = await c.query(
-          `UPDATE fusion_monitors SET ${names.map((n, i) => n + "=$" + (i + 2)).join(",")},baseline_id=null,next_run=now(),last_error=null,failure_count=0 WHERE id=$1 RETURNING *`,
-          [id, ...values],
+          `UPDATE fusion_monitors SET ${names.map((n, i) => n + "=$" + (i + 2)).join(",")},baseline_id=CASE WHEN $${names.length + 2} THEN NULL ELSE baseline_id END,monitor_state=CASE WHEN NOT $${names.indexOf("enabled") + 2} THEN 'disabled' WHEN $${names.indexOf("paused") + 2} THEN 'paused' WHEN $${names.length + 2} OR baseline_id IS NULL THEN 'waiting_baseline' WHEN monitor_state IN ('paused','disabled') THEN 'healthy' ELSE monitor_state END,next_run=now() WHERE id=$1 RETURNING *`,
+          [id, ...values, configurationChanged],
         );
         await replaceChannels(c, id, res.locals.user.user_id, channel_ids);
         return r.rows[0];
@@ -380,7 +485,7 @@ export function createApp(
   app.post("/api/v1/jobs/:id/run", async (req, res) => {
     const id = String(req.params.id);
     const monitor = await owner(id, res.locals.user.user_id);
-    if (!monitor.enabled)
+    if (!monitor.enabled || monitor.paused)
       throw new HttpError(409, "Enable the monitor before running it");
     await pool.query(
       "UPDATE fusion_monitors SET next_run=now() WHERE id=$1 AND user_id=$2",
@@ -393,7 +498,7 @@ export function createApp(
     await owner(id, res.locals.user.user_id);
     await lockedMutation(id, res.locals.user.user_id, async (c) => {
       await c.query(
-        "UPDATE fusion_monitors SET baseline_id=null,next_run=now() WHERE id=$1",
+        "UPDATE fusion_monitors SET baseline_id=null,monitor_state='waiting_baseline',next_run=now() WHERE id=$1",
         [id],
       );
       await c.query(
@@ -413,6 +518,80 @@ export function createApp(
     });
     res.json({ ok: true });
   });
+  app.get("/api/v1/jobs/:id/private-values", async (req, res) => {
+    const id = String(req.params.id);
+    await owner(id, res.locals.user.user_id);
+    const r = await pool.query(
+      "SELECT value_names,expires_at,updated_at FROM fusion_monitor_vault WHERE monitor_id=$1 AND user_id=$2",
+      [id, res.locals.user.user_id],
+    );
+    res.setHeader("Cache-Control", "private, no-store");
+    res.json(r.rows[0] ?? { value_names: [] });
+  });
+  app.put("/api/v1/jobs/:id/private-values", async (req, res) => {
+    const id = String(req.params.id),
+      m = await owner(id, res.locals.user.user_id),
+      b = vaultSchema.parse(req.body);
+    if (
+      m.kind !== "browser" ||
+      m.visual_enabled ||
+      new URL(m.url).protocol !== "https:"
+    )
+      throw new HttpError(
+        422,
+        "Private values require an HTTPS text-only browser monitor",
+      );
+    const origin = new URL(m.url).origin;
+    await policy.target(m.url);
+    await lockedMutation(id, res.locals.user.user_id, async (c) => {
+      const latest = (
+        await c.query(
+          "SELECT url,visual_enabled,kind FROM fusion_monitors WHERE id=$1",
+          [id],
+        )
+      ).rows[0];
+      if (
+        latest.url !== m.url ||
+        latest.visual_enabled ||
+        latest.kind !== "browser"
+      )
+        throw new HttpError(409, "Monitor configuration changed. Retry.");
+      await c.query(
+        "INSERT INTO fusion_monitor_vault(monitor_id,user_id,origin,encrypted,value_names,expires_at) VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(monitor_id) DO UPDATE SET origin=EXCLUDED.origin,encrypted=EXCLUDED.encrypted,value_names=EXCLUDED.value_names,expires_at=EXCLUDED.expires_at,updated_at=now()",
+        [
+          id,
+          m.user_id,
+          origin,
+          sealValues(b.values, cfg.CHANNEL_KEY, id, m.user_id, origin),
+          JSON.stringify(Object.keys(b.values)),
+          b.expires_at,
+        ],
+      );
+      await c.query(
+        "UPDATE fusion_monitors SET baseline_id=null,monitor_state='waiting_baseline',next_run=now() WHERE id=$1",
+        [id],
+      );
+      await c.query(
+        "INSERT INTO fusion_events(monitor_id,status,configuration_changed) VALUES($1,'reset',true)",
+        [id],
+      );
+    });
+    res.json({ ok: true });
+  });
+  app.delete("/api/v1/jobs/:id/private-values", async (req, res) => {
+    const id = String(req.params.id);
+    await owner(id, res.locals.user.user_id);
+    await lockedMutation(id, res.locals.user.user_id, async (c) => {
+      await c.query(
+        "DELETE FROM fusion_monitor_vault WHERE monitor_id=$1 AND user_id=$2",
+        [id, res.locals.user.user_id],
+      );
+      await c.query("UPDATE fusion_monitors SET next_run=now() WHERE id=$1", [
+        id,
+      ]);
+    });
+    res.json({ ok: true });
+  });
   app.get("/api/v1/jobs/:id/history", async (req, res) => {
     const id = String(req.params.id);
     await owner(id, res.locals.user.user_id);
@@ -428,14 +607,44 @@ export function createApp(
       ])
       .optional()
       .parse(req.query.status);
+    const paginated = req.query.page !== undefined;
+    const page = z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(100000)
+      .default(1)
+      .parse(req.query.page);
+    const size = z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .default(20)
+      .parse(req.query.page_size);
     const r = await pool.query(
       `SELECT e.*,b.screenshot before_image,a.screenshot after_image,
    coalesce((SELECT jsonb_agg(jsonb_build_object('channel_id',o.channel_id,'status',o.status,'attempts',o.attempts,'error',o.last_error)) FROM fusion_outbox o WHERE o.event_id=e.id),'[]'::jsonb) deliveries
    FROM fusion_events e LEFT JOIN fusion_captures b ON b.id=e.before_id LEFT JOIN fusion_captures a ON a.id=e.after_id
-   WHERE e.monitor_id=$1 AND ($2::text IS NULL OR e.status=$2) ORDER BY e.created_at DESC LIMIT 100`,
+   WHERE e.monitor_id=$1 AND ($2::text IS NULL OR e.status=$2) ORDER BY e.created_at DESC,e.id DESC LIMIT $3 OFFSET $4`,
+      [
+        id,
+        status ?? null,
+        paginated ? size : 100,
+        paginated ? (page - 1) * size : 0,
+      ],
+    );
+    if (!paginated) return res.json(r.rows);
+    const count = await pool.query(
+      "SELECT count(*) FROM fusion_events WHERE monitor_id=$1 AND ($2::text IS NULL OR status=$2)",
       [id, status ?? null],
     );
-    res.json(r.rows);
+    res.json({
+      items: r.rows,
+      total: Number(count.rows[0].count),
+      page,
+      page_size: size,
+    });
   });
   app.get("/api/v1/screenshots/:name", async (req, res) => {
     const name = z
@@ -526,6 +735,63 @@ export function createApp(
       res.locals.user.user_id,
     ]);
     res.json({ ok: true });
+  });
+  app.get("/api/v1/deliveries", async (req, res) => {
+    const page = z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(100000)
+      .default(1)
+      .parse(req.query.page);
+    const size = z.coerce
+      .number()
+      .int()
+      .min(1)
+      .max(100)
+      .default(20)
+      .parse(req.query.page_size);
+    const status = z
+      .enum(["pending", "retrying", "sending", "sent", "failed"])
+      .optional()
+      .parse(req.query.status);
+    const where =
+      "ch.user_id=$1 AND m.user_id=$1 AND ($2::text IS NULL OR CASE WHEN o.status='pending' AND o.attempts>0 THEN 'retrying' ELSE o.status END=$2)";
+    const from =
+      "FROM fusion_outbox o JOIN fusion_channels ch ON ch.id=o.channel_id JOIN fusion_events e ON e.id=o.event_id JOIN fusion_monitors m ON m.id=e.monitor_id";
+    const r = await pool.query(
+      `SELECT o.id,o.event_id,o.channel_id,ch.name channel_name,m.id monitor_id,m.name monitor_name,o.attempts,o.next_attempt,o.delivered_at,o.last_error,CASE WHEN o.status='pending' AND o.attempts>0 THEN 'retrying' ELSE o.status END status ${from} WHERE ${where} ORDER BY o.next_attempt DESC,o.id DESC LIMIT $3 OFFSET $4`,
+      [res.locals.user.user_id, status ?? null, size, (page - 1) * size],
+    );
+    const count = await pool.query(`SELECT count(*) ${from} WHERE ${where}`, [
+      res.locals.user.user_id,
+      status ?? null,
+    ]);
+    res.json({
+      items: r.rows,
+      total: Number(count.rows[0].count),
+      page,
+      page_size: size,
+    });
+  });
+  app.post("/api/v1/deliveries/:id/retry", async (req, res) => {
+    const id = uuid.parse(req.params.id);
+    if (res.locals.user.user_type !== 2)
+      throw new HttpError(403, "Administrator required");
+    await transaction(pool, async (c) => {
+      const lock = await c.query(
+        "SELECT pg_try_advisory_xact_lock(hashtextextended($1,1)) locked",
+        [id],
+      );
+      if (!lock.rows[0].locked)
+        throw new HttpError(409, "Delivery is currently running");
+      const r = await c.query(
+        "UPDATE fusion_outbox o SET status='pending',attempts=0,next_attempt=now(),last_error=null FROM fusion_channels ch,fusion_events e,fusion_monitors m WHERE o.id=$1 AND o.status='failed' AND ch.id=o.channel_id AND ch.enabled AND ch.user_id=$2 AND e.id=o.event_id AND m.id=e.monitor_id AND m.user_id=$2 RETURNING o.id",
+        [id, res.locals.user.user_id],
+      );
+      if (!r.rowCount) throw new HttpError(404, "Failed delivery not found");
+    });
+    res.status(202).json({ queued: true });
   });
   app.post("/api/v1/notifications/:id/test", async (req, res) => {
     const channelId = String(req.params.id);

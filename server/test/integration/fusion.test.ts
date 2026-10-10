@@ -107,7 +107,7 @@ test("fresh migration is repeatable and decimal columns are NUMERIC", async () =
   assert.equal(r.rows[0].data_type, "numeric");
   assert.equal(
     (await pool.query("SELECT count(*) FROM fusion_migrations")).rows[0].count,
-    "2",
+    "3",
   );
 });
 test("JWT, admin checks, CSRF, disabled registration and removed scheduler endpoint", async () => {
@@ -532,7 +532,7 @@ test("legacy migration preserves owner, historical references and NUMERIC decima
     await legacy.query(
       "INSERT INTO history(job_id,change_percent,screenshot,source_screenshot) VALUES(1,1,'historical.png','baseline.png')",
     );
-    // Reconstruct the applied Sprint 1 schema, then upgrade only through migration 002.
+    // Reconstruct the applied Sprint 1.1 schema, then apply only the new migration 003.
     const firstSQL = await readFile(
       new URL("../../migrations/001_fusion.sql", import.meta.url),
       "utf8",
@@ -544,6 +544,21 @@ test("legacy migration preserves owner, historical references and NUMERIC decima
     await legacy.query(
       "INSERT INTO fusion_migrations(name,checksum) VALUES($1,$2)",
       ["001_fusion.sql", createHash("sha256").update(firstSQL).digest("hex")],
+    );
+    const secondSQL = await readFile(
+      new URL(
+        "../../migrations/002_capture_modes_dimensions.sql",
+        import.meta.url,
+      ),
+      "utf8",
+    );
+    await legacy.query(secondSQL);
+    await legacy.query(
+      "INSERT INTO fusion_migrations(name,checksum) VALUES($1,$2)",
+      [
+        "002_capture_modes_dimensions.sql",
+        createHash("sha256").update(secondSQL).digest("hex"),
+      ],
     );
     const original = (await legacy.query("SELECT id FROM fusion_monitors"))
       .rows[0].id;
@@ -569,6 +584,13 @@ test("legacy migration preserves owner, historical references and NUMERIC decima
       ])
     ).rows[0];
     assert.equal(upgraded.capture_mode, "viewport");
+    assert.deepEqual(upgraded.browser_steps, []);
+    assert.equal(upgraded.monitor_state, "healthy");
+    assert.equal(
+      (await legacy.query("SELECT count(*) FROM fusion_migrations")).rows[0]
+        .count,
+      "3",
+    );
     assert.equal(upgraded.baseline_id, preservedCapture);
     assert.equal(upgraded.latest_capture_id, preservedCapture);
     assert.equal(upgraded.last_percent, "0.3500000000");
@@ -736,7 +758,20 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
     const output = process.env.UI_SCREENSHOT_DIR ?? root;
     await mkdir(output, { recursive: true });
+    await page
+      .getByRole("button", { name: "Hybrid fixture", exact: true })
+      .waitFor();
+    await page
+      .getByRole("searchbox", { name: "Search monitors" })
+      .fill("Hybrid fixture");
+    assert.equal(
+      await page
+        .getByRole("button", { name: "Dimension fixture", exact: true })
+        .count(),
+      0,
+    );
     await page.screenshot({ path: path.join(output, "dashboard-desktop.png") });
+    await page.getByRole("searchbox", { name: "Search monitors" }).fill("");
     await page
       .getByRole("button", { name: "Hybrid fixture", exact: true })
       .click();
@@ -802,6 +837,17 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await page.screenshot({
       path: path.join(output, "capture-settings-mobile.png"),
     });
+    await page
+      .getByRole("button", { name: "Add browser step", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "Add browser step", exact: true })
+      .click();
+    await page.getByRole("button", { name: "Move step 2 up" }).click();
+    await page.getByRole("button", { name: "Remove step 2" }).click();
+    await page.locator('section[aria-label="Browser steps"]').screenshot({
+      path: path.join(output, "browser-steps-mobile.png"),
+    });
     assert.deepEqual(errors, []);
   } finally {
     cfg.PUBLIC_URL = oldURL;
@@ -840,7 +886,17 @@ test("automatic worker scheduling handles due monitors and respects retry backof
 test("administrator authorization is database-backed; token role claims are ignored", async () => {
   const me = (await ownerAgent.get("/api/v1/users/me")).body;
   const claimed = jwt.sign(
-    { sub: me.user_id, admin: true, user_type: 2 },
+    {
+      sub: me.user_id,
+      jti: (
+        await pool.query(
+          "SELECT id FROM fusion_sessions WHERE user_id=$1 AND revoked_at IS NULL LIMIT 1",
+          [me.user_id],
+        )
+      ).rows[0].id,
+      admin: true,
+      user_type: 2,
+    },
     cfg.JWT_SECRET,
     {
       algorithm: "HS256",
@@ -1055,4 +1111,631 @@ test("worker concurrency follows configured browser limit and stopping prevents 
         .set("X-Fusion-Request", "1")
         .expect(200);
   }
+});
+
+test("browser steps execute cookie dismissal, dropdown, form fill, CSS/XPath waits and scrolling before one hybrid capture", async (t) => {
+  const fixture = managedServer(t, (_req, res) => {
+    res.end(
+      `<html><style>body{margin:0}main{width:320px;height:240px;background:white}</style><button id="cookie" onclick="this.remove()">Accept cookies</button><input id="field"><select id="choice"><option value="a">A</option><option value="b">B</option></select><button id="apply" onclick="document.querySelector('main').textContent=document.querySelector('#field').value+' '+document.querySelector('#choice').value">Apply</button><main>before</main></html>`,
+    );
+  });
+  await listenServer(fixture);
+  const port = (fixture.address() as AddressInfo).port;
+  const policy = new EgressPolicy(
+    async () => [{ address: "127.0.0.1", family: 4 }],
+    () => true,
+    new Set([port]),
+  );
+  const steps = [
+    { action: "wait_selector", selector: "//main", selector_type: "xpath" },
+    { action: "dismiss_cookie", selector: "#cookie" },
+    { action: "fill_literal", selector: "#field", value: "synthetic" },
+    { action: "select_option", selector: "#choice", value: "b" },
+    { action: "click", selector: "#apply" },
+    { action: "wait_visible", selector: "main" },
+    { action: "scroll_to", selector: "//main", selector_type: "xpath" },
+    { action: "scroll_by", y: 20 },
+    { action: "delay", duration_ms: 1 },
+  ];
+  const result = await capture(
+    {
+      ...monitor,
+      url: `http://127.0.0.1:${port}`,
+      selector: "//main",
+      selector_type: "xpath",
+      capture_mode: "element",
+      capture_selector: "//main",
+      capture_selector_type: "xpath",
+      browser_steps: steps,
+    } as any,
+    cfg,
+    policy,
+  );
+  assert.equal(result.text, "synthetic b");
+  assert.ok(result.screenshot);
+  assert.equal(PNG.sync.read(result.screenshot).width, 320);
+  const optional = await capture(
+    {
+      ...monitor,
+      url: `http://127.0.0.1:${port}`,
+      browser_steps: [
+        {
+          action: "wait_visible",
+          selector: "#missing",
+          timeout_ms: 100,
+          continue_on_error: true,
+        },
+      ],
+    } as any,
+    cfg,
+    policy,
+  );
+  assert.equal(optional.warning, "optional_step_failed");
+  await assert.rejects(
+    capture(
+      {
+        ...monitor,
+        url: `http://127.0.0.1:${port}`,
+        browser_steps: [
+          {
+            action: "fill_literal",
+            selector: "#missing",
+            value: "synthetic-private-fixture",
+            timeout_ms: 100,
+          },
+        ],
+      } as any,
+      cfg,
+      policy,
+    ),
+    (e) =>
+      e instanceof Error &&
+      !e.message.includes("synthetic-private-fixture") &&
+      e.message.includes("Browser step 1"),
+  );
+  await assert.rejects(
+    capture(
+      {
+        ...monitor,
+        url: `http://127.0.0.1:${port}`,
+        capture_mode: "element",
+        capture_selector: "button",
+        browser_steps: [],
+      } as any,
+      cfg,
+      policy,
+    ),
+    /exactly one/,
+  );
+  await assert.rejects(
+    capture(
+      {
+        ...monitor,
+        url: `http://127.0.0.1:${port}`,
+        browser_steps: [{ action: "delay", duration_ms: 5000 }],
+        step_budget_ms: 100,
+      } as any,
+      cfg,
+      policy,
+    ),
+    /Browser step/,
+  );
+});
+
+test("browser challenge fixtures distinguish denied, login and heuristic CAPTCHA without solving", async (t) => {
+  const fixture = managedServer(t, (req, res) => {
+    if (req.url === "/denied") {
+      res.statusCode = 403;
+      res.end("Forbidden");
+    } else if (req.url === "/unauthorized") {
+      res.statusCode = 401;
+      res.end("Unauthorized");
+    } else if (req.url === "/login")
+      res.end('<title>Sign in</title><input type="password">');
+    else if (req.url === "/challenge")
+      res.end(
+        '<title>Just a moment...</title><div id="challenge-running">Verify</div>',
+      );
+    else
+      res.end(
+        "<title>Article about CAPTCHA</title><main>Normal content</main>",
+      );
+  });
+  await listenServer(fixture);
+  const port = (fixture.address() as AddressInfo).port,
+    policy = new EgressPolicy(
+      async () => [{ address: "127.0.0.1", family: 4 }],
+      () => true,
+      new Set([port]),
+    );
+  for (const [path, message] of [
+    ["/denied", "does not confirm a CAPTCHA"],
+    ["/unauthorized", "HTTP 401"],
+    ["/login", "Possible login screen"],
+    ["/challenge", "Possible browser challenge"],
+  ])
+    await assert.rejects(
+      capture(
+        {
+          ...monitor,
+          url: `http://127.0.0.1:${port}${path}`,
+          selector: "",
+          browser_steps: [],
+        } as any,
+        cfg,
+        policy,
+      ),
+      (e) => e instanceof Error && e.message.includes(message),
+    );
+  const normal = await capture(
+    {
+      ...monitor,
+      url: `http://127.0.0.1:${port}/article`,
+      selector: "",
+      browser_steps: [],
+    } as any,
+    cfg,
+    policy,
+  );
+  assert.equal(normal.text, "Normal content");
+});
+
+test("account sessions revoke cookie and bearer tokens on logout, logout-all, expiration and password changes", async () => {
+  const securityApp = createApp(pool, cfg),
+    email = "sessions@example.com",
+    other = "sessions-other@example.com";
+  await pool.query("INSERT INTO users(email,password) VALUES($1,$3),($2,$3)", [
+    email,
+    other,
+    await hash(password, 4),
+  ]);
+  const login = async (address = email, pass = password) => {
+    const r = await request(securityApp)
+      .post("/api/v1/login")
+      .set("X-Fusion-Request", "1")
+      .send({ email: address, password: pass })
+      .expect(200);
+    return r.headers["set-cookie"][0]
+      .split(";")[0]
+      .slice("fusion_session=".length);
+  };
+  const me = (token: string) =>
+    request(securityApp)
+      .get("/api/v1/users/me")
+      .set("Authorization", "Bearer " + token);
+  const post = (token: string, path: string, body = {}) =>
+    request(securityApp)
+      .post("/api/v1/" + path)
+      .set("X-Fusion-Request", "1")
+      .set("Authorization", "Bearer " + token)
+      .send(body);
+  const one = await login(),
+    two = await login(),
+    foreign = await login(other);
+  await post(one, "logout").expect(200);
+  await me(one).expect(401);
+  await request(securityApp)
+    .get("/api/v1/users/me")
+    .set("Cookie", "fusion_session=" + one)
+    .expect(401);
+  await me(two).expect(200);
+  await post(two, "logout-all").expect(200);
+  await me(two).expect(401);
+  await me(foreign).expect(200);
+  const three = await login(),
+    four = await login();
+  await post(three, "users/changepassword", {
+    current_password: "incorrect",
+    password: "synthetic-new-password",
+  }).expect(401);
+  await me(three).expect(200);
+  await post(three, "users/changepassword", {
+    current_password: password,
+    password: "synthetic-new-password",
+  }).expect(200);
+  await me(three).expect(401);
+  await me(four).expect(401);
+  await me(foreign).expect(200);
+  const five = await login(email, "synthetic-new-password"),
+    decoded = jwt.decode(five) as jwt.JwtPayload;
+  await pool.query(
+    "UPDATE fusion_sessions SET expires_at=now()-interval '1 second' WHERE id=$1",
+    [decoded.jti],
+  );
+  await me(five).expect(401);
+  const sign = (payload: any) =>
+    jwt.sign(payload, cfg.JWT_SECRET, {
+      algorithm: "HS256",
+      expiresIn: "2h",
+      issuer: "changd-fusion",
+      audience: "changd-fusion-ui",
+    });
+  await me(sign({ sub: decoded.sub })).expect(401);
+  await me(sign({ sub: decoded.sub, jti: randomUUID() })).expect(401);
+  const otherDecoded = jwt.decode(foreign) as jwt.JwtPayload;
+  await me(sign({ sub: decoded.sub, jti: otherDecoded.jti })).expect(401);
+});
+
+test("private vault is write-only, owner-bound and expiring; missing values preserve baseline and trigger one attention alert", async () => {
+  const m = (
+    await ownerAgent
+      .post("/api/v1/jobs")
+      .set("X-Fusion-Request", "1")
+      .send({
+        name: "Private fixture",
+        url: "https://example.com",
+        browser_steps: [
+          {
+            action: "fill_private",
+            selector: "#account",
+            credential: "fixture",
+          },
+        ],
+        notify_attention: true,
+        channel_ids: [channelId],
+      })
+      .expect(201)
+  ).body;
+  const values = { fixture: "synthetic-sensitive-fixture" },
+    path = `/api/v1/jobs/${m.id}/private-values`,
+    body = { values, expires_at: new Date(Date.now() + 60000).toISOString() };
+  await otherAgent
+    .put(path)
+    .set("X-Fusion-Request", "1")
+    .send(body)
+    .expect(404);
+  await otherAgent.get(path).expect(404);
+  await otherAgent.delete(path).set("X-Fusion-Request", "1").expect(404);
+  await ownerAgent
+    .put(path)
+    .set("X-Fusion-Request", "1")
+    .send(body)
+    .expect(200);
+  const metadata = (await ownerAgent.get(path).expect(200)).body;
+  assert.deepEqual(metadata.value_names, ["fixture"]);
+  assert.ok(!JSON.stringify(metadata).includes(values.fixture));
+  assert.ok(
+    !JSON.stringify(
+      (await ownerAgent.get(`/api/v1/jobs/${m.id}`).expect(200)).body,
+    ).includes(values.fixture),
+  );
+  const encrypted = (
+    await pool.query(
+      "SELECT encrypted FROM fusion_monitor_vault WHERE monitor_id=$1",
+      [m.id],
+    )
+  ).rows[0].encrypted;
+  assert.ok(!encrypted.includes(values.fixture));
+  await runMonitor(pool, cfg, m.id, {
+    force: true,
+    capture: async (mon) => {
+      assert.deepEqual(mon.private_values, values);
+      return { text: "redacted synthetic capture", screenshot: null };
+    },
+  });
+  const baseline = (
+    await pool.query("SELECT baseline_id FROM fusion_monitors WHERE id=$1", [
+      m.id,
+    ])
+  ).rows[0].baseline_id;
+  await pool.query(
+    "UPDATE fusion_monitor_vault SET expires_at=now()-interval '1 second' WHERE monitor_id=$1",
+    [m.id],
+  );
+  for (let i = 0; i < 2; i++)
+    await runMonitor(pool, cfg, m.id, {
+      force: true,
+      capture: async () => {
+        throw Error("capture must not run after expiry");
+      },
+    });
+  const state = (
+    await pool.query("SELECT * FROM fusion_monitors WHERE id=$1", [m.id])
+  ).rows[0];
+  assert.equal(state.monitor_state, "authentication_required");
+  assert.equal(state.baseline_id, baseline);
+  assert.equal(state.latest_capture_id, baseline);
+  assert.equal(
+    (
+      await pool.query(
+        "SELECT count(*) FROM fusion_outbox o JOIN fusion_events e ON e.id=o.event_id WHERE e.monitor_id=$1",
+        [m.id],
+      )
+    ).rows[0].count,
+    "1",
+  );
+  await ownerAgent.delete(path).set("X-Fusion-Request", "1").expect(200);
+  assert.deepEqual((await ownerAgent.get(path)).body.value_names, []);
+  await ownerAgent
+    .put(path)
+    .set("X-Fusion-Request", "1")
+    .send({ ...body, expires_at: new Date(0).toISOString() })
+    .expect(400);
+  await ownerAgent
+    .post("/api/v1/jobs")
+    .set("X-Fusion-Request", "1")
+    .send({
+      name: "Unsafe private visual",
+      url: "https://example.com",
+      visual_enabled: true,
+      browser_steps: [
+        { action: "fill_private", selector: "#x", credential: "fixture" },
+      ],
+    })
+    .expect(400);
+});
+
+test("failure state transitions preserve captures, back off and notify once per persistent or challenge state", async () => {
+  const { AttentionFailure } = await import("../../src/attention.js");
+  const m = (
+    await ownerAgent
+      .post("/api/v1/jobs")
+      .set("X-Fusion-Request", "1")
+      .send({
+        name: "Failure fixture",
+        url: "https://example.com",
+        notify_failures: true,
+        notify_attention: true,
+        channel_ids: [channelId],
+      })
+      .expect(201)
+  ).body;
+  await runMonitor(pool, cfg, m.id, {
+    force: true,
+    capture: async () => ({ text: "baseline", screenshot: null }),
+  });
+  const baseline = (
+    await pool.query("SELECT baseline_id FROM fusion_monitors WHERE id=$1", [
+      m.id,
+    ])
+  ).rows[0].baseline_id;
+  for (let i = 0; i < 4; i++)
+    await runMonitor(pool, cfg, m.id, {
+      force: true,
+      capture: async () => {
+        throw Error("synthetic raw sensitive error");
+      },
+    });
+  let state = (
+    await pool.query("SELECT * FROM fusion_monitors WHERE id=$1", [m.id])
+  ).rows[0];
+  assert.equal(state.monitor_state, "persistent_failure");
+  assert.equal(state.failure_count, 4);
+  assert.equal(state.baseline_id, baseline);
+  assert.equal(state.latest_capture_id, baseline);
+  assert.ok(state.execution_ms >= 0);
+  assert.ok(state.last_success_at);
+  assert.ok(!state.last_error.includes("sensitive"));
+  const count = async () =>
+    (
+      await pool.query(
+        "SELECT count(*) FROM fusion_outbox o JOIN fusion_events e ON e.id=o.event_id WHERE e.monitor_id=$1",
+        [m.id],
+      )
+    ).rows[0].count;
+  assert.equal(await count(), "1");
+  for (let i = 0; i < 2; i++)
+    await runMonitor(pool, cfg, m.id, {
+      force: true,
+      capture: async () => {
+        throw new AttentionFailure(
+          "challenge_detected",
+          "heuristic",
+          "Possible browser challenge detected.",
+        );
+      },
+    });
+  state = (
+    await pool.query("SELECT * FROM fusion_monitors WHERE id=$1", [m.id])
+  ).rows[0];
+  assert.equal(state.monitor_state, "challenge_detected");
+  assert.equal(state.warning_code, "heuristic");
+  assert.ok(state.next_run.getTime() - state.last_run.getTime() >= 900000);
+  assert.equal(await count(), "2");
+  await runMonitor(pool, cfg, m.id, {
+    force: true,
+    capture: async () => ({ text: "baseline", screenshot: null }),
+  });
+  state = (
+    await pool.query("SELECT * FROM fusion_monitors WHERE id=$1", [m.id])
+  ).rows[0];
+  assert.equal(state.monitor_state, "unchanged");
+  assert.equal(state.failure_count, 0);
+  assert.equal(state.warning_code, null);
+});
+
+test("pagination, configuration resets, paused scheduling and delivery retry enforce ownership", async () => {
+  const m = (
+    await ownerAgent
+      .post("/api/v1/jobs")
+      .set("X-Fusion-Request", "1")
+      .send({
+        name: "Pagination fixture",
+        url: "https://example.com",
+        channel_ids: [channelId],
+      })
+      .expect(201)
+  ).body;
+  for (const text of ["one", "two", "three"])
+    await runMonitor(pool, cfg, m.id, {
+      force: true,
+      capture: async () => ({ text, screenshot: null }),
+    });
+  const baseline = (
+    await pool.query("SELECT baseline_id FROM fusion_monitors WHERE id=$1", [
+      m.id,
+    ])
+  ).rows[0].baseline_id;
+  const page1 = (
+      await ownerAgent
+        .get(`/api/v1/jobs/${m.id}/history?page=1&page_size=2`)
+        .expect(200)
+    ).body,
+    page2 = (
+      await ownerAgent
+        .get(`/api/v1/jobs/${m.id}/history?page=2&page_size=2`)
+        .expect(200)
+    ).body;
+  assert.equal(page1.total, 3);
+  assert.equal(page1.items.length, 2);
+  assert.equal(page2.items.length, 1);
+  assert.ok(!page1.items.some((e: any) => e.id === page2.items[0].id));
+  await otherAgent.get(`/api/v1/jobs/${m.id}/history?page=1`).expect(404);
+  await ownerAgent.get(`/api/v1/jobs/${m.id}/history?page=0`).expect(400);
+  await ownerAgent
+    .put(`/api/v1/jobs/${m.id}`)
+    .set("X-Fusion-Request", "1")
+    .send({
+      name: "Renamed",
+      url: "https://example.com",
+      channel_ids: [channelId],
+      paused: true,
+    })
+    .expect(200);
+  assert.equal(
+    (
+      await pool.query("SELECT baseline_id FROM fusion_monitors WHERE id=$1", [
+        m.id,
+      ])
+    ).rows[0].baseline_id,
+    baseline,
+  );
+  assert.equal(
+    await runMonitor(pool, cfg, m.id, {
+      force: true,
+      capture: async () => {
+        throw Error("paused capture must not run");
+      },
+    }),
+    false,
+  );
+  await ownerAgent
+    .post(`/api/v1/jobs/${m.id}/run`)
+    .set("X-Fusion-Request", "1")
+    .expect(409);
+  await ownerAgent
+    .put(`/api/v1/jobs/${m.id}`)
+    .set("X-Fusion-Request", "1")
+    .send({
+      name: "Renamed",
+      url: "https://example.com",
+      selector: "#new-region",
+      channel_ids: [channelId],
+    })
+    .expect(200);
+  assert.equal(
+    (
+      await pool.query("SELECT baseline_id FROM fusion_monitors WHERE id=$1", [
+        m.id,
+      ])
+    ).rows[0].baseline_id,
+    null,
+  );
+  const reset = (
+    await ownerAgent.get(`/api/v1/jobs/${m.id}/history?status=reset&page=1`)
+  ).body.items[0];
+  assert.equal(reset.configuration_changed, true);
+  assert.ok(
+    (await pool.query("SELECT id FROM fusion_captures WHERE id=$1", [baseline]))
+      .rowCount,
+  );
+  const outbox = (
+    await pool.query(
+      "SELECT o.id FROM fusion_outbox o JOIN fusion_events e ON e.id=o.event_id WHERE e.monitor_id=$1 LIMIT 1",
+      [m.id],
+    )
+  ).rows[0].id;
+  await pool.query(
+    "UPDATE fusion_outbox SET status='failed',attempts=5 WHERE id=$1",
+    [outbox],
+  );
+  const deliveries = (
+    await ownerAgent
+      .get("/api/v1/deliveries?page=1&page_size=100&status=failed")
+      .expect(200)
+  ).body;
+  assert.ok(deliveries.items.some((d: any) => d.id === outbox));
+  assert.ok(
+    !(await otherAgent.get("/api/v1/deliveries")).body.items.some(
+      (d: any) => d.id === outbox,
+    ),
+  );
+  await ownerAgent
+    .post(`/api/v1/deliveries/${outbox}/retry`)
+    .set("X-Fusion-Request", "1")
+    .expect(403);
+  const me = (await ownerAgent.get("/api/v1/users/me")).body;
+  await pool.query("UPDATE users SET user_type=2 WHERE user_id=$1", [
+    me.user_id,
+  ]);
+  try {
+    await ownerAgent
+      .post(`/api/v1/deliveries/${outbox}/retry`)
+      .set("X-Fusion-Request", "1")
+      .expect(202);
+    const row = (
+      await pool.query("SELECT * FROM fusion_outbox WHERE id=$1", [outbox])
+    ).rows[0];
+    assert.equal(row.status, "pending");
+    assert.equal(row.attempts, 0);
+  } finally {
+    await pool.query("UPDATE users SET user_type=0 WHERE user_id=$1", [
+      me.user_id,
+    ]);
+  }
+});
+
+test("notification retries stop permanently at five attempts with bounded exponential backoff", async () => {
+  await pool.query(
+    "UPDATE fusion_outbox SET next_attempt=now()+interval '1 day' WHERE status IN ('pending','sending')",
+  );
+  const m = (
+    await ownerAgent
+      .post("/api/v1/jobs")
+      .set("X-Fusion-Request", "1")
+      .send({
+        name: "Retry fixture",
+        url: "https://example.com",
+        channel_ids: [channelId],
+      })
+      .expect(201)
+  ).body;
+  await runMonitor(pool, cfg, m.id, {
+    force: true,
+    capture: async () => ({ text: "before", screenshot: null }),
+  });
+  await runMonitor(pool, cfg, m.id, {
+    force: true,
+    capture: async () => ({ text: "after", screenshot: null }),
+  });
+  const id = (
+    await pool.query(
+      "SELECT o.id FROM fusion_outbox o JOIN fusion_events e ON e.id=o.event_id WHERE e.monitor_id=$1",
+      [m.id],
+    )
+  ).rows[0].id;
+  let sent = 0;
+  for (let attempt = 1; attempt <= 5; attempt++) {
+    await pool.query(
+      "UPDATE fusion_outbox SET next_attempt=now() WHERE id=$1",
+      [id],
+    );
+    await dispatch(pool, cfg, async (_provider, _config, event) => {
+      assert.equal(event.monitorId, m.id);
+      sent++;
+      throw Error("synthetic provider error with private details");
+    });
+    const row = (
+      await pool.query("SELECT * FROM fusion_outbox WHERE id=$1", [id])
+    ).rows[0];
+    assert.equal(row.attempts, attempt);
+    assert.equal(row.status, attempt === 5 ? "failed" : "pending");
+    assert.equal(row.last_error, "Provider delivery failed");
+    const delay = row.next_attempt.getTime() - Date.now();
+    assert.ok(delay >= 30 * 2 ** attempt * 1000 - 2000 && delay <= 3600000);
+  }
+  await dispatch(pool, cfg, async () => {
+    sent++;
+  });
+  assert.equal(sent, 5);
 });

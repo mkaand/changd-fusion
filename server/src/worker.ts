@@ -14,7 +14,7 @@ export async function workerCycle(
   } = {},
 ) {
   const due = await pool.query(
-    "SELECT id FROM fusion_monitors WHERE enabled AND next_run<=now() ORDER BY next_run LIMIT 5",
+    "SELECT id FROM fusion_monitors WHERE enabled AND NOT paused AND next_run<=now() ORDER BY next_run LIMIT 5",
   );
   let next = 0;
   await Promise.all(

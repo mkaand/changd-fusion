@@ -1,6 +1,9 @@
 import { chromium, type Browser } from "playwright";
 import { EgressPolicy, browserProxy, safeFetch } from "./egress.js";
 import { normalizeText } from "./comparison.js";
+import { locate, runSteps, type BrowserStep } from "./browser-steps.js";
+import { detectAttention } from "./attention.js";
+import { HttpError } from "./errors.js";
 import { checkDimensions, pngDimensions } from "./image.js";
 import type { Config } from "./config.js";
 export type Monitor = {
@@ -20,6 +23,14 @@ export type Monitor = {
   ignore_case: boolean;
   capture_mode: "viewport" | "full_page" | "element";
   capture_selector: string;
+  capture_selector_type?: "css" | "xpath";
+  browser_steps?: BrowserStep[];
+  step_budget_ms?: number;
+  private_values?: Record<string, string>;
+  paused?: boolean;
+  monitor_state?: string;
+  notify_failures?: boolean;
+  notify_attention?: boolean;
   visual_threshold: string;
   pixel_threshold: string;
   interval_seconds: number;
@@ -27,7 +38,11 @@ export type Monitor = {
   latest_capture_id: string | null;
   failure_count: number;
 };
-export type Capture = { text: string | null; screenshot: Buffer | null };
+export type Capture = {
+  text: string | null;
+  screenshot: Buffer | null;
+  warning?: string;
+};
 function stableJSON(value: any): any {
   if (Array.isArray(value)) return value.map(stableJSON);
   if (value && typeof value === "object")
@@ -57,6 +72,18 @@ export async function capture(
         : response.body.toString();
     return { text: normalizeText(text, m), screenshot: null };
   }
+  const privateValues = m.private_values ?? {};
+  const privateWorkflow = (m.browser_steps ?? []).some(
+    (s) => s.action === "fill_private",
+  );
+  if (
+    privateWorkflow &&
+    (m.visual_enabled || new URL(m.url).protocol !== "https:")
+  )
+    throw new HttpError(
+      422,
+      "Private workflows require HTTPS and text-only capture",
+    );
   const proxy = await browserProxy(policy);
   let browser: Browser | undefined;
   let timer: NodeJS.Timeout | undefined;
@@ -86,7 +113,13 @@ export async function capture(
     context.setDefaultTimeout(Math.min(cfg.CAPTURE_TIMEOUT_MS, 10000));
     await context.route("**/*", async (route) => {
       try {
-        await policy.target(route.request().url());
+        const requested = route.request().url();
+        if (
+          privateWorkflow &&
+          new URL(requested).origin !== new URL(m.url).origin
+        )
+          throw Error();
+        await policy.target(requested);
         await route.continue();
       } catch {
         await route.abort("blockedbyclient");
@@ -94,11 +127,45 @@ export async function capture(
     });
     await context.routeWebSocket("**/*", (ws) => ws.close());
     const page = await context.newPage();
+    let navigationStatus = 200;
+    page.on("response", (r) => {
+      if (r.request().isNavigationRequest() && r.frame() === page.mainFrame())
+        navigationStatus = r.status();
+    });
     const response = await page.goto(m.url, {
       waitUntil: "domcontentloaded",
       timeout: cfg.CAPTURE_TIMEOUT_MS,
     });
-    if (!response || !response.ok()) throw Error("Capture navigation failed");
+    if (!response) throw Error("Capture navigation failed");
+    if (!response.ok())
+      throw (
+        detectAttention(
+          response.status(),
+          new URL(page.url()).pathname,
+          "",
+          false,
+          false,
+        ) ??
+        new HttpError(422, "Website returned an unsuccessful HTTP response")
+      );
+    const warning = await runSteps(
+      page,
+      m.browser_steps ?? [],
+      Math.min(deadline, Date.now() + (m.step_budget_ms ?? 20000)),
+      privateValues,
+    );
+    const attention = detectAttention(
+      navigationStatus,
+      new URL(page.url()).pathname,
+      await page.title(),
+      (await page.locator('input[type="password"]').count()) > 0,
+      (await page
+        .locator(
+          'iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .cf-challenge, #challenge-running, [data-sitekey]',
+        )
+        .count()) > 0,
+    );
+    if (attention) throw attention;
     await page.evaluate(() => document.fonts.ready);
     for (const selector of m.ignore_selectors)
       await page
@@ -107,13 +174,16 @@ export async function capture(
     const locator = m.selector
       ? m.selector_type === "xpath"
         ? page.locator("xpath=" + m.selector)
-        : page.locator(m.selector)
+        : locate(page, m.selector)
       : page.locator("body");
-    const text = m.text_enabled
-      ? normalizeText((await locator.allTextContents()).join("\n"), m)
-      : null;
+    let extracted = m.text_enabled
+      ? (await locator.allTextContents()).join("\n")
+      : "";
+    for (const value of Object.values(privateValues))
+      extracted = extracted.split(value).join("[private]");
+    const text = m.text_enabled ? normalizeText(extracted, m) : null;
     if (m.text_enabled && m.selector && (await locator.count()) === 0)
-      throw Error("Extraction selector matched no elements");
+      throw new HttpError(422, "Extraction selector matched no elements");
     // Freeze animations and use the same page for DOM and all screenshot modes.
     let screenshot: Buffer | null = null;
     if (m.visual_enabled) {
@@ -130,15 +200,26 @@ export async function capture(
         type: "png" as const,
         animations: "disabled" as const,
         timeout: Math.max(1, deadline - Date.now()),
-        mask: m.mask_selectors.map((s) => page.locator(s)),
+        mask: m.mask_selectors.map((s) =>
+          s.startsWith("xpath=") ? page.locator(s) : locate(page, s),
+        ),
       };
       if (m.capture_mode === "element") {
-        const region = page.locator(m.capture_selector);
+        const region = locate(
+          page,
+          m.capture_selector,
+          m.capture_selector_type,
+        );
         if ((await region.count()) !== 1)
-          throw Error("Capture selector must match exactly one element");
+          throw new HttpError(
+            422,
+            "Capture selector must match exactly one element",
+          );
+        if (!(await region.isVisible()))
+          throw new HttpError(422, "Capture region is not visible");
         await region.scrollIntoViewIfNeeded();
         const bounds = await region.boundingBox();
-        if (!bounds) throw Error("Capture region is not visible");
+        if (!bounds) throw new HttpError(422, "Capture region is not visible");
         checkDimensions(
           { width: Math.ceil(bounds.width), height: Math.ceil(bounds.height) },
           limits,
@@ -170,7 +251,7 @@ export async function capture(
     }
     if (text && text.length > 2_000_000)
       throw Error("Extracted text too large");
-    return { text, screenshot };
+    return { text, screenshot, warning };
   } finally {
     if (timer) clearTimeout(timer);
     try {

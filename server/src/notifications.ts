@@ -33,6 +33,8 @@ export type EventMessage = {
   textSummary: string;
   link: string;
   images: string[];
+  attentionState?: string | null;
+  attentionMessage?: string | null;
 };
 export const escapeHTML = (s: string) =>
   s.replace(
@@ -53,10 +55,10 @@ export function visualSummary(event: EventMessage) {
   return `Visual change: ${formatPercent(event.percent ?? "0")}%`;
 }
 export function summary(event: EventMessage) {
-  return `${event.name}\n${event.textChanged ? "Text changed: " + event.textSummary + "\n" : ""}${event.visualChanged ? visualSummary(event) + "\n" : ""}${event.link}`;
+  return `${event.name}\n${event.attentionState ? event.attentionState.replaceAll("_", " ") + ": " + (event.attentionMessage ?? "Requires attention") + "\n" : ""}${event.textChanged ? "Text changed: " + event.textSummary + "\n" : ""}${event.visualChanged ? visualSummary(event) + "\n" : ""}${event.link}`;
 }
 export function emailHTML(e: EventMessage) {
-  return `<h1>${escapeHTML(e.name)}</h1>${e.textChanged ? `<h2>Text changes</h2><pre>${escapeHTML(e.textSummary)}</pre>` : ""}${e.visualChanged ? `<p>${escapeHTML(visualSummary(e))}</p>` : ""}<p><a href="${escapeHTML(e.link)}">Open monitor</a></p>${e.images.length ? "<p>Before, after and available diff images are attached.</p>" : ""}`;
+  return `<h1>${escapeHTML(e.name)}</h1>${e.attentionState ? `<p>${escapeHTML(e.attentionState.replaceAll("_", " "))}: ${escapeHTML(e.attentionMessage ?? "Requires attention")}</p>` : ""}${e.textChanged ? `<h2>Text changes</h2><pre>${escapeHTML(e.textSummary)}</pre>` : ""}${e.visualChanged ? `<p>${escapeHTML(visualSummary(e))}</p>` : ""}<p><a href="${escapeHTML(e.link)}">Open monitor</a></p>${e.images.length ? "<p>Before, after and available diff images are attached.</p>" : ""}`;
 }
 export type TelegramSend = (
   token: string,
@@ -118,12 +120,23 @@ export async function deliver(
     policy?: EgressPolicy;
   } = {},
 ) {
-  const files = await Promise.all(
+  const candidates = await Promise.all(
     event.images.slice(0, 3).map(async (name, i) => ({
       filename: ["before.png", "after.png", "diff.png"][i],
       content: await storage.read(name),
     })),
   );
+  // Omit oversized images instead of sending partial/corrupt PNGs; total attachments <= 8 MiB.
+  let bytes = 0;
+  const files = candidates.filter((f) => {
+    if (
+      f.content.length > 4 * 1024 * 1024 ||
+      bytes + f.content.length > 8 * 1024 * 1024
+    )
+      return false;
+    bytes += f.content.length;
+    return true;
+  });
   if (provider === "smtp") {
     const c = smtpSchema.parse(config);
     const t = await (
@@ -139,17 +152,27 @@ export async function deliver(
       connectionTimeout: 15000,
       socketTimeout: 15000,
     });
+    let timer: NodeJS.Timeout | undefined;
     try {
-      await transport.sendMail({
-        from: c.from,
-        to: c.to,
-        subject: `Changd Fusion: ${event.name}`,
-        text: summary(event),
-        html: emailHTML(event),
-        attachments: files,
-        messageId: `<${event.id}@changd-fusion.example.com>`,
-      });
+      await Promise.race([
+        transport.sendMail({
+          from: c.from,
+          to: c.to,
+          subject: `Changd Fusion: ${event.name}`,
+          text: summary(event),
+          html: emailHTML(event),
+          attachments: files,
+          messageId: `<${event.id}@changd-fusion.example.com>`,
+        }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(
+            () => reject(Error("SMTP delivery timed out")),
+            45000,
+          );
+        }),
+      ]);
     } finally {
+      if (timer) clearTimeout(timer);
       transport.close();
     }
   } else if (provider === "telegram") {
@@ -167,7 +190,23 @@ export async function deliver(
       ),
       "application/json",
     );
-    if (files.length) {
+    if (files.length === 1) {
+      const boundary = "fusion-" + randomUUID();
+      const f = files[0];
+      const body = Buffer.concat([
+        Buffer.from(
+          `--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${c.chat_id}\r\n--${boundary}\r\nContent-Disposition: form-data; name="photo"; filename="${f.filename}"\r\nContent-Type: image/png\r\n\r\n`,
+        ),
+        f.content,
+        Buffer.from(`\r\n--${boundary}--\r\n`),
+      ]);
+      await send(
+        c.token,
+        "sendPhoto",
+        body,
+        `multipart/form-data; boundary=${boundary}`,
+      );
+    } else if (files.length > 1) {
       // One album request keeps the before/after/diff images together.
       const boundary = "fusion-" + randomUUID();
       const parts: Buffer[] = [];

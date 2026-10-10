@@ -55,3 +55,25 @@ test("retention releases its connection if acquiring the cleanup lock fails", as
   await assert.rejects(retainHistory(pool, cfg), /lock acquisition failure/);
   assert.equal(destroyed, true);
 });
+
+test("failed transaction rollback destroys the database connection and preserves the original safe error", async () => {
+  const { transaction } = await import("../src/db.js");
+  let destroyed: unknown;
+  const c = {
+    query: async (sql: string) => {
+      if (sql === "ROLLBACK") throw Error("connection lost");
+      return { rows: [] };
+    },
+    release: (value: unknown) => {
+      destroyed = value;
+    },
+  };
+  const original = Error("synthetic transaction failure");
+  await assert.rejects(
+    transaction({ connect: async () => c } as any, async () => {
+      throw original;
+    }),
+    (e) => e === original,
+  );
+  assert.equal(destroyed, true);
+});

@@ -1,3 +1,4 @@
+import { detectAttention } from "./attention.js";
 import dns from "node:dns/promises";
 import http from "node:http";
 import https from "node:https";
@@ -135,7 +136,10 @@ export async function safeFetch(
       continue;
     }
     if (result.status < 200 || result.status >= 300)
-      throw Error("Target returned an unsuccessful response");
+      throw (
+        detectAttention(result.status, target.url.pathname, "", false, false) ??
+        new HttpError(422, "Target returned an unsuccessful response")
+      );
     return result;
   }
   throw new HttpError(400, "Too many redirects");
