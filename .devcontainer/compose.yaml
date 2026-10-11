@@ -1,0 +1,68 @@
+services:
+  # A bounded filesystem bootstrap, not the application: no network or database
+  # access, only the private runtime directory and dedicated home volume mounted.
+  permissions:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    user: "0:0"
+    entrypoint: ["python3", "/bootstrap/permissions.py"]
+    network_mode: none
+    read_only: true
+    cap_drop: [ALL]
+    cap_add: [CHOWN, FOWNER, DAC_OVERRIDE]
+    volumes:
+      - ../.preview:/state
+      - preview_home:/home/node
+      - ./permissions.py:/bootstrap/permissions.py:ro
+    mem_limit: 64m
+    pids_limit: 32
+    cpus: 0.25
+  preview:
+    build:
+      context: ..
+      dockerfile: .devcontainer/Dockerfile
+    user: "1000:1000"
+    init: true
+    command: node /workspaces/changd-fusion/.devcontainer/container-main.mjs
+    volumes:
+      - ..:/workspaces/changd-fusion:cached
+      - preview_home:/home/node
+    depends_on:
+      db: { condition: service_healthy }
+      permissions: { condition: service_completed_successfully }
+    security_opt: ["seccomp=../docker/chromium-seccomp.json"]
+    cpus: 2
+    mem_limit: 6g
+    pids_limit: 512
+    shm_size: 512mb
+    stop_grace_period: 90s
+    environment:
+      HOME: /home/node
+      XDG_CONFIG_HOME: /home/node/.config
+      PLAYWRIGHT_EXECUTABLE_PATH: /usr/bin/chromium
+    # No published Docker ports. Only Codespaces forwards application port 3000.
+  db:
+    image: postgres:16.13-alpine@sha256:4e6e670bb069649261c9c18031f0aded7bb249a5b6664ddec29c013a89310d50
+    environment:
+      POSTGRES_USER: fusion_preview
+      POSTGRES_DB: fusion_preview
+      POSTGRES_PASSWORD_FILE: /run/secrets/preview_db_password
+    depends_on:
+      permissions: { condition: service_completed_successfully }
+    secrets: [preview_db_password]
+    volumes: [preview_database:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fusion_preview -d fusion_preview"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    cpus: 0.5
+    mem_limit: 512m
+    pids_limit: 128
+secrets:
+  preview_db_password:
+    file: ../.preview/db-password
+volumes:
+  preview_database:
+  preview_home:

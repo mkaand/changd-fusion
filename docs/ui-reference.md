@@ -1,0 +1,7 @@
+# Changd UI reference and Fusion adaptation
+
+Sprint 3C reviewed the upstream Changd dashboard screenshot and the upstream React source in `paschmann/changd`. The reference has a compact dark-blue header, a roughly 200 px light sidebar, small grouped navigation, a breadcrumb and action toolbar, and a bordered, information-dense jobs table. The upstream table exposes type, name, run/error counters, last change/run, next run and compact icon actions. Its screenshot does not demonstrate a visual picker, browser workflows, theme selector, notification delivery state, or responsive mobile cards.
+
+Changd Fusion retains that operational character while using its current React 19 and Ant Design 6 implementation. The desktop shell uses a compact navy header, a light 200 px-style sidebar, dense summaries, a toolbar, and a bordered monitor table with URL controls and modern monitor state. Fusion intentionally differs where its verified features need space: unified text/visual status, safe URL controls, notification policies, authenticated settings and responsive cards below the desktop breakpoint.
+
+Material UI changes must update the relevant README screenshots in the same development change. Screenshots in `docs/images/` are generated from the real Playwright integration fixture and use only synthetic accounts, monitors and captures.
