@@ -24,6 +24,8 @@ import {
   BellOutlined,
   SettingOutlined,
   LogoutOutlined,
+  HistoryOutlined,
+  BarChartOutlined,
   PlusOutlined,
   MenuOutlined,
   MoreOutlined,
@@ -52,6 +54,12 @@ const AccountSecurity = lazy(() =>
 );
 const Settings = lazy(() =>
   import("./Settings").then((m) => ({ default: m.Settings })),
+);
+const Timeline = lazy(() =>
+  import("./Timeline").then((m) => ({ default: m.Timeline })),
+);
+const Analytics = lazy(() =>
+  import("./Analytics").then((m) => ({ default: m.Analytics })),
 );
 import logo from "./assets/logo.svg";
 const { Header, Sider, Content } = Layout;
@@ -269,6 +277,8 @@ export default function FusionApp() {
       items={[
         { key: "jobs", icon: <EyeOutlined />, label: "Monitors" },
         { key: "notifications", icon: <BellOutlined />, label: "Notifications" },
+        { key: "timeline", icon: <HistoryOutlined />, label: "Timeline" },
+        { key: "analytics", icon: <BarChartOutlined />, label: "Analytics" },
         { key: "settings", icon: <SettingOutlined />, label: "Settings" },
       ]}
       onClick={({ key }) => navigate(key)}
@@ -375,7 +385,11 @@ export default function FusionApp() {
               </div>
             }
           >
-            {page === "settings" ? (
+            {page === "timeline" ? (
+              <Timeline monitors={monitors} />
+            ) : page === "analytics" ? (
+              <Analytics monitors={monitors} />
+            ) : page === "settings" ? (
               <Settings channels={channels} monitors={monitors} reload={() => void reload("mutation")} report={(s: string) => void message.info(s)} admin={user.user_type === 2} signedOut={() => setUser(null)} theme={themeAdapter} />
             ) : page === "notifications" ? (
               <>

@@ -724,6 +724,108 @@ export function createApp(
       page_size: size,
     });
   });
+  const timelineStatus = z.enum([
+    "baseline",
+    "unchanged",
+    "changed",
+    "failed",
+    "reset",
+    "legacy",
+    "test",
+    "digest",
+    "extraction_transition",
+  ]);
+  const timelineDate = z
+    .string()
+    .datetime({ offset: true })
+    .transform((value) => new Date(value));
+  const timelineFilterQuery = z
+    .object({
+      monitor_id: uuid.optional(),
+      status: timelineStatus.optional(),
+      from: timelineDate.optional(),
+      to: timelineDate.optional(),
+    })
+    .strict()
+    .refine((value) => !value.from || !value.to || value.from <= value.to, {
+      message: "Start date must precede end date",
+    });
+  const timelineQuery = timelineFilterQuery
+    .extend({
+      page: z.coerce.number().int().min(1).max(100000).default(1),
+      page_size: z.coerce.number().int().min(1).max(100).default(25),
+    })
+    .refine((value) => !value.from || !value.to || value.from <= value.to, {
+      message: "Start date must precede end date",
+    });
+  const eventScope = (query: z.infer<typeof timelineQuery>, userId: string) => [
+    userId,
+    query.monitor_id ?? null,
+    query.status ?? null,
+    query.from ?? null,
+    query.to ?? null,
+  ];
+  app.get("/api/v1/timeline", async (req, res) => {
+    const query = timelineQuery.parse(req.query);
+    const values = eventScope(query, res.locals.user.user_id);
+    const where = `m.user_id=$1
+      AND ($2::uuid IS NULL OR e.monitor_id=$2)
+      AND ($3::text IS NULL OR e.status=$3)
+      AND ($4::timestamptz IS NULL OR e.created_at >= $4)
+      AND ($5::timestamptz IS NULL OR e.created_at <= $5)`;
+    const [events, count] = await Promise.all([
+      pool.query(
+        `SELECT e.id,e.monitor_id,m.name AS monitor_name,e.status,e.text_changed,e.visual_changed,
+          e.visual_percent,e.dimension_changed,e.attention_state,e.warning_code,e.failure_stage,
+          e.failure_code,e.error,e.created_at,e.execution_ms,e.notification_state
+         FROM fusion_events e JOIN fusion_monitors m ON m.id=e.monitor_id
+         WHERE ${where} ORDER BY e.created_at DESC,e.id DESC LIMIT $6 OFFSET $7`,
+        [...values, query.page_size, (query.page - 1) * query.page_size],
+      ),
+      pool.query(`SELECT count(*) FROM fusion_events e JOIN fusion_monitors m ON m.id=e.monitor_id WHERE ${where}`, values),
+    ]);
+    res.json({
+      items: events.rows,
+      total: Number(count.rows[0].count),
+      page: query.page,
+      page_size: query.page_size,
+    });
+  });
+  app.get("/api/v1/analytics", async (req, res) => {
+    const query = timelineFilterQuery.parse(req.query);
+    const values = eventScope({ ...query, page: 1, page_size: 25 }, res.locals.user.user_id);
+    const where = `m.user_id=$1
+      AND ($2::uuid IS NULL OR e.monitor_id=$2)
+      AND ($3::text IS NULL OR e.status=$3)
+      AND ($4::timestamptz IS NULL OR e.created_at >= $4)
+      AND ($5::timestamptz IS NULL OR e.created_at <= $5)`;
+    const [summary, distribution, trend] = await Promise.all([
+      pool.query(
+        `SELECT count(*) total,
+          count(*) FILTER (WHERE e.status='changed') changed,
+          count(*) FILTER (WHERE e.status='failed') failed,
+          count(*) FILTER (WHERE e.status <> 'failed') successful
+         FROM fusion_events e JOIN fusion_monitors m ON m.id=e.monitor_id WHERE ${where}`,
+        values,
+      ),
+      pool.query(
+        `SELECT e.status,count(*)::int AS count FROM fusion_events e JOIN fusion_monitors m ON m.id=e.monitor_id
+         WHERE ${where} GROUP BY e.status ORDER BY count DESC,e.status ASC`,
+        values,
+      ),
+      pool.query(
+        `SELECT to_char(date_trunc('day',e.created_at AT TIME ZONE 'UTC'),'YYYY-MM-DD') AS day,
+          count(*)::int AS total,
+          count(*) FILTER (WHERE e.status='changed')::int AS changed,
+          count(*) FILTER (WHERE e.status='failed')::int AS failed,
+          count(*) FILTER (WHERE e.status <> 'failed')::int AS successful
+         FROM fusion_events e JOIN fusion_monitors m ON m.id=e.monitor_id
+         WHERE ${where} GROUP BY date_trunc('day',e.created_at AT TIME ZONE 'UTC') ORDER BY day ASC`,
+        values,
+      ),
+    ]);
+    res.json({ summary: summary.rows[0], distribution: distribution.rows, trend: trend.rows });
+  });
   app.get("/api/v1/screenshots/:name", async (req, res) => {
     const name = z
       .string()
