@@ -498,7 +498,7 @@ export function createApp(
   app.post("/api/v1/jobs/:id/region-preview", async (req, res) => {
     const monitor = await owner(String(req.params.id), res.locals.user.user_id);
     const point = z.object({ x: z.number().finite(), y: z.number().finite() }).optional().parse(Object.keys(req.body ?? {}).length ? req.body : undefined);
-    const preview = await previewRegion(monitor, cfg, point);
+    const preview = await previewRegion(monitor, cfg, point, policy);
     res.json(preview);
   });
   app.put("/api/v1/jobs/:id", async (req, res) => {

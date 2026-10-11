@@ -540,7 +540,7 @@ export default function FusionApp() {
                     rowKey="id"
                     loading={loading}
                     dataSource={filteredMonitors}
-                    scroll={{ x: 1100 }}
+                    scroll={{ x: 1000 }}
                     pagination={{ pageSize: 10, hideOnSinglePage: true }}
                     locale={{
                       emptyText: (
@@ -550,6 +550,7 @@ export default function FusionApp() {
                     columns={[
                       {
                         title: "Monitor",
+                        width: 118,
                         dataIndex: "name",
                         sorter: (a: any, b: any) =>
                           a.name.localeCompare(b.name),
@@ -561,6 +562,7 @@ export default function FusionApp() {
                       },
                       {
                         title: "Detection",
+                        width: 104,
                         render: (_, m: any) => (
                           <Space>
                             {m.text_enabled && <Tag>Text</Tag>}
@@ -571,11 +573,13 @@ export default function FusionApp() {
                       },
                       {
                         title: "URL",
+                        width: 205,
                         responsive: ["md"],
                         render: (_, m: any) => <Space><Typography.Text ellipsis={{ tooltip: m.url }} style={{ maxWidth: 180 }}>{m.url}</Typography.Text><MonitorUrlActions url={m.url} message={message} compact /></Space>,
                       },
                       {
                         title: "Visual change",
+                        width: 68,
                         dataIndex: "last_percent",
                         render: (v: string, m: any) =>
                           m.last_dimension_change ? (
@@ -586,6 +590,7 @@ export default function FusionApp() {
                       },
                       {
                         title: "Status",
+                        width: 96,
                         sorter: (a: any, b: any) =>
                           monitorState(a).localeCompare(monitorState(b)),
                         render: (_, m: any) => (
@@ -607,6 +612,7 @@ export default function FusionApp() {
                       },
                       {
                         title: "Last change",
+                        width: 98,
                         dataIndex: "last_change_at",
                         responsive: ["lg"],
                         sorter: (a: any, b: any) =>
@@ -617,6 +623,7 @@ export default function FusionApp() {
                       },
                       {
                         title: "Last checked",
+                        width: 98,
                         dataIndex: "last_run",
                         responsive: ["lg"],
                         render: (s: string) =>
@@ -625,23 +632,18 @@ export default function FusionApp() {
                       {
                         responsive: ["lg"],
                         title: "Next check",
+                        width: 92,
                         dataIndex: "next_run",
                         render: (s: string) => new Date(s).toLocaleString(),
                       },
                       {
                         title: "Actions",
+                        width: 64,
+                        align: "center" as const,
                         render: (_, m: any) => (
-                          <Space>
-                            <Button onClick={() => void edit(m)}>Edit</Button>
-                            <Button
-                              danger
-                              onClick={() =>
-                                remove(m)
-                              }
-                            >
-                              Delete
-                            </Button>
-                          </Space>
+                          <Dropdown trigger={["click"]} menu={{ items: [{ key: "edit", label: "Edit" }, { key: "delete", danger: true, label: "Delete" }], onClick: ({ key }) => key === "edit" ? void edit(m) : remove(m) }}>
+                            <Button type="text" aria-label={`Actions for ${m.name}`} icon={<MoreOutlined />} />
+                          </Dropdown>
                         ),
                       },
                     ]}

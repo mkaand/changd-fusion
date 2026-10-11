@@ -5,10 +5,9 @@ import { HttpError } from "./errors.js";
 import { checkDimensions, pngDimensions } from "./image.js";
 import type { Monitor } from "./capture.js";
 
-export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number; y: number }) {
+export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number; y: number }, policy = new EgressPolicy()) {
   if (m.kind !== "browser" || !m.visual_enabled) throw new HttpError(422, "Visual browser capture is required");
   if ((m.browser_steps ?? []).some((step) => step.action === "fill_private")) throw new HttpError(422, "Region preview does not use private values");
-  const policy = new EgressPolicy();
   await policy.target(m.url);
   const proxy = await browserProxy(policy);
   let browser: Browser | undefined;
@@ -31,7 +30,7 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
         const parts: string[] = [];
         let node: Element | null = element;
         while (node && parts.length < 6) {
-          if (node.id && /^[A-Za-z][\\w-]*$/.test(node.id)) { parts.unshift("#" + CSS.escape(node.id)); break; }
+          if (node.id && /^[A-Za-z][\w-]*$/.test(node.id)) { parts.unshift("#" + CSS.escape(node.id)); break; }
           const parent: Element | null = node.parentElement;
           const tag: string = node.tagName.toLowerCase();
           if (!parent) { parts.unshift(tag); break; }

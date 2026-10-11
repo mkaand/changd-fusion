@@ -126,7 +126,7 @@ export const fusionTheme: ThemeConfig = {
   token: {
     colorPrimary: "#1677ff",
     borderRadius: 6,
-    fontFamily: "-apple-system, BlinkMacSystemFont, Segoe UI, sans-serif",
+    fontFamily: '"Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
   },
 };
 export const themeConfig = (resolved: "light" | "dark"): ThemeConfig => ({

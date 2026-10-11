@@ -800,8 +800,44 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
         .count(),
       0,
     );
+    const actionsMenu = page.getByRole("button", { name: "Actions for Hybrid fixture" });
+    await actionsMenu.waitFor();
+    assert.ok(await actionsMenu.isVisible(), "desktop actions must remain visible");
+    const actionBounds = await actionsMenu.boundingBox();
+    assert.ok(
+      actionBounds && actionBounds.x + actionBounds.width <= 1278,
+      "desktop actions must not be clipped at the table edge",
+    );
     await page.screenshot({ path: path.join(output, "dashboard-desktop.png") });
     await themeSwitch.click();
+    await page.waitForFunction(() => {
+      if (document.documentElement.dataset.theme !== "dark") return false;
+      const cell = document.querySelector(".monitor-table-card .ant-table-tbody td");
+      const item = document.querySelector(".ant-layout-sider .ant-menu-item:not(.ant-menu-item-selected) .ant-menu-title-content");
+      if (!cell || !item) return false;
+      const cellColor = getComputedStyle(cell).backgroundColor;
+      const itemColor = getComputedStyle(item).color;
+      return cellColor === "rgb(17, 30, 47)" && itemColor === "rgb(198, 212, 228)";
+    });
+    await page.waitForTimeout(1000);
+    assert.equal(
+      await page.locator(".monitor-table-card .ant-table-tbody td").first().evaluate((cell) => getComputedStyle(cell).backgroundColor),
+      "rgb(17, 30, 47)",
+      "the settled dark table must keep its semantic dark surface",
+    );
+    assert.equal(
+      await page.locator(".ant-layout-sider .ant-menu-item:not(.ant-menu-item-selected) .ant-menu-title-content").first().evaluate((item) => getComputedStyle(item).color),
+      "rgb(198, 212, 228)",
+      "dark sidebar navigation labels must remain readable",
+    );
+    assert.equal(
+      await page.evaluate(() => {
+        const target = document.elementFromPoint(600, 350)?.closest("td, th, .ant-table-cell");
+        return target ? getComputedStyle(target).backgroundColor : "missing";
+      }),
+      "rgb(17, 30, 47)",
+      "the visible dark table surface must not retain a light token",
+    );
     await page.screenshot({ path: path.join(output, "dashboard-desktop-dark.png") });
     await themeSwitch.click();
     await page.getByText("Settings", { exact: true }).first().click();
@@ -2150,4 +2186,26 @@ test("monitoring defaults and bulk channel assignment are owner-scoped and trans
   await otherAgent.post("/api/v1/monitors/notification-channels/bulk").set("X-Fusion-Request", "1").send({ monitor_ids: [monitor.id], channel_id: channelId, action: "remove", confirm: true }).expect(404);
   const association = await pool.query("SELECT 1 FROM fusion_monitor_channels WHERE monitor_id=$1 AND channel_id=$2", [monitor.id, channelId]);
   assert.equal(association.rowCount, 1);
+});
+
+test("visual region picker preview maps screenshot coordinates to a unique visible selector without mutating until saved", async (t) => {
+  const fixture = managedServer(t, (_req, res) => res.end(`<!doctype html><style>body{margin:0}#product{position:absolute;left:100px;top:120px;width:240px;height:80px}#hidden{display:none}</style><main id="product">Selected product</main><div id="hidden">Hidden</div>`));
+  await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
+  const port = (fixture.address() as AddressInfo).port;
+  const pickerPolicy = new EgressPolicy(async () => [{ address: "127.0.0.1", family: 4 }], () => true, new Set([port]));
+  const pickerApp = createApp(pool, cfg, pickerPolicy);
+  const pickerOwner = request.agent(pickerApp), pickerOther = request.agent(pickerApp);
+  for (const [agent, email] of [[pickerOwner, "owner@example.com"], [pickerOther, "other@example.com"]] as const)
+    await agent.post("/api/v1/login").set("X-Fusion-Request", "1").send({ email, password }).expect(200);
+  const created = (await pickerOwner.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({ name: "Region fixture", url: `http://fixture.example:${port}/`, kind: "browser", text_enabled: false, visual_enabled: true, capture_mode: "viewport", channel_ids: [] }).expect(201)).body;
+  const initial = await pickerOwner.post(`/api/v1/jobs/${created.id}/region-preview`).set("X-Fusion-Request", "1").send({}).expect(200);
+  assert.ok(initial.body.image.length > 100);
+  assert.equal(initial.body.selection, null);
+  const picked = await pickerOwner.post(`/api/v1/jobs/${created.id}/region-preview`).set("X-Fusion-Request", "1").send({ x: 130, y: 150 }).expect(200);
+  assert.equal(picked.body.selection.selector, "#product");
+  assert.equal((await pickerOwner.get(`/api/v1/jobs/${created.id}`).expect(200)).body.capture_selector, "");
+  await pickerOther.post(`/api/v1/jobs/${created.id}/region-preview`).set("X-Fusion-Request", "1").send({}).expect(404);
+  await pickerOwner.put(`/api/v1/jobs/${created.id}`).set("X-Fusion-Request", "1").send({ name: "Region fixture", url: `http://fixture.example:${port}/`, kind: "browser", text_enabled: false, visual_enabled: true, capture_mode: "element", capture_selector_type: "css", capture_selector: picked.body.selection.selector, channel_ids: [] }).expect(200);
+  assert.equal((await pickerOwner.get(`/api/v1/jobs/${created.id}`).expect(200)).body.capture_selector, "#product");
+  await pickerOwner.post(`/api/v1/jobs/${created.id}/region-preview`).set("X-Fusion-Request", "1").send({ x: -1, y: 0 }).expect(422);
 });
