@@ -18,7 +18,7 @@ import { Storage } from "./storage.js";
 import { stepsSchema } from "./browser-steps.js";
 import { vaultSchema, sealValues } from "./vault.js";
 import { randomUUID } from "node:crypto";
-import { previewRegion } from "./region-picker.js";
+import { previewRegion, type RegionPreviewFailure } from "./region-picker.js";
 import pino from "pino";
 import { Decimal } from "decimal.js";
 import path from "node:path";
@@ -112,6 +112,22 @@ const credentials = z
       .min(12)
       .max(72)
       .refine((value) => Buffer.byteLength(value, "utf8") <= 72),
+  })
+  .strict();
+const regionPreviewInput = z
+  .object({
+    monitor_id: uuid.optional(),
+    monitor: z
+      .object({
+        url: z.string().url().max(2048),
+        kind: z.literal("browser"),
+        visual_enabled: z.literal(true),
+        browser_steps: stepsSchema.optional().default([]),
+      })
+      .strict(),
+    point: z
+      .object({ x: z.number().finite(), y: z.number().finite() })
+      .optional(),
   })
   .strict();
 const channelInput = z
@@ -495,11 +511,35 @@ export function createApp(
       channel_ids: channels.rows.map((r) => r.channel_id),
     });
   });
+  const runRegionPreview = async (req: Request, res: Response, monitor: any, point?: { x: number; y: number }) => {
+    const started = performance.now();
+    try {
+      const preview = await previewRegion(monitor, cfg, point, policy);
+      res.json(preview);
+    } catch (error) {
+      const failure = error as RegionPreviewFailure;
+      const duration = Math.max(0, Math.round(performance.now() - started));
+      // Deliberately structured and minimal: URL, query text, page content, selectors and raw errors stay out of logs.
+      log.warn({ code: "region_preview_failed", stage: failure.stage, failure_code: failure.failure_code, duration_ms: duration, request_id: res.locals.requestId }, "Region preview failed");
+      res.status(failure.status ?? 422).json({
+        error: failure.message ?? "Website preview failed. Retry, or use viewport capture instead.",
+        request_id: res.locals.requestId,
+        preview_stage: failure.stage ?? "unknown",
+        failure_code: failure.failure_code ?? "unknown",
+        duration_ms: duration,
+      });
+    }
+  };
+  app.post("/api/v1/region-preview", async (req, res) => {
+    const body = regionPreviewInput.parse(req.body);
+    if (body.monitor_id) await owner(body.monitor_id, res.locals.user.user_id);
+    await runRegionPreview(req, res, { ...body.monitor, id: body.monitor_id ?? "preview", browser_steps: body.monitor.browser_steps }, body.point);
+  });
+  // Retained for already released clients. New and edited forms use the draft-aware endpoint above.
   app.post("/api/v1/jobs/:id/region-preview", async (req, res) => {
     const monitor = await owner(String(req.params.id), res.locals.user.user_id);
     const point = z.object({ x: z.number().finite(), y: z.number().finite() }).optional().parse(Object.keys(req.body ?? {}).length ? req.body : undefined);
-    const preview = await previewRegion(monitor, cfg, point, policy);
-    res.json(preview);
+    await runRegionPreview(req, res, monitor, point);
   });
   app.put("/api/v1/jobs/:id", async (req, res) => {
     const id = String(req.params.id);
