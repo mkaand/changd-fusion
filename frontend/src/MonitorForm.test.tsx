@@ -17,6 +17,7 @@ it("text and visual settings share one form with independent region and text sel
   expect(
     screen.getByRole("switch", { name: "Text detection" }),
   ).toHaveAttribute("aria-checked", "true");
+  await user.click(screen.getByText("Advanced settings", { exact: true }));
   await user.click(screen.getByLabelText("Screenshot capture mode"));
   await user.click(screen.getByText("Selected element / region"));
   await user.type(
@@ -27,13 +28,14 @@ it("text and visual settings share one form with independent region and text sel
   expect(current.getFieldValue("capture_selector")).toBe("#region");
   expect(current.getFieldValue("visual_threshold")).toBe("0.35");
   expect(
-    screen.getByLabelText("Selector (empty = full page text)"),
+    screen.getByLabelText("Text selector (empty = visible page text)"),
   ).toBeInTheDocument();
 });
 it("HTML/API selection returns to text-only viewport configuration", async () => {
   const user = userEvent.setup();
   render(<Fixture />);
   await user.click(screen.getByRole("switch", { name: "Visual detection" }));
+  await user.click(screen.getByText("Advanced settings", { exact: true }));
   await user.click(screen.getByLabelText("Source"));
   await user.click(screen.getByText("API / JSON"));
   await waitFor(() =>

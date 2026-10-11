@@ -718,12 +718,12 @@ export default function FusionApp() {
         </Content>
       </Layout>
       <Modal
+        className="monitor-editor-modal"
         open={open}
-        title={editing ? "Edit monitor" : "New unified monitor"}
+        title={editing ? "Edit monitor" : "New monitor"}
         onCancel={() => setOpen(false)}
-        onOk={save}
-        confirmLoading={saving}
-        width={640}
+        footer={<div className="monitor-editor-footer"><Button onClick={() => setOpen(false)}>Cancel</Button><Button type="primary" loading={saving} onClick={save}>Save monitor</Button></div>}
+        width={900}
         destroyOnHidden
       >
         <MonitorForm form={form} channels={channels} monitorId={editing?.id} />

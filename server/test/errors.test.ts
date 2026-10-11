@@ -66,3 +66,17 @@ test("public capture failures never expose raw causes", () => {
     "Operation failed. Check configuration and retry.",
   );
 });
+
+import { regionPreviewFailure } from "../src/region-picker.js";
+
+test("region preview telemetry exposes only safe stage and code", () => {
+  const raw = new Error("Timeout token=synthetic-token cookie=synthetic-cookie https://fixture.example/?private=value");
+  const failure = regionPreviewFailure(raw, "navigation");
+  assert.deepEqual(
+    { stage: failure.stage, code: failure.failure_code, status: failure.status },
+    { stage: "navigation", code: "timeout", status: 504 },
+  );
+  assert.ok(!JSON.stringify(failure).includes("synthetic-token"));
+  assert.ok(!JSON.stringify(failure).includes("fixture.example"));
+  assert.equal(failure.message, "Preview timed out. Retry, or use viewport capture instead.");
+});

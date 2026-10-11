@@ -1231,6 +1231,14 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
       })
       .screenshot({ path: path.join(output, "dimensions-mobile.png") });
     await page.getByRole("button", { name: "Edit", exact: true }).click();
+    const mobileEditor = page.getByRole("dialog", { name: "Edit monitor" });
+    await mobileEditor.waitFor();
+    assert.equal(await page.getByLabel("Screenshot capture mode", { exact: true }).count(), 0, "advanced controls start collapsed");
+    await mobileEditor.locator(".monitor-editor-form").waitFor();
+    await page.getByRole("button", { name: "Save monitor", exact: true }).waitFor();
+    const editorBounds = await mobileEditor.boundingBox();
+    assert.ok(editorBounds && editorBounds.width <= 390, "mobile editor fits the Safari-sized viewport");
+    await page.getByText("Advanced settings", { exact: true }).click();
     await page.getByLabel("Screenshot capture mode", { exact: true }).waitFor();
     await page.screenshot({
       path: path.join(output, "capture-settings-mobile.png"),
@@ -2522,4 +2530,26 @@ test("visual region picker preview maps screenshot coordinates to a unique visib
   await pickerOwner.put(`/api/v1/jobs/${created.id}`).set("X-Fusion-Request", "1").send({ name: "Region fixture", url: `http://fixture.example:${port}/`, kind: "browser", text_enabled: false, visual_enabled: true, capture_mode: "element", capture_selector_type: "css", capture_selector: picked.body.selection.selector, channel_ids: [] }).expect(200);
   assert.equal((await pickerOwner.get(`/api/v1/jobs/${created.id}`).expect(200)).body.capture_selector, "#product");
   await pickerOwner.post(`/api/v1/jobs/${created.id}/region-preview`).set("X-Fusion-Request", "1").send({ x: -1, y: 0 }).expect(422);
+
+  const monitorCount = Number((await pool.query("SELECT count(*)::int AS count FROM fusion_monitors")).rows[0].count);
+  const draftPreview = await pickerOwner.post("/api/v1/region-preview").set("X-Fusion-Request", "1").send({
+    monitor: { url: `http://fixture.example:${port}/`, kind: "browser", visual_enabled: true, browser_steps: [] },
+    point: { x: 130, y: 150 },
+  }).expect(200);
+  assert.equal(draftPreview.body.selection.selector, "#product");
+  assert.equal(Number((await pool.query("SELECT count(*)::int AS count FROM fusion_monitors")).rows[0].count), monitorCount);
+
+  const denied = await pickerOwner.post("/api/v1/region-preview").set("X-Fusion-Request", "1").send({
+    monitor: { url: "http://127.0.0.1/?synthetic_secret=must-not-leak", kind: "browser", visual_enabled: true, browser_steps: [] },
+  }).expect(400);
+  assert.equal(denied.body.preview_stage, "target_validation");
+  assert.equal(denied.body.failure_code, "egress_denied");
+  assert.equal(typeof denied.body.request_id, "string");
+  assert.equal(typeof denied.body.duration_ms, "number");
+  assert.ok(!JSON.stringify(denied.body).includes("synthetic_secret"));
+
+  await pickerOther.post("/api/v1/region-preview").set("X-Fusion-Request", "1").send({
+    monitor_id: created.id,
+    monitor: { url: `http://fixture.example:${port}/`, kind: "browser", visual_enabled: true, browser_steps: [] },
+  }).expect(404);
 });
