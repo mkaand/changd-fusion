@@ -22,20 +22,24 @@ export function Deliveries({ admin = false }: { admin?: boolean }) {
     [page, setPage] = useState(1),
     [status, setStatus] = useState<string>(),
     [error, setError] = useState(""),
-    [loading, setLoading] = useState(true),
+    [initialLoading, setInitialLoading] = useState(true),
+    [refreshing, setRefreshing] = useState(false),
     [version, setVersion] = useState(0);
   const compact = useCompactDeliveries();
+  const refresh = () => setVersion((v) => v + 1);
   const retry = async (item: any) => {
     try {
       await api(`/deliveries/${item.id}/retry`, "POST", {});
-      setVersion((v) => v + 1);
+      refresh();
     } catch (e) {
       setError((e as Error).message);
     }
   };
   useEffect(() => {
     let alive = true;
-    setLoading(true);
+    const isInitial = items.length === 0;
+    if (isInitial) setInitialLoading(true);
+    else setRefreshing(true);
     api(
       `/deliveries?page=${page}&page_size=10${status ? "&status=" + status : ""}`,
     )
@@ -50,7 +54,10 @@ export function Deliveries({ admin = false }: { admin?: boolean }) {
         if (alive) setError(e.message);
       })
       .finally(() => {
-        if (alive) setLoading(false);
+        if (alive) {
+          setInitialLoading(false);
+          setRefreshing(false);
+        }
       });
     return () => {
       alive = false;
@@ -73,7 +80,7 @@ export function Deliveries({ admin = false }: { admin?: boolean }) {
             setPage(1);
           }}
         />
-        <Button onClick={() => setVersion((v) => v + 1)}>
+        <Button loading={refreshing} onClick={refresh}>
           Refresh deliveries
         </Button>
       </Space>
@@ -82,7 +89,7 @@ export function Deliveries({ admin = false }: { admin?: boolean }) {
           type="error"
           title={error}
           action={
-            <Button onClick={() => setVersion((v) => v + 1)}>Retry</Button>
+            <Button onClick={refresh}>Retry</Button>
           }
         />
       )}
@@ -106,8 +113,9 @@ export function Deliveries({ admin = false }: { admin?: boolean }) {
         </div>
       ) : (
       <Table
+        className="delivery-table"
         rowKey="id"
-        loading={loading}
+        loading={initialLoading}
         dataSource={items}
         scroll={{ x: 600 }}
         pagination={{

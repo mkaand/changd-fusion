@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, lazy, Suspense } from "react";
+import { useCallback, useEffect, useRef, useState, lazy, Suspense } from "react";
 import {
   Layout,
   Input,
@@ -70,6 +70,16 @@ function useCompactLayout() {
   return compact;
 }
 
+type RefreshKind = "initial" | "silent" | "manual" | "mutation";
+
+function retainUnchanged<T extends { id: string }>(previous: T[], next: T[]) {
+  const known = new Map(previous.map((item) => [item.id, item]));
+  return next.map((item) => {
+    const current = known.get(item.id);
+    return current && JSON.stringify(current) === JSON.stringify(item) ? current : item;
+  });
+}
+
 export default function FusionApp() {
   const themeAdapter = useThemeAdapter();
   const compactLayout = useCompactLayout();
@@ -81,18 +91,23 @@ export default function FusionApp() {
     [monitors, setMonitors] = useState<any[]>([]),
     [channels, setChannels] = useState<any[]>([]),
     [error, setError] = useState(""),
-    [loading, setLoading] = useState(false),
+    [initialLoading, setInitialLoading] = useState(false),
+    [manualRefreshing, setManualRefreshing] = useState(false),
     [page, setPage] = useState("jobs"),
     [selected, setSelected] = useState<any>(),
-    [refresh, setRefresh] = useState(0),
+    [historyRefresh, setHistoryRefresh] = useState(0),
     [collapsed, setCollapsed] = useState(false),
     [navigationOpen, setNavigationOpen] = useState(false);
   const [open, setOpen] = useState(false),
     [editing, setEditing] = useState<any>(),
     [saving, setSaving] = useState(false);
   const [form] = Form.useForm();
+  const requestRef = useRef<AbortController | undefined>(undefined);
+  const requestVersion = useRef(0);
+  const loadedRef = useRef(false);
   useEffect(() => {
     const expire = () => {
+      requestRef.current?.abort();
       setUser(null);
       setSelected(undefined);
       setMonitors([]);
@@ -110,30 +125,61 @@ export default function FusionApp() {
       setAuthLoading(false);
     }
   }, []);
-  const reload = useCallback(async () => {
-    setLoading(true);
+  const reload = useCallback(async (kind: RefreshKind = "mutation") => {
+    if (requestRef.current) return false;
+    const controller = new AbortController();
+    const version = ++requestVersion.current;
+    requestRef.current = controller;
+    const includeChannels = kind === "initial" || kind === "mutation";
+    if (kind === "initial") setInitialLoading(true);
+    if (kind === "manual") setManualRefreshing(true);
     try {
-      const [m, c] = await Promise.all([api("/jobs"), api("/notifications")]);
-      setMonitors(m);
-      setChannels(c);
+      const [m, c] = await Promise.all([
+        api<any[]>("/jobs", "GET", undefined, { signal: controller.signal }),
+        includeChannels
+          ? api<any[]>("/notifications", "GET", undefined, { signal: controller.signal })
+          : Promise.resolve(undefined),
+      ]);
+      if (version !== requestVersion.current) return false;
+      setMonitors((previous) => retainUnchanged(previous, m));
+      if (c) setChannels((previous) => retainUnchanged(previous, c));
       setError("");
-      setRefresh((r) => r + 1);
+      loadedRef.current = true;
+      return true;
     } catch (e) {
-      setError((e as Error).message);
+      if ((e as Error).name !== "AbortError" && kind !== "silent")
+        setError((e as Error).message);
+      return false;
     } finally {
-      setLoading(false);
+      if (requestRef.current === controller) requestRef.current = undefined;
+      if (kind === "initial") setInitialLoading(false);
+      if (kind === "manual") setManualRefreshing(false);
     }
   }, []);
   useEffect(() => {
     void getUser();
   }, [getUser]);
   useEffect(() => {
-    if (user) void reload();
+    if (user) void reload("initial");
   }, [user, reload]);
   useEffect(() => {
     if (!user) return;
-    const timer = setInterval(() => void reload(), 15000);
-    return () => clearInterval(timer);
+    const silent = () => {
+      if (document.visibilityState === "visible" && navigator.onLine && loadedRef.current)
+        void reload("silent");
+    };
+    const visible = () => {
+      if (document.visibilityState === "visible") silent();
+    };
+    const timer = window.setInterval(silent, 15000);
+    document.addEventListener("visibilitychange", visible);
+    window.addEventListener("online", silent);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener("visibilitychange", visible);
+      window.removeEventListener("online", silent);
+      requestRef.current?.abort();
+    };
   }, [user, reload]);
   const navigate = (key: string) => {
     setPage(key);
@@ -175,7 +221,8 @@ export default function FusionApp() {
         b,
       );
       setOpen(false);
-      await reload();
+      await reload("mutation");
+      setHistoryRefresh((r) => r + 1);
       if (selected) await detail(selected.id);
     } catch (e) {
       if (e instanceof Error) void message.error(e.message);
@@ -191,7 +238,8 @@ export default function FusionApp() {
           ? "Capture queued"
           : "Baseline reset; next successful capture establishes it",
       );
-      await reload();
+      await reload("mutation");
+      if (selected?.id === id) setHistoryRefresh((r) => r + 1);
     } catch (e) {
       void message.error((e as Error).message);
     }
@@ -203,7 +251,7 @@ export default function FusionApp() {
       okButtonProps: { danger: true },
       onOk: async () => {
         await api("/jobs/" + m.id, "DELETE");
-        await reload();
+        await reload("mutation");
       },
     });
   if (authLoading)
@@ -317,7 +365,7 @@ export default function FusionApp() {
               title={error}
               type="error"
               showIcon
-              action={<Button onClick={() => void reload()}>Retry</Button>}
+              action={<Button onClick={() => void reload("manual")}>Retry</Button>}
             />
           )}
           <Suspense
@@ -328,13 +376,13 @@ export default function FusionApp() {
             }
           >
             {page === "settings" ? (
-              <Settings channels={channels} monitors={monitors} reload={() => void reload()} report={(s: string) => void message.info(s)} admin={user.user_type === 2} signedOut={() => setUser(null)} theme={themeAdapter} />
+              <Settings channels={channels} monitors={monitors} reload={() => void reload("mutation")} report={(s: string) => void message.info(s)} admin={user.user_type === 2} signedOut={() => setUser(null)} theme={themeAdapter} />
             ) : page === "notifications" ? (
               <>
                 <Channels
                   channels={channels}
                   monitors={monitors}
-                  reload={() => void reload()}
+                  reload={() => void reload("mutation")}
                   report={(s) => void message.info(s)}
                 />
                 <Deliveries admin={user.user_type === 2} />
@@ -426,7 +474,7 @@ export default function FusionApp() {
                     <PrivateValues monitor={current} />
                   </details>
                 )}
-                <History id={current.id} refresh={refresh} />
+                <History id={current.id} refresh={historyRefresh} />
               </>
             ) : (
               <>
@@ -434,7 +482,7 @@ export default function FusionApp() {
                 <Space className="page-header dashboard-header" wrap>
                   <Typography.Title level={2}>Monitors</Typography.Title>
                   <span className="dashboard-caption">Unified text and visual checks</span>
-                  <div className="dashboard-header-actions"><Button onClick={() => void reload()}>Refresh</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => void edit()}>New monitor</Button></div>
+                  <div className="dashboard-header-actions"><Button loading={manualRefreshing} onClick={() => void reload("manual")}>Refresh</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => void edit()}>New monitor</Button></div>
                 </Space>
                 <div
                   className="dashboard-summary"
@@ -484,7 +532,7 @@ export default function FusionApp() {
                 </Space>
                 {compactLayout ? (
                   <section className="monitor-card-list" aria-label="Monitor list">
-                    {loading ? (
+                    {initialLoading ? (
                       <div className="mobile-loading" role="status" aria-label="Loading monitors"><Spin /></div>
                     ) : filteredMonitors.length === 0 ? (
                       <Card><Empty description="Create a monitor to track text and visual changes together." /></Card>
@@ -538,7 +586,7 @@ export default function FusionApp() {
                 <Card className="monitor-table-card">
                   <Table size="small" bordered
                     rowKey="id"
-                    loading={loading}
+                    loading={initialLoading}
                     dataSource={filteredMonitors}
                     scroll={{ x: 1000 }}
                     pagination={{ pageSize: 10, hideOnSinglePage: true }}

@@ -103,6 +103,42 @@ it("notification delivery history displays retries and authorized administrative
   await user.click(screen.getByText("Retry delivery"));
   expect(api).toHaveBeenCalledWith("/deliveries/fixture/retry", "POST", {});
 });
+it("delivery history keeps existing rows visible while a manual refresh is pending", async () => {
+  let resolveRefresh: ((value: unknown) => void) | undefined;
+  vi.mocked(api)
+    .mockResolvedValueOnce({
+      items: [
+        {
+          id: "fixture",
+          monitor_id: "monitor",
+          monitor_name: "Synthetic monitor",
+          channel_name: "Telegram fixture",
+          status: "sent",
+          attempts: 1,
+        },
+      ],
+      total: 1,
+    })
+    .mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveRefresh = resolve;
+        }),
+    );
+  const user = userEvent.setup();
+  const { container } = render(<Deliveries />);
+  expect(await screen.findByText("Synthetic monitor")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Refresh deliveries" }));
+  expect(screen.getByText("Synthetic monitor")).toBeInTheDocument();
+  expect(container.querySelector(".delivery-table .ant-spin-spinning")).toBeNull();
+  await act(async () =>
+    resolveRefresh?.({
+      items: [],
+      total: 0,
+    }),
+  );
+  expect(screen.queryByText("Synthetic monitor")).not.toBeInTheDocument();
+});
 it("delivery history reports errors with a retry control", async () => {
   vi.mocked(api).mockRejectedValue(Error("Delivery history unavailable"));
   render(<Deliveries />);

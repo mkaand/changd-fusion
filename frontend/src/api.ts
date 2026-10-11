@@ -2,10 +2,12 @@ export async function api<T = any>(
   path: string,
   method = "GET",
   data?: unknown,
+  options?: { signal?: AbortSignal },
 ): Promise<T> {
+  const timeout = AbortSignal.timeout(15000);
   const response = await fetch("/api/v1" + path, {
     method,
-    signal: AbortSignal.timeout(15000),
+    signal: options?.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", "X-Fusion-Request": "1" },
     body: data === undefined ? undefined : JSON.stringify(data),

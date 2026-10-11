@@ -769,6 +769,12 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     });
     const page = await browser.newPage();
     const errors: string[] = [];
+    let jobsRequests = 0, notificationRequests = 0;
+    page.on("request", (request) => {
+      const pathname = new URL(request.url()).pathname;
+      if (pathname === "/api/v1/jobs") jobsRequests++;
+      if (pathname === "/api/v1/notifications") notificationRequests++;
+    });
     page.on("pageerror", (e) => {
       errors.push(e.message);
       console.error("UI fixture runtime error:", e.message);
@@ -808,6 +814,29 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
       actionBounds && actionBounds.x + actionBounds.width <= 1278,
       "desktop actions must not be clipped at the table edge",
     );
+    await actionsMenu.click();
+    await page.getByText("Delete", { exact: true }).waitFor();
+    const search = page.getByRole("searchbox", { name: "Search monitors" });
+    await search.focus();
+    const jobsBeforePolling = jobsRequests;
+    const notificationsBeforePolling = notificationRequests;
+    await pool.query("UPDATE fusion_monitors SET monitor_state='changed', last_run=now() WHERE id=$1", [monitor.id]);
+    await page.waitForFunction(
+      () =>
+        [...document.querySelectorAll(".monitor-table-card .ant-tag")].some(
+          (tag) => tag.textContent?.trim() === "changed",
+        ) && !document.querySelector(".monitor-table-card .ant-spin-spinning"),
+      undefined,
+      { timeout: 19000 },
+    );
+    assert.ok(jobsRequests > jobsBeforePolling, "the 15 second poll refreshes monitor data");
+    assert.equal(notificationRequests, notificationsBeforePolling, "silent monitor polling does not refetch notification channels");
+    assert.equal(await search.inputValue(), "Hybrid fixture", "search text survives silent polling");
+    assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Search monitors", "focused input survives silent polling");
+    assert.ok(await page.getByText("Delete", { exact: true }).isVisible(), "an open actions menu remains open during silent polling");
+    await actionsMenu.click();
+    await page.getByText("Delete", { exact: true }).waitFor({ state: "hidden" });
+    await search.fill("");
     await page.screenshot({ path: path.join(output, "dashboard-desktop.png") });
     await themeSwitch.click();
     await page.waitForFunction(() => {
