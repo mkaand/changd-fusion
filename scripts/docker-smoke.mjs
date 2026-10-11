@@ -28,7 +28,18 @@ try {
   const result=await capture({url:'http://fixture.test:'+port,kind:'browser',text_enabled:true,visual_enabled:true,selector:'//main',selector_type:'xpath',ignore_selectors:[],mask_selectors:[],ignore_text:[],normalize_whitespace:true,ignore_case:false,capture_mode:mode,capture_selector:'//main',capture_selector_type:'xpath',browser_steps:[{action:'dismiss_cookie',selector:'#cookie'}]},cfg,policy);
   assert.equal(result.text,'Docker hybrid fixture');assert.equal(pngDimensions(result.screenshot).width,mode==='element'?320:1280);
  }
- const preview=await previewRegion({id:'preview',url:'http://fixture.test:'+port,kind:'browser',text_enabled:false,visual_enabled:true,browser_steps:[]},cfg,{x:10,y:10},policy);
+ const coordinateBrowser=await chromium.launch({executablePath:'/usr/bin/chromium',chromiumSandbox:true,timeout:15000});
+ let point;
+ try {
+  const coordinateContext=await coordinateBrowser.newContext({viewport:{width:1280,height:900},deviceScaleFactor:1});
+  const coordinatePage=await coordinateContext.newPage();
+  await coordinatePage.goto('http://127.0.0.1:'+port,{waitUntil:'domcontentloaded'});
+  const targetBox=await coordinatePage.locator('#preview-target').boundingBox();
+  assert.ok(targetBox);
+  point={x:Math.round(targetBox.x+targetBox.width/2),y:Math.round(targetBox.y+targetBox.height/2)};
+  await coordinateContext.close();
+ } finally {await coordinateBrowser.close();}
+ const preview=await previewRegion({id:'preview',url:'http://fixture.test:'+port,kind:'browser',text_enabled:false,visual_enabled:true,browser_steps:[]},cfg,point,policy);
  assert.equal(preview.selection.selector,'#preview-target');
  const browser=await chromium.launch({executablePath:'/usr/bin/chromium',chromiumSandbox:true,timeout:15000});
  try {const page=await browser.newPage();await page.goto('chrome://sandbox');assert.match(await page.locator('body').innerText(),/Seccomp-BPF sandbox\s+Yes/);} finally {await browser.close();}
