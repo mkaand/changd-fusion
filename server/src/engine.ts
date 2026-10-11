@@ -11,9 +11,26 @@ import { Storage } from "./storage.js";
 import { pngDimensions } from "./image.js";
 import { openValues } from "./vault.js";
 import { AttentionFailure } from "./attention.js";
-import { publicFailure } from "./errors.js";
+import {
+  captureFailure,
+  type CaptureStage,
+  publicFailure,
+} from "./errors.js";
 
 export const VISIBLE_BROWSER_TEXT_EXTRACTION_VERSION = 2;
+export type CaptureFailureDiagnostic = {
+  monitorId: string;
+  stage: string;
+  code: string;
+  httpStatus: number | null;
+  durationMs: number;
+};
+export type RunMonitorOptions = {
+  capture?: typeof capture;
+  comparator?: VisualComparator;
+  force?: boolean;
+  onFailure?: (diagnostic: CaptureFailureDiagnostic) => void;
+};
 
 export function notificationFingerprint(
   textParts: Array<{ value?: string; added?: boolean; removed?: boolean }>,
@@ -85,11 +102,7 @@ export async function runMonitor(
   pool: Pool,
   cfg: Config,
   id: string,
-  options: {
-    capture?: typeof capture;
-    comparator?: VisualComparator;
-    force?: boolean;
-  } = {},
+  options: RunMonitorOptions = {},
 ) {
   const c = await pool.connect();
   const storage = new Storage(cfg.DATA_DIR);
@@ -118,6 +131,7 @@ export async function runMonitor(
     await c.query("UPDATE fusion_monitors SET last_run=now() WHERE id=$1", [
       id,
     ]);
+    let stage: CaptureStage = "database";
     try {
       if ((m.browser_steps ?? []).some((s) => s.action === "fill_private")) {
         const vault = (
@@ -134,6 +148,7 @@ export async function runMonitor(
           );
         m.private_values = openValues(vault, cfg.CHANNEL_KEY, m);
       }
+      stage = "unknown";
       const current: Capture = await (options.capture ?? capture)(m, cfg);
       if (
         (m.text_enabled && current.text === null) ||
@@ -146,6 +161,7 @@ export async function runMonitor(
           height: cfg.MAX_CAPTURE_HEIGHT,
           pixels: cfg.MAX_CAPTURE_PIXELS,
         });
+      stage = "database";
       const before = m.baseline_id
         ? (
             await c.query(
@@ -164,8 +180,9 @@ export async function runMonitor(
         before && m.text_enabled && !extractionTransition
           ? compareText(before.text_content ?? "", current.text ?? "")
           : { changed: false, parts: [] };
+      stage = "comparison";
       const visual =
-        before && m.visual_enabled
+        before && m.visual_enabled && !extractionTransition
           ? (options.comparator ?? pixelmatchComparator).compare(
               await storage.read(before.screenshot),
               current.screenshot!,
@@ -173,6 +190,7 @@ export async function runMonitor(
               Number(m.pixel_threshold),
             )
           : null;
+      stage = "storage";
       const image = current.screenshot
         ? await storage.save(current.screenshot)
         : null;
@@ -185,11 +203,16 @@ export async function runMonitor(
       const captureId = randomUUID(),
         status = !before
           ? "baseline"
-          : text.changed || visual?.changed
-            ? "changed"
-            : extractionTransition
-              ? "extraction_transition"
-            : "unchanged";
+          : extractionTransition
+            ? "extraction_transition"
+            : text.changed || visual?.changed
+              ? "changed"
+              : "unchanged";
+      const advancesExtractionVersion =
+        m.kind === "browser" &&
+        m.text_enabled &&
+        (!before || extractionTransition);
+      stage = "database";
       await c.query("BEGIN");
       try {
         await c.query(
@@ -202,33 +225,33 @@ export async function runMonitor(
             id,
             before?.id ?? null,
             captureId,
-            text.changed,
-            visual?.changed ?? false,
-            visual?.percent ?? null,
+            extractionTransition ? false : text.changed,
+            extractionTransition ? false : (visual?.changed ?? false),
+            extractionTransition ? null : (visual?.percent ?? null),
             diff,
             JSON.stringify(text.parts),
             status,
-            visual?.dimensionChanged ?? false,
-            visual ? JSON.stringify(visual.beforeDimensions) : null,
-            visual ? JSON.stringify(visual.afterDimensions) : null,
+            extractionTransition ? false : (visual?.dimensionChanged ?? false),
+            !extractionTransition && visual ? JSON.stringify(visual.beforeDimensions) : null,
+            !extractionTransition && visual ? JSON.stringify(visual.afterDimensions) : null,
             Date.now() - started,
             current.warning ?? null,
           ],
         );
         await c.query(
-          "UPDATE fusion_monitors SET latest_capture_id=$2,baseline_id=CASE WHEN $3 THEN $2 ELSE baseline_id END,last_percent=$4,last_dimension_change=$5,last_run=now(),next_run=now()+interval_seconds*interval '1 second',failure_count=0,last_error=null,last_success_at=now(),last_change_at=CASE WHEN $6='changed' THEN now() ELSE last_change_at END,monitor_state=$6,execution_ms=$7,warning_code=$8,browser_text_extraction_version=CASE WHEN $9 THEN $10 ELSE browser_text_extraction_version END WHERE id=$1",
+          "UPDATE fusion_monitors SET latest_capture_id=$2,baseline_id=CASE WHEN $3 THEN $2 ELSE baseline_id END,last_percent=$4,last_dimension_change=$5,last_run=now(),next_run=now()+interval_seconds*interval '1 second',failure_count=0,last_error=null,failure_stage=null,failure_code=null,last_success_at=now(),last_change_at=CASE WHEN $6='changed' THEN now() ELSE last_change_at END,monitor_state=$6,execution_ms=$7,warning_code=$8,browser_text_extraction_version=CASE WHEN $9 THEN $10 ELSE browser_text_extraction_version END WHERE id=$1",
           [
             id,
             captureId,
             status !== "unchanged",
-            visual?.percent ?? null,
-            visual?.dimensionChanged ?? false,
+            extractionTransition ? null : (visual?.percent ?? null),
+            extractionTransition ? false : (visual?.dimensionChanged ?? false),
             status === "baseline" || status === "extraction_transition"
               ? "healthy"
               : status,
             Date.now() - started,
             current.warning ?? null,
-            extractionTransition,
+            advancesExtractionVersion,
             VISIBLE_BROWSER_TEXT_EXTRACTION_VERSION,
           ],
         );
@@ -246,6 +269,10 @@ export async function runMonitor(
       }
     } catch (e) {
       for (const file of saved) await storage.remove(file);
+      const diagnostic =
+        e instanceof AttentionFailure
+          ? null
+          : captureFailure(e, stage);
       const state =
         e instanceof AttentionFailure
           ? e.state
@@ -261,7 +288,7 @@ export async function runMonitor(
       await c.query("BEGIN");
       try {
         await c.query(
-          "UPDATE fusion_monitors SET failure_count=failure_count+1,last_error=$2,last_run=now(),next_run=now()+greatest($5,least(3600,30*power(2,least(failure_count,7))))*interval '1 second',monitor_state=$3,execution_ms=$4,warning_code=$6 WHERE id=$1",
+          "UPDATE fusion_monitors SET failure_count=failure_count+1,last_error=$2,last_run=now(),next_run=now()+greatest($5,least(3600,30*power(2,least(failure_count,7))))*interval '1 second',monitor_state=$3,execution_ms=$4,warning_code=$6,failure_stage=$7,failure_code=$8 WHERE id=$1",
           [
             id,
             publicFailure(e),
@@ -269,15 +296,25 @@ export async function runMonitor(
             Date.now() - started,
             e instanceof AttentionFailure ? 900 : 0,
             warning,
+            diagnostic?.stage ?? null,
+            diagnostic?.code ?? null,
           ],
         );
         const event = await c.query(
-          "INSERT INTO fusion_events(monitor_id,status,error,attention_state,warning_code,execution_ms) VALUES($1,'failed',$2,$3,$4,$5) RETURNING id",
-          [id, publicFailure(e), state, warning, Date.now() - started],
+          "INSERT INTO fusion_events(monitor_id,status,error,attention_state,warning_code,execution_ms,failure_stage,failure_code) VALUES($1,'failed',$2,$3,$4,$5,$6,$7) RETURNING id",
+          [id, publicFailure(e), state, warning, Date.now() - started, diagnostic?.stage ?? null, diagnostic?.code ?? null],
         );
         if (shouldNotify)
           await queueNotification(c, m, event.rows[0].id, createHash("sha256").update(JSON.stringify({ state, error: publicFailure(e) })).digest("hex"));
         await c.query("COMMIT");
+        if (diagnostic)
+          options.onFailure?.({
+            monitorId: id,
+            stage: diagnostic.stage,
+            code: diagnostic.code,
+            httpStatus: diagnostic.httpStatus,
+            durationMs: Date.now() - started,
+          });
       } catch (error) {
         await c.query("ROLLBACK");
         throw error;

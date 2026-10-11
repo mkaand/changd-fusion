@@ -1,7 +1,7 @@
 import type { Pool } from "./db.js";
 import type { Config } from "./config.js";
 import { capture } from "./capture.js";
-import { runMonitor } from "./engine.js";
+import { runMonitor, type CaptureFailureDiagnostic } from "./engine.js";
 import { dispatch } from "./outbox.js";
 import { deliver } from "./notifications.js";
 export async function workerCycle(
@@ -11,6 +11,7 @@ export async function workerCycle(
     capture?: typeof capture;
     send?: typeof deliver;
     stopped?: () => boolean;
+    onFailure?: (diagnostic: CaptureFailureDiagnostic) => void;
   } = {},
 ) {
   const due = await pool.query(
@@ -21,7 +22,10 @@ export async function workerCycle(
     Array.from({ length: cfg.CHROMIUM_CONCURRENCY }, async () => {
       while (next < due.rows.length && !options.stopped?.()) {
         const { id } = due.rows[next++];
-        await runMonitor(pool, cfg, id, { capture: options.capture });
+        await runMonitor(pool, cfg, id, {
+          capture: options.capture,
+          onFailure: options.onFailure,
+        });
       }
     }),
   );

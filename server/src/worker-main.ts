@@ -29,7 +29,21 @@ process.on("SIGINT", () => {
 try {
   while (!stopped) {
     try {
-      await workerCycle(pool, cfg, { stopped: () => stopped });
+      await workerCycle(pool, cfg, {
+        stopped: () => stopped,
+        onFailure: (diagnostic) =>
+          log.warn(
+            {
+              code: "capture_failed",
+              monitor_id: diagnostic.monitorId,
+              stage: diagnostic.stage,
+              failure_code: diagnostic.code,
+              http_status: diagnostic.httpStatus,
+              duration_ms: diagnostic.durationMs,
+            },
+            "Monitor capture failed",
+          ),
+      });
       if (Date.now() - cleanup > 3600000) {
         await retainHistory(pool, cfg);
         cleanup = Date.now();

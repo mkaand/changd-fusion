@@ -10,6 +10,7 @@ import { dispatch } from "../../src/outbox.js";
 import { workerCycle } from "../../src/worker.js";
 import { readConfig, type Config } from "../../src/config.js";
 import { capture } from "../../src/capture.js";
+import { CaptureFailure } from "../../src/errors.js";
 import { EgressPolicy } from "../../src/egress.js";
 import { encrypt, decrypt } from "../../src/crypto.js";
 import { PNG } from "pngjs";
@@ -111,7 +112,7 @@ test("fresh migration is repeatable and decimal columns are NUMERIC", async () =
   assert.equal(r.rows[0].data_type, "numeric");
   assert.equal(
     (await pool.query("SELECT count(*) FROM fusion_migrations")).rows[0].count,
-    "5",
+    "6",
   );
 });
 test("JWT, admin checks, CSRF, disabled registration and removed scheduler endpoint", async () => {
@@ -580,6 +581,14 @@ test("browser extraction transition advances a legacy baseline once without noti
   });
   const oldBaseline = (await pool.query("SELECT baseline_id FROM fusion_monitors WHERE id=$1", [created.id])).rows[0].baseline_id;
   await pool.query("UPDATE fusion_monitors SET browser_text_extraction_version=1 WHERE id=$1", [created.id]);
+  await runMonitor(pool, cfg, created.id, {
+    force: true,
+    capture: async () => { throw Error("first visible-text transition failed token=synthetic"); },
+  });
+  const failedTransition = (await pool.query("SELECT browser_text_extraction_version,baseline_id FROM fusion_monitors WHERE id=$1", [created.id])).rows[0];
+  assert.equal(failedTransition.browser_text_extraction_version, 1);
+  assert.equal(failedTransition.baseline_id, oldBaseline);
+  assert.equal((await pool.query("SELECT count(*) FROM fusion_events WHERE monitor_id=$1 AND status='extraction_transition'", [created.id])).rows[0].count, "0");
   assert.equal(await runMonitor(pool, cfg, created.id, {
     force: true,
     capture: async () => ({ text: "Visible page content", screenshot: null }),
@@ -597,6 +606,73 @@ test("browser extraction transition advances a legacy baseline once without noti
   const changed = await pool.query("SELECT notification_state FROM fusion_events WHERE monitor_id=$1 AND status='changed'", [created.id]);
   assert.equal(changed.rows[0].notification_state, "disabled");
   assert.equal((await pool.query("SELECT count(*) FROM fusion_outbox o JOIN fusion_events e ON e.id=o.event_id WHERE e.monitor_id=$1", [created.id])).rows[0].count, "0");
+});
+test("combined browser extraction transitions absorb visual changes without notifications", async () => {
+  const create = async (name: string) => (
+    await ownerAgent
+      .post("/api/v1/jobs")
+      .set("X-Fusion-Request", "1")
+      .send({
+        name,
+        url: "https://example.com/combined-transition",
+        kind: "browser",
+        text_enabled: true,
+        visual_enabled: true,
+        notification_enabled: true,
+        visual_threshold: "0.35",
+        pixel_threshold: 0.1,
+      })
+      .expect(201)
+  ).body;
+  for (const [name, next] of [
+    ["Combined visual transition", image(80)] as const,
+    ["Combined dimensions transition", image(0, 120, 100)] as const,
+  ]) {
+    const created = await create(name);
+    await runMonitor(pool, cfg, created.id, {
+      force: true,
+      capture: async () => ({ text: "legacy hydration", screenshot: image() }),
+    });
+    const old = (await pool.query("SELECT baseline_id FROM fusion_monitors WHERE id=$1", [created.id])).rows[0].baseline_id;
+    await pool.query("UPDATE fusion_monitors SET browser_text_extraction_version=1 WHERE id=$1", [created.id]);
+    await runMonitor(pool, cfg, created.id, {
+      force: true,
+      capture: async () => ({ text: "Visible page content", screenshot: next }),
+      comparator: { compare: () => { throw Error("transition must not compare legacy visual baseline"); } },
+    });
+    const state = (await pool.query("SELECT * FROM fusion_monitors WHERE id=$1", [created.id])).rows[0];
+    assert.equal(state.browser_text_extraction_version, 2);
+    assert.notEqual(state.baseline_id, old);
+    assert.equal(state.last_change_at, null);
+    const event = (await pool.query("SELECT status,text_changed,visual_changed,dimension_changed,visual_percent,notification_state FROM fusion_events WHERE monitor_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1", [created.id])).rows[0];
+    assert.deepEqual(event, {
+      status: "extraction_transition",
+      text_changed: false,
+      visual_changed: false,
+      dimension_changed: false,
+      visual_percent: null,
+      notification_state: "not_requested",
+    });
+    assert.equal((await pool.query("SELECT count(*) FROM fusion_outbox o JOIN fusion_events e ON e.id=o.event_id WHERE e.monitor_id=$1", [created.id])).rows[0].count, "0");
+  }
+});
+test("legacy browser monitor without a baseline advances directly to visible text v2", async () => {
+  const created = (
+    await ownerAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({
+      name: "Legacy no baseline", url: "https://example.com/no-baseline", kind: "browser",
+      text_enabled: true, visual_enabled: false, notification_enabled: false,
+    }).expect(201)
+  ).body;
+  await pool.query("UPDATE fusion_monitors SET browser_text_extraction_version=1 WHERE id=$1", [created.id]);
+  await runMonitor(pool, cfg, created.id, {
+    force: true, capture: async () => ({ text: "Visible initial content", screenshot: null }),
+  });
+  const state = (await pool.query("SELECT browser_text_extraction_version,baseline_id,last_change_at FROM fusion_monitors WHERE id=$1", [created.id])).rows[0];
+  assert.equal(state.browser_text_extraction_version, 2);
+  assert.ok(state.baseline_id);
+  assert.equal(state.last_change_at, null);
+  const event = (await pool.query("SELECT status FROM fusion_events WHERE monitor_id=$1", [created.id])).rows[0];
+  assert.equal(event.status, "baseline");
 });
 test("controlled HTML and API monitoring preserve functionality with canonical JSON", async (t) => {
   const fixture = managedServer(t, (req, res) =>
@@ -730,7 +806,7 @@ test("legacy migration preserves owner, historical references and NUMERIC decima
     assert.equal(
       (await legacy.query("SELECT count(*) FROM fusion_migrations")).rows[0]
         .count,
-      "5",
+      "6",
     );
     assert.equal(upgraded.baseline_id, preservedCapture);
     assert.equal(upgraded.latest_capture_id, preservedCapture);
@@ -1494,11 +1570,11 @@ test("browser challenge fixtures distinguish denied, login and heuristic CAPTCHA
       () => true,
       new Set([port]),
     );
-  for (const [path, message] of [
-    ["/denied", "does not confirm a CAPTCHA"],
-    ["/unauthorized", "HTTP 401"],
-    ["/login", "Possible login screen"],
-    ["/challenge", "Possible browser challenge"],
+  for (const [path, message, expectedCode] of [
+    ["/denied", "does not confirm a CAPTCHA", "http_403"],
+    ["/unauthorized", "HTTP 401", null],
+    ["/login", "Possible login screen", null],
+    ["/challenge", "Possible browser challenge", null],
   ])
     await assert.rejects(
       capture(
@@ -1511,7 +1587,16 @@ test("browser challenge fixtures distinguish denied, login and heuristic CAPTCHA
         cfg,
         policy,
       ),
-      (e) => e instanceof Error && e.message.includes(message),
+      (e) => {
+        assert.ok(e instanceof Error && e.message.includes(message));
+        if (expectedCode) {
+          assert.ok(e instanceof CaptureFailure);
+          assert.equal(e.stage, "navigation");
+          assert.equal(e.code, expectedCode);
+          assert.equal(e.httpStatus, 403);
+        }
+        return true;
+      },
     );
   const normal = await capture(
     {
@@ -1739,7 +1824,7 @@ test("failure state transitions preserve captures, back off and notify once per 
     await runMonitor(pool, cfg, m.id, {
       force: true,
       capture: async () => {
-        throw Error("synthetic raw sensitive error");
+        throw Error("synthetic raw sensitive error bot-token=123:secret cookie=private&password=hidden");
       },
     });
   let state = (
@@ -1752,6 +1837,9 @@ test("failure state transitions preserve captures, back off and notify once per 
   assert.ok(state.execution_ms >= 0);
   assert.ok(state.last_success_at);
   assert.ok(!state.last_error.includes("sensitive"));
+  assert.equal(state.failure_stage, "unknown");
+  assert.equal(state.failure_code, "unknown");
+  assert.ok(!JSON.stringify(state).includes("bot-token"));
   const count = async () =>
     (
       await pool.query(
@@ -2000,7 +2088,7 @@ test("private preview seed migrates all versions, is idempotent, preserves chang
     assert.equal(
       (await seededPool.query("SELECT count(*) FROM fusion_migrations")).rows[0]
         .count,
-      "5",
+      "6",
     );
     assert.equal(
       (await seededPool.query("SELECT count(*) FROM users")).rows[0].count,

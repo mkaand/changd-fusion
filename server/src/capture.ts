@@ -2,8 +2,8 @@ import { chromium, type Browser, type Locator } from "playwright";
 import { EgressPolicy, browserProxy, safeFetch } from "./egress.js";
 import { normalizeText } from "./comparison.js";
 import { locate, runSteps, type BrowserStep } from "./browser-steps.js";
-import { detectAttention } from "./attention.js";
-import { HttpError } from "./errors.js";
+import { AttentionFailure, detectAttention } from "./attention.js";
+import { captureFailure, type CaptureStage, HttpError } from "./errors.js";
 import { checkDimensions, pngDimensions } from "./image.js";
 import type { Config } from "./config.js";
 export type Monitor = {
@@ -119,35 +119,35 @@ export async function capture(
   policy = new EgressPolicy(),
 ): Promise<Capture> {
   const deadline = Date.now() + cfg.CAPTURE_TIMEOUT_MS;
-  await policy.target(m.url);
-  if (m.kind !== "browser") {
-    const response = await safeFetch(m.url, policy, cfg.CAPTURE_TIMEOUT_MS);
-    const text =
-      m.kind === "api"
-        ? JSON.stringify(
-            stableJSON(JSON.parse(response.body.toString())),
-            null,
-            2,
-          )
-        : response.body.toString();
-    return { text: normalizeText(text, m), screenshot: null };
-  }
-  const privateValues = m.private_values ?? {};
-  const privateWorkflow = (m.browser_steps ?? []).some(
-    (s) => s.action === "fill_private",
-  );
-  if (
-    privateWorkflow &&
-    (m.visual_enabled || new URL(m.url).protocol !== "https:")
-  )
-    throw new HttpError(
-      422,
-      "Private workflows require HTTPS and text-only capture",
-    );
-  const proxy = await browserProxy(policy);
+  let stage: CaptureStage = "target_validation";
+  let proxy: Awaited<ReturnType<typeof browserProxy>> | undefined;
   let browser: Browser | undefined;
   let timer: NodeJS.Timeout | undefined;
   try {
+    await policy.target(m.url);
+    if (m.kind !== "browser") {
+      stage = "navigation";
+      const response = await safeFetch(m.url, policy, cfg.CAPTURE_TIMEOUT_MS);
+      const text =
+        m.kind === "api"
+          ? JSON.stringify(stableJSON(JSON.parse(response.body.toString())), null, 2)
+          : response.body.toString();
+      return { text: normalizeText(text, m), screenshot: null };
+    }
+    const privateValues = m.private_values ?? {};
+    const privateWorkflow = (m.browser_steps ?? []).some(
+      (s) => s.action === "fill_private",
+    );
+    if (
+      privateWorkflow &&
+      (m.visual_enabled || new URL(m.url).protocol !== "https:")
+    )
+      throw new HttpError(
+        422,
+        "Private workflows require HTTPS and text-only capture",
+      );
+    proxy = await browserProxy(policy);
+    stage = "browser_launch";
     browser = await chromium.launch({
       headless: true,
       timeout: Math.max(1, deadline - Date.now()),
@@ -155,6 +155,7 @@ export async function capture(
       executablePath: cfg.PLAYWRIGHT_EXECUTABLE_PATH,
       proxy: { server: proxy.url, bypass: "<-loopback>" },
     });
+    stage = "browser_context";
     const context = await browser.newContext({
       viewport: { width: 1280, height: 900 },
       deviceScaleFactor: 1,
@@ -186,6 +187,7 @@ export async function capture(
       }
     });
     await context.routeWebSocket("**/*", (ws) => ws.close());
+    stage = "navigation";
     const page = await context.newPage();
     let navigationStatus = 200;
     page.on("response", (r) => {
@@ -208,12 +210,14 @@ export async function capture(
         ) ??
         new HttpError(422, "Website returned an unsuccessful HTTP response")
       );
+    stage = "browser_steps";
     const warning = await runSteps(
       page,
       m.browser_steps ?? [],
       Math.min(deadline, Date.now() + (m.step_budget_ms ?? 20000)),
       privateValues,
     );
+    stage = "attention_detection";
     const attention = detectAttention(
       navigationStatus,
       new URL(page.url()).pathname,
@@ -226,7 +230,9 @@ export async function capture(
         .count()) > 0,
     );
     if (attention) throw attention;
+    stage = "font_wait";
     await page.evaluate(() => document.fonts.ready);
+    stage = "text_extraction";
     const locator = m.selector
       ? m.selector_type === "xpath"
         ? page.locator("xpath=" + m.selector)
@@ -243,6 +249,7 @@ export async function capture(
     // Freeze animations and use the same page for DOM and all screenshot modes.
     let screenshot: Buffer | null = null;
     if (m.visual_enabled) {
+      stage = "screenshot";
       await page.addStyleTag({
         content:
           "* { animation: none !important; transition: none !important; caret-color: transparent !important; }",
@@ -308,12 +315,15 @@ export async function capture(
     if (text && text.length > 2_000_000)
       throw Error("Extracted text too large");
     return { text, screenshot, warning };
+  } catch (error) {
+    if (error instanceof AttentionFailure) throw error;
+    throw captureFailure(error, stage);
   } finally {
     if (timer) clearTimeout(timer);
     try {
       await browser?.close();
     } finally {
-      await proxy.close();
+      await proxy?.close();
     }
   }
 }

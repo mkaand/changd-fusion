@@ -217,6 +217,12 @@ export function History({ id, refresh }: { id: string; refresh: number }) {
                 {e.warning_code ? "(" + e.warning_code + ")" : ""}
               </Tag>
             )}
+            {e.status === "failed" && e.failure_code && (
+              <Tag color="volcano">
+                {e.failure_stage ? `${e.failure_stage} · ` : ""}
+                {e.failure_code}
+              </Tag>
+            )}
             {e.error && <Alert title={e.error} type="error" />}
             {e.text_diff?.length > 0 && (
               <pre className="text-diff">
