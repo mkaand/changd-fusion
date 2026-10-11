@@ -111,7 +111,7 @@ test("fresh migration is repeatable and decimal columns are NUMERIC", async () =
   assert.equal(r.rows[0].data_type, "numeric");
   assert.equal(
     (await pool.query("SELECT count(*) FROM fusion_migrations")).rows[0].count,
-    "4",
+    "5",
   );
 });
 test("JWT, admin checks, CSRF, disabled registration and removed scheduler endpoint", async () => {
@@ -435,7 +435,7 @@ test("real Playwright hybrid capture uses one session, selectors, masks, normali
   const fixture = managedServer(t, (_req, res) => {
     res.setHeader("Content-Type", "text/html");
     res.end(
-      `<main id="content"> Price   10 <span class="dynamic">time</span></main><img src="http://127.0.0.1:${privatePort}/private"><script>fetch('http://169.254.169.254/')</script>`,
+      `<main id="content"> Price   10 <span class="dynamic">time</span></main><aside hidden>Hidden state</aside><template>Template state</template><script type="application/json">{"props":{"session":"changes"}}</script><style>.never{display:none}</style><div class="never">Invisible state</div><img src="http://127.0.0.1:${privatePort}/private"><script>fetch('http://169.254.169.254/')</script>`,
     );
   });
   await listenServer(fixture);
@@ -473,10 +473,130 @@ test("real Playwright hybrid capture uses one session, selectors, masks, normali
       policy,
     );
     assert.equal(xpath.text, "Price 10");
+    const defaultText = await capture(
+      {
+        ...m,
+        selector: "",
+        ignore_selectors: [],
+        visual_enabled: false,
+      },
+      cfg,
+      policy,
+    );
+    assert.ok(defaultText.text?.includes("Price 10"));
+    for (const hidden of ["Hidden state", "Template state", "session", "Invisible state"])
+      assert.ok(!defaultText.text?.includes(hidden), hidden);
   } finally {
     await closeServer(fixture);
     await closeServer(privateServer);
   }
+});
+test("visible browser text ignores hydration across repeated captures, detects real changes and preserves disabled notifications", async (t) => {
+  let hydration = "A", title = "Example Feature", state = "Open";
+  const fixture = managedServer(t, (_req, res) => {
+    res.setHeader("Content-Type", "text/html");
+    res.end(`<main><h1>${title}</h1><p>Status: ${state}</p></main><script type="application/json">${JSON.stringify({ props: { hydration, logged_in: false, color_mode: "light" } })}</script><div hidden>internal ${hydration}</div>`);
+  });
+  await listenServer(fixture);
+  const port = (fixture.address() as AddressInfo).port;
+  const policy = new EgressPolicy(
+    async (host) => host === "fixture.test" ? [{ address: "127.0.0.1", family: 4 }] : [],
+    (ip) => ip === "127.0.0.1",
+    new Set([port]),
+  );
+  const created = (
+    await ownerAgent
+      .post("/api/v1/jobs")
+      .set("X-Fusion-Request", "1")
+      .send({
+        name: "Hydration fixture",
+        url: "https://example.com/hydration-fixture",
+        kind: "browser",
+        text_enabled: true,
+        visual_enabled: false,
+        visual_threshold: "0.35",
+        pixel_threshold: 0.1,
+      })
+      .expect(201)
+  ).body;
+  await pool.query("INSERT INTO fusion_monitor_channels VALUES($1,$2)", [created.id, channelId]);
+  await pool.query("UPDATE fusion_monitors SET url=$2 WHERE id=$1", [created.id, `http://fixture.test:${port}`]);
+  const take = (m: any, config: Config) => capture(m, config, policy);
+  await runMonitor(pool, cfg, created.id, { force: true, capture: take });
+  for (let i = 0; i < 20; i++) {
+    hydration = `dynamic-${i}`;
+    await runMonitor(pool, cfg, created.id, { force: true, capture: take });
+  }
+  assert.equal(
+    (await pool.query("SELECT count(*) FROM fusion_events WHERE monitor_id=$1 AND status='changed'", [created.id])).rows[0].count,
+    "0",
+  );
+  assert.equal(
+    (await pool.query("SELECT count(*) FROM fusion_outbox o JOIN fusion_events e ON e.id=o.event_id WHERE e.monitor_id=$1", [created.id])).rows[0].count,
+    "0",
+  );
+  title = "Updated Example Feature";
+  hydration = "dynamic-real-change";
+  await runMonitor(pool, cfg, created.id, { force: true, capture: take });
+  assert.equal(
+    (await pool.query("SELECT count(*) FROM fusion_events WHERE monitor_id=$1 AND status='changed'", [created.id])).rows[0].count,
+    "1",
+  );
+  assert.equal(
+    (await pool.query("SELECT count(*) FROM fusion_outbox o JOIN fusion_events e ON e.id=o.event_id WHERE e.monitor_id=$1", [created.id])).rows[0].count,
+    "1",
+  );
+  await pool.query("UPDATE fusion_monitors SET notification_enabled=false WHERE id=$1", [created.id]);
+  state = "Closed";
+  hydration = "dynamic-after-muted";
+  await runMonitor(pool, cfg, created.id, { force: true, capture: take });
+  const disabled = await pool.query("SELECT notification_state FROM fusion_events WHERE monitor_id=$1 AND status='changed' ORDER BY created_at DESC,id DESC LIMIT 1", [created.id]);
+  assert.equal(disabled.rows[0].notification_state, "disabled");
+  assert.equal(
+    (await pool.query("SELECT count(*) FROM fusion_outbox o JOIN fusion_events e ON e.id=o.event_id WHERE e.monitor_id=$1", [created.id])).rows[0].count,
+    "1",
+  );
+});
+test("browser extraction transition advances a legacy baseline once without notification or history loss", async () => {
+  const created = (
+    await ownerAgent
+      .post("/api/v1/jobs")
+      .set("X-Fusion-Request", "1")
+      .send({
+        name: "Legacy browser text fixture",
+        url: "https://example.com/legacy-browser-text",
+        kind: "browser",
+        text_enabled: true,
+        visual_enabled: false,
+        notification_enabled: false,
+        visual_threshold: "0.35",
+        pixel_threshold: 0.1,
+      })
+      .expect(201)
+  ).body;
+  await runMonitor(pool, cfg, created.id, {
+    force: true,
+    capture: async () => ({ text: "legacy hydration payload", screenshot: null }),
+  });
+  const oldBaseline = (await pool.query("SELECT baseline_id FROM fusion_monitors WHERE id=$1", [created.id])).rows[0].baseline_id;
+  await pool.query("UPDATE fusion_monitors SET browser_text_extraction_version=1 WHERE id=$1", [created.id]);
+  assert.equal(await runMonitor(pool, cfg, created.id, {
+    force: true,
+    capture: async () => ({ text: "Visible page content", screenshot: null }),
+  }), true);
+  const transitioned = (await pool.query("SELECT * FROM fusion_monitors WHERE id=$1", [created.id])).rows[0];
+  assert.equal(transitioned.browser_text_extraction_version, 2);
+  assert.notEqual(transitioned.baseline_id, oldBaseline);
+  assert.equal((await pool.query("SELECT count(*) FROM fusion_captures WHERE monitor_id=$1", [created.id])).rows[0].count, "2");
+  const transition = await pool.query("SELECT status,notification_state FROM fusion_events WHERE monitor_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1", [created.id]);
+  assert.deepEqual(transition.rows[0], { status: "extraction_transition", notification_state: "not_requested" });
+  await runMonitor(pool, cfg, created.id, {
+    force: true,
+    capture: async () => ({ text: "Visible page content updated", screenshot: null }),
+  });
+  const changed = await pool.query("SELECT notification_state FROM fusion_events WHERE monitor_id=$1 AND status='changed'", [created.id]);
+  assert.equal(changed.rows[0].notification_state, "disabled");
+  assert.equal((await pool.query("SELECT count(*) FROM fusion_outbox o JOIN fusion_events e ON e.id=o.event_id WHERE e.monitor_id=$1", [created.id])).rows[0].count, "0");
 });
 test("controlled HTML and API monitoring preserve functionality with canonical JSON", async (t) => {
   const fixture = managedServer(t, (req, res) =>
@@ -604,12 +724,13 @@ test("legacy migration preserves owner, historical references and NUMERIC decima
       ])
     ).rows[0];
     assert.equal(upgraded.capture_mode, "viewport");
+    assert.equal(upgraded.browser_text_extraction_version, 2);
     assert.deepEqual(upgraded.browser_steps, []);
     assert.equal(upgraded.monitor_state, "healthy");
     assert.equal(
       (await legacy.query("SELECT count(*) FROM fusion_migrations")).rows[0]
         .count,
-      "4",
+      "5",
     );
     assert.equal(upgraded.baseline_id, preservedCapture);
     assert.equal(upgraded.latest_capture_id, preservedCapture);
@@ -1879,7 +2000,7 @@ test("private preview seed migrates all versions, is idempotent, preserves chang
     assert.equal(
       (await seededPool.query("SELECT count(*) FROM fusion_migrations")).rows[0]
         .count,
-      "4",
+      "5",
     );
     assert.equal(
       (await seededPool.query("SELECT count(*) FROM users")).rows[0].count,

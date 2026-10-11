@@ -1,4 +1,4 @@
-import { chromium, type Browser } from "playwright";
+import { chromium, type Browser, type Locator } from "playwright";
 import { EgressPolicy, browserProxy, safeFetch } from "./egress.js";
 import { normalizeText } from "./comparison.js";
 import { locate, runSteps, type BrowserStep } from "./browser-steps.js";
@@ -41,6 +41,7 @@ export type Monitor = {
   interval_seconds: number;
   baseline_id: string | null;
   latest_capture_id: string | null;
+  browser_text_extraction_version?: number;
   failure_count: number;
 };
 export type Capture = {
@@ -48,6 +49,60 @@ export type Capture = {
   screenshot: Buffer | null;
   warning?: string;
 };
+
+// This runs only as part of our fixed capture implementation; monitors cannot
+// provide arbitrary JavaScript. It preserves DOM order without mutating the
+// document that will also be used by visual capture.
+async function visibleText(locator: Locator, ignoreSelectors: string[]) {
+  // Fixed page code only: monitors cannot provide arbitrary JavaScript. Traverse
+  // text nodes without mutating the page that the visual capture reuses.
+  return await locator.evaluateAll((selected, ignored) => {
+    const roots: Element[] = [];
+    root: for (const node of selected) {
+      for (const parent of selected)
+        if (parent !== node && parent.contains(node)) continue root;
+      roots.push(node);
+    }
+    const excludedTags = new Set(["SCRIPT", "STYLE", "TEMPLATE", "NOSCRIPT"]);
+    const chunks: string[] = [];
+    for (const root of roots) {
+      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
+      while (walker.nextNode()) {
+        const textNode = walker.currentNode;
+        let hidden = false;
+        for (
+          let current = textNode.parentElement;
+          current;
+          current = current.parentElement
+        ) {
+          if (excludedTags.has(current.tagName) || current.hasAttribute("hidden")) {
+            hidden = true;
+            break;
+          }
+          const style = window.getComputedStyle(current);
+          if (
+            style.display === "none" ||
+            style.visibility === "hidden" ||
+            style.visibility === "collapse" ||
+            style.contentVisibility === "hidden" ||
+            style.opacity === "0"
+          ) {
+            hidden = true;
+            break;
+          }
+          for (const selector of ignored)
+            if (current.matches(selector)) {
+              hidden = true;
+              break;
+            }
+          if (hidden) break;
+        }
+        if (!hidden) chunks.push(textNode.nodeValue ?? "");
+      }
+    }
+    return chunks.join("\n");
+  }, ignoreSelectors);
+}
 function stableJSON(value: any): any {
   if (Array.isArray(value)) return value.map(stableJSON);
   if (value && typeof value === "object")
@@ -172,17 +227,13 @@ export async function capture(
     );
     if (attention) throw attention;
     await page.evaluate(() => document.fonts.ready);
-    for (const selector of m.ignore_selectors)
-      await page
-        .locator(selector)
-        .evaluateAll((nodes) => nodes.forEach((n) => n.remove()));
     const locator = m.selector
       ? m.selector_type === "xpath"
         ? page.locator("xpath=" + m.selector)
         : locate(page, m.selector)
       : page.locator("body");
     let extracted = m.text_enabled
-      ? (await locator.allTextContents()).join("\n")
+      ? await visibleText(locator, m.ignore_selectors)
       : "";
     for (const value of Object.values(privateValues))
       extracted = extracted.split(value).join("[private]");

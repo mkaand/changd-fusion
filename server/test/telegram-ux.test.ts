@@ -10,6 +10,7 @@ import {
 } from "../src/notifications.js";
 import type { Storage } from "../src/storage.js";
 import { PNG } from "pngjs";
+import { notificationFingerprint } from "../src/engine.js";
 const event: EventMessage = {
   id: "fixture",
   monitorId: "fixture",
@@ -53,6 +54,30 @@ test("notification summaries redact oversized JSON and credentials without inven
     { removed: true, value: "Authorization: Bearer secret-value" },
   ]);
   assert.equal(result, "Content changed. View the full difference.");
+});
+test("notification summaries remove embedded hydration JSON but retain meaningful surrounding text", () => {
+  const hydration = JSON.stringify({ props: { session: "x".repeat(300), logged_in: false } });
+  const result = safeTextSummary([{ added: true, value: `Skip to content ${hydration}` }]);
+  assert.equal(result, "Content changed. View the full difference.");
+  const meaningful = safeTextSummary([{ added: true, value: `Price changed ${hydration}` }]);
+  assert.equal(meaningful, "Added: Price changed");
+  assert.ok(safeTextSummary([{ added: true, value: '{"price":110}' }]).includes("price"));
+});
+test("notification fingerprints are stable for ignored hydration and distinguish reversible text changes", () => {
+  const aToB = notificationFingerprint([
+    { removed: true, value: "Example Feature" },
+    { added: true, value: "Updated Example Feature" },
+  ]);
+  const same = notificationFingerprint([
+    { removed: true, value: "Example   Feature" },
+    { added: true, value: "Updated Example Feature" },
+  ]);
+  const bToA = notificationFingerprint([
+    { removed: true, value: "Updated Example Feature" },
+    { added: true, value: "Example Feature" },
+  ]);
+  assert.equal(aToB, same);
+  assert.notEqual(aToB, bToA);
 });
 test("digest is concise and carries only its recorded count", () => {
   const text = telegramSummary({ ...event, eventType: "digest", digestCount: 5, textChanged: false, visualChanged: false });

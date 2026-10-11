@@ -13,6 +13,37 @@ import { openValues } from "./vault.js";
 import { AttentionFailure } from "./attention.js";
 import { publicFailure } from "./errors.js";
 
+export const VISIBLE_BROWSER_TEXT_EXTRACTION_VERSION = 2;
+
+export function notificationFingerprint(
+  textParts: Array<{ value?: string; added?: boolean; removed?: boolean }>,
+  visual?: {
+    changed?: boolean;
+    percent?: string | null;
+    dimensionChanged?: boolean;
+    beforeDimensions?: unknown;
+    afterDimensions?: unknown;
+  } | null,
+) {
+  const text = textParts
+    .filter((part) => part.added || part.removed)
+    .map((part) => ({
+      change: part.added ? "added" : "removed",
+      value: String(part.value ?? "").replace(/\s+/g, " ").trim(),
+    }));
+  const image = visual?.changed || visual?.dimensionChanged
+    ? {
+        percent: visual.percent ?? null,
+        dimensions: !!visual.dimensionChanged,
+        before: visual.beforeDimensions ?? null,
+        after: visual.afterDimensions ?? null,
+      }
+    : null;
+  return createHash("sha256")
+    .update(JSON.stringify({ text, image }))
+    .digest("hex");
+}
+
 async function queueNotification(c: any, monitor: any, eventId: string, fingerprint: string) {
   if (!monitor.notification_enabled) {
     await c.query("UPDATE fusion_events SET notification_state='disabled',notification_fingerprint=$2 WHERE id=$1", [eventId, fingerprint]);
@@ -123,8 +154,14 @@ export async function runMonitor(
             )
           ).rows[0]
         : null;
+      const extractionTransition =
+        !!before &&
+        m.kind === "browser" &&
+        m.text_enabled &&
+        Number(m.browser_text_extraction_version ?? 1) <
+          VISIBLE_BROWSER_TEXT_EXTRACTION_VERSION;
       const text =
-        before && m.text_enabled
+        before && m.text_enabled && !extractionTransition
           ? compareText(before.text_content ?? "", current.text ?? "")
           : { changed: false, parts: [] };
       const visual =
@@ -150,6 +187,8 @@ export async function runMonitor(
           ? "baseline"
           : text.changed || visual?.changed
             ? "changed"
+            : extractionTransition
+              ? "extraction_transition"
             : "unchanged";
       await c.query("BEGIN");
       try {
@@ -177,20 +216,29 @@ export async function runMonitor(
           ],
         );
         await c.query(
-          "UPDATE fusion_monitors SET latest_capture_id=$2,baseline_id=CASE WHEN $3 THEN $2 ELSE baseline_id END,last_percent=$4,last_dimension_change=$5,last_run=now(),next_run=now()+interval_seconds*interval '1 second',failure_count=0,last_error=null,last_success_at=now(),last_change_at=CASE WHEN $6='changed' THEN now() ELSE last_change_at END,monitor_state=$6,execution_ms=$7,warning_code=$8 WHERE id=$1",
+          "UPDATE fusion_monitors SET latest_capture_id=$2,baseline_id=CASE WHEN $3 THEN $2 ELSE baseline_id END,last_percent=$4,last_dimension_change=$5,last_run=now(),next_run=now()+interval_seconds*interval '1 second',failure_count=0,last_error=null,last_success_at=now(),last_change_at=CASE WHEN $6='changed' THEN now() ELSE last_change_at END,monitor_state=$6,execution_ms=$7,warning_code=$8,browser_text_extraction_version=CASE WHEN $9 THEN $10 ELSE browser_text_extraction_version END WHERE id=$1",
           [
             id,
             captureId,
             status !== "unchanged",
             visual?.percent ?? null,
             visual?.dimensionChanged ?? false,
-            status === "baseline" ? "healthy" : status,
+            status === "baseline" || status === "extraction_transition"
+              ? "healthy"
+              : status,
             Date.now() - started,
             current.warning ?? null,
+            extractionTransition,
+            VISIBLE_BROWSER_TEXT_EXTRACTION_VERSION,
           ],
         );
         if (status === "changed")
-          await queueNotification(c, m, event.rows[0].id, createHash("sha256").update(JSON.stringify({ text: text.parts, visual: visual?.percent ?? null, dimensions: visual?.dimensionChanged ?? false })).digest("hex"));
+          await queueNotification(
+            c,
+            m,
+            event.rows[0].id,
+            notificationFingerprint(text.parts, visual),
+          );
         await c.query("COMMIT");
       } catch (e) {
         await c.query("ROLLBACK");

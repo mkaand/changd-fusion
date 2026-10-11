@@ -681,6 +681,7 @@ export function createApp(
         "reset",
         "legacy",
         "test",
+        "extraction_transition",
       ])
       .optional()
       .parse(req.query.status);

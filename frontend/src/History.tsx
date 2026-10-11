@@ -149,6 +149,7 @@ export function History({ id, refresh }: { id: string; refresh: number }) {
             "reset",
             "test",
             "legacy",
+            "extraction_transition",
           ].map((value) => ({ value, label: value }))}
         />
       </Space>
@@ -178,7 +179,9 @@ export function History({ id, refresh }: { id: string; refresh: number }) {
                       : "green"
                 }
               >
-                {e.status}
+                {e.status === "extraction_transition"
+                  ? "extraction updated"
+                  : e.status}
               </Tag>
               <span>{new Date(e.created_at).toLocaleString()}</span>
               {e.visual_percent !== null && (
@@ -199,6 +202,13 @@ export function History({ id, refresh }: { id: string; refresh: number }) {
                 type="info"
                 title="Capture configuration changed"
                 description="Previous images remain in history. The next successful capture establishes the new baseline."
+              />
+            )}
+            {e.status === "extraction_transition" && (
+              <Alert
+                type="info"
+                title="Visible-text extraction updated"
+                description="The successful capture became the new text baseline. No change notification was sent."
               />
             )}
             {e.attention_state && (

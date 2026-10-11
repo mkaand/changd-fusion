@@ -89,13 +89,60 @@ export function truncateText(value: string, limit: number) {
   }
   return result;
 }
+function removeLargeJSON(value: string) {
+  let result = "";
+  for (let start = 0; start < value.length; start++) {
+    const opener = value[start];
+    if (opener !== "{" && opener !== "[") {
+      result += opener;
+      continue;
+    }
+    const stack = [opener === "{" ? "}" : "]"];
+    let quote = "", escaped = false, end = start + 1;
+    for (; end < value.length && stack.length; end++) {
+      const char = value[end];
+      if (quote) {
+        if (escaped) escaped = false;
+        else if (char === "\\") escaped = true;
+        else if (char === quote) quote = "";
+      } else if (char === '"') quote = char;
+      else if (char === "{") stack.push("}");
+      else if (char === "[") stack.push("]");
+      else if (char === stack.at(-1)) stack.pop();
+    }
+    const candidate = value.slice(start, end);
+    if (stack.length || candidate.length <= 120) {
+      result += opener;
+      continue;
+    }
+    try {
+      const parsed = JSON.parse(candidate);
+      if (parsed && typeof parsed === "object") {
+        result += " ";
+        start = end - 1;
+        continue;
+      }
+    } catch {}
+    result += opener;
+  }
+  return result;
+}
 export function safeTextSummary(parts: Array<{ value?: unknown; added?: boolean; removed?: boolean }>) {
   const sensitive = /(authorization|bearer\s+|cookie|bot\d{5,}:|token\s*[=:])/i;
   const values = parts.filter((p) => p.added || p.removed).map((p) => ({ mark: p.added ? "Added" : "Removed", value: String(p.value ?? "") }));
   const meaningful = values.map(({ mark, value }) => {
-    const cleaned = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
-    if (!cleaned || sensitive.test(cleaned) || (/^[{[]/.test(cleaned) && cleaned.length > 100)) return null;
-    return `${mark}: ${cleaned.replace(/https?:\/\/[^\s?#]+(?:\?[^\s#]*)?/g, "[URL]")}`;
+    const cleaned = removeLargeJSON(value)
+      .replace(/[\u0000-\u001f\u007f]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+    if (
+      !cleaned ||
+      sensitive.test(cleaned) ||
+      /^(?:skip to content|navigation|main content)$/i.test(cleaned) ||
+      (/^[{[]/.test(cleaned) && cleaned.length > 100)
+    )
+      return null;
+    return `${mark}: ${truncateText(cleaned.replace(/https?:\/\/[^\s?#]+(?:\?[^\s#]*)?/g, "[URL]"), 280)}`;
   }).filter(Boolean) as string[];
   return truncateText(meaningful.slice(0, 3).join(" · ") || "Content changed. View the full difference.", 900);
 }
