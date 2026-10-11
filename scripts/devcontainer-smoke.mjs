@@ -4,6 +4,7 @@ import { execFileSync, spawnSync } from "node:child_process";
 import {
   mkdtempSync,
   mkdirSync,
+  readdirSync,
   writeFileSync,
   readFileSync,
   cpSync,
@@ -13,6 +14,14 @@ import path from "node:path";
 import os from "node:os";
 import { createHash } from "node:crypto";
 const root = process.cwd();
+const expectedMigrations = readdirSync(path.join(root, "server", "migrations"), {
+  withFileTypes: true,
+})
+  .filter((entry) => entry.isFile() && entry.name.endsWith(".sql"))
+  .map((entry) => entry.name)
+  .sort();
+if (expectedMigrations.length === 0)
+  throw Error("No SQL migrations found for Dev Container validation");
 const temp = mkdtempSync(
   path.join(os.tmpdir(), "fusion-devcontainer-recovery-"),
 );
@@ -161,7 +170,7 @@ try {
     await writeFile('/home/node/.config/vscode-dev-containers/first-run-notice-already-displayed','');
     const secret=await readFile('.preview/db-password','utf8');if(!/^[a-f0-9]{64}$/.test(secret))throw Error('Invalid test secret');assert.equal((await import('node:crypto')).createHash('sha256').update(secret).digest('hex'),${JSON.stringify(secretHash)});
     const {default:pg}=await import('./server/node_modules/pg/lib/index.js');const p=new pg.Pool({connectionString:'postgresql://fusion_preview:'+secret+'@db:5432/fusion_preview'});
-    try{const {migrate}=await import('./server/dist/migrate.js');await migrate(p);assert.equal((await p.query('SELECT count(*)::int AS count FROM fusion_migrations')).rows[0].count,3);}finally{await p.end();}
+    try{const {migrate}=await import('./server/dist/migrate.js');await migrate(p);const applied=(await p.query('SELECT name FROM fusion_migrations ORDER BY name')).rows.map((row)=>row.name);assert.deepEqual(applied,${JSON.stringify(expectedMigrations)});}finally{await p.end();}
     console.log('PASS: real Dev Containers creation, npm/build lifecycle, HOME/VS Code writes, cross-UID private secret and PostgreSQL migrations');`;
   process.stdout.write(
     command("docker", [
