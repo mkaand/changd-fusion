@@ -801,6 +801,15 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
       0,
     );
     await page.screenshot({ path: path.join(output, "dashboard-desktop.png") });
+    await themeSwitch.click();
+    await page.screenshot({ path: path.join(output, "dashboard-desktop-dark.png") });
+    await themeSwitch.click();
+    await page.getByText("Settings", { exact: true }).first().click();
+    await page.getByRole("heading", { name: "Settings" }).waitFor();
+    await page.getByText("Notifications", { exact: true }).first().click();
+    await page.getByRole("heading", { name: "Notification channels" }).waitFor();
+    await page.screenshot({ path: path.join(output, "settings-notifications.png") });
+    await page.getByText("Monitors", { exact: true }).first().click();
     await page.getByRole("searchbox", { name: "Search monitors" }).fill("");
     await page
       .getByRole("button", { name: "Hybrid fixture", exact: true })

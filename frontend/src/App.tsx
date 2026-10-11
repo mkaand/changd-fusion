@@ -257,9 +257,6 @@ export default function FusionApp() {
           <img src={logo} alt="Changd" />
           <span className="brand-name">Changd <span>Fusion</span></span>
         </a>
-        <div className="theme-controls-slot">
-          <AllMyThemeControls adapter={themeAdapter} />
-        </div>
         <Space className="desktop-account-actions">
           <span className="user-name">{user.firstname || "Account"}</span>
           <Suspense>
@@ -288,6 +285,9 @@ export default function FusionApp() {
             <Button type="text" aria-label="Open account menu" icon={<MoreOutlined />} />
           </Dropdown>
         )}
+        <div className="theme-controls-slot">
+          <AllMyThemeControls adapter={themeAdapter} />
+        </div>
       </Header>
       <Layout>
         {compactLayout ? (
@@ -430,25 +430,20 @@ export default function FusionApp() {
               </>
             ) : (
               <>
-                <Space className="page-header" wrap>
+                <div className="dashboard-breadcrumb">Monitors <span>/</span> Active monitoring</div>
+                <Space className="page-header dashboard-header" wrap>
                   <Typography.Title level={2}>Monitors</Typography.Title>
-                  <Button
-                    type="primary"
-                    icon={<PlusOutlined />}
-                    onClick={() => void edit()}
-                  >
-                    New monitor
-                  </Button>
-                  <Button onClick={() => void reload()}>Refresh</Button>
+                  <span className="dashboard-caption">Unified text and visual checks</span>
+                  <div className="dashboard-header-actions"><Button onClick={() => void reload()}>Refresh</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => void edit()}>New monitor</Button></div>
                 </Space>
                 <div
                   className="dashboard-summary"
                   aria-label="Monitor overview"
                 >
-                  <Card size="small">
+                  <Card size="small" className="summary-card">
                     <strong>{monitors.length}</strong> monitors
                   </Card>
-                  <Card size="small">
+                  <Card size="small" className="summary-card">
                     <strong>
                       {
                         monitors.filter(
@@ -458,7 +453,7 @@ export default function FusionApp() {
                     </strong>{" "}
                     active
                   </Card>
-                  <Card size="small">
+                  <Card size="small" className="summary-card summary-attention">
                     <strong>
                       {monitors.filter((m) => m.last_error).length}
                     </strong>{" "}
@@ -541,11 +536,11 @@ export default function FusionApp() {
                   </section>
                 ) : (
                 <Card className="monitor-table-card">
-                  <Table
+                  <Table size="small" bordered
                     rowKey="id"
                     loading={loading}
                     dataSource={filteredMonitors}
-                    scroll={{ x: 960 }}
+                    scroll={{ x: 1100 }}
                     pagination={{ pageSize: 10, hideOnSinglePage: true }}
                     locale={{
                       emptyText: (

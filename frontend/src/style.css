@@ -12,31 +12,30 @@ html, body, #root {
   overflow-x: clip;
 }
 .header {
-  background: var(--fusion-surface, #fff);
+  background: #061b30;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 0 24px;
-  border-bottom: 1px solid #eee;
-  min-height: 64px;
+  padding: 0 20px;
+  border-bottom: 0;
+  min-height: 56px;
   height: auto;
 }
 .brand {
   display: flex;
   align-items: center;
   gap: 10px;
-  color: var(--fusion-text, #1d1d1b);
-  font-size: 21px;
+  color: #f7fbff;
+  font-size: 18px;
   font-weight: 650;
 }
 .brand img {
-  width: 38px;
+  width: 30px;
 }
-.brand span {
-  color: #1677ff;
-}
-.desktop-account-actions { margin-left: auto; }
-.theme-controls-slot { flex: 0 0 auto; }
+.brand span { color: #f7fbff; }
+.desktop-account-actions { margin-left: auto; color: #e7f3ff; }
+.theme-controls-slot { flex: 0 0 auto; margin-left: 14px; }
+.header .ant-btn:not(.allmy-theme-switch):not(.allmy-theme-auto) { color: #e7f3ff; }
 .account-menu {
   width: 220px;
   padding: 8px;
@@ -47,13 +46,14 @@ html, body, #root {
 .account-menu-name { padding: 6px 8px 10px; font-weight: 600; overflow-wrap: anywhere; }
 .account-menu .ant-btn { width: 100%; margin: 2px 0; text-align: left; }
 .content {
-  padding: 24px;
+  padding: 18px 22px 28px;
   min-width: 0;
+  background: #f3f6fa;
 }
 .page-header {
   display: flex;
   justify-content: flex-start;
-  margin: 16px 0;
+  margin: 8px 0 14px;
 }
 .page-header h2 {
   margin: 0 !important;
@@ -168,11 +168,11 @@ details {
 .dashboard-summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
-  margin: 16px 0;
+  gap: 10px;
+  margin: 0 0 14px;
 }
 .dashboard-summary strong {
-  font-size: 22px;
+  font-size: 20px;
   margin-right: 6px;
 }
 .dimension-images {
@@ -238,7 +238,7 @@ details {
   --fusion-text: #eee;
 }
 .dashboard-tools {
-  margin: 12px 0;
+  margin: 0 0 10px;
 }
 .dashboard-tools .ant-input-search { width: min(360px, 100%); }
 .status-filter { width: 220px; }
@@ -265,6 +265,27 @@ details {
 .delivery-card-list { display: grid; gap: 10px; margin-top: 12px; }
 .delivery-details { margin: 10px 0; overflow-wrap: anywhere; }
 .settings-page { max-width: 960px; }
+.dashboard-breadcrumb { color: #7b8794; font-size: 12px; margin: 0 0 8px; }
+.dashboard-breadcrumb span { color: #b2bac5; padding: 0 6px; }
+.dashboard-header { align-items: center; min-height: 34px; }
+.dashboard-header .ant-typography { font-size: 20px; font-weight: 600; letter-spacing: -.01em; }
+.dashboard-caption { color: #7b8794; font-size: 13px; }
+.dashboard-header-actions { display: flex; gap: 8px; margin-left: auto; }
+.summary-card { border-color: #e3e9f0; box-shadow: none; }
+.summary-card .ant-card-body { padding: 11px 14px; color: #657281; font-size: 12px; }
+.summary-attention strong { color: #cf3f4f; }
+.monitor-table-card { border-color: #e0e7ef; box-shadow: 0 1px 2px rgba(12, 30, 48, .04); }
+.monitor-table-card .ant-card-body { padding: 0; }
+.monitor-table-card .ant-table-thead > tr > th { background: #f8fafc; color: #657281; font-size: 12px; font-weight: 600; }
+.monitor-table-card .ant-table-tbody > tr > td { font-size: 13px; vertical-align: middle; }
+.monitor-table-card .ant-tag { margin-inline-end: 4px; }
+.ant-layout-sider { background: #fff !important; border-right: 1px solid #e5eaf0; }
+.ant-layout-sider .ant-menu { font-size: 13px; padding-top: 10px; }
+.ant-layout-sider .ant-menu-item { margin-inline: 0; width: 100%; border-radius: 0; height: 42px; line-height: 42px; }
+.ant-layout-sider .ant-menu-item-selected { border-right: 3px solid #1677ff; }
+:root[data-theme="dark"] .content { background: #0e1726; }
+:root[data-theme="dark"] .monitor-table-card .ant-table-thead > tr > th { background: #152235; }
+:root[data-theme="dark"] .ant-layout-sider { background: #101b2c !important; border-right-color: #263850; }
 .settings-page .ant-segmented { margin-bottom: 16px; }
 .settings-stack { width: 100%; }
 .settings-stack .ant-card { width: 100%; }
@@ -280,6 +301,8 @@ details {
   }
   .settings-page .ant-segmented-group { flex-wrap: wrap; }
   .settings-page .ant-segmented-item { flex: 1 1 45%; text-align: center; }
+  .dashboard-header-actions { margin-left: 0; width: 100%; }
+  .dashboard-header-actions .ant-btn { flex: 1; }
 }
 
 @media (prefers-reduced-motion: reduce) {
