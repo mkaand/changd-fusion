@@ -26,6 +26,15 @@ test("capture failure diagnostics classify only safe signals", () => {
   }
 });
 
+test("capture deadlines are retained as safe timeout diagnostics", () => {
+  const diagnostic = new CaptureFailure("attention_detection", "timeout");
+  assert.deepEqual(
+    { stage: diagnostic.stage, code: diagnostic.code, status: diagnostic.httpStatus },
+    { stage: "attention_detection", code: "timeout", status: null },
+  );
+  assert.equal(publicFailure(diagnostic), "Website capture failed. Check monitor diagnostics.");
+});
+
 test("safe HTTP classification retains only controlled HTTP diagnostics", () => {
   const forbidden = captureFailure(new HttpError(403, "Access denied (HTTP 403)"), "navigation");
   assert.deepEqual(

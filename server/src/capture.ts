@@ -3,7 +3,12 @@ import { EgressPolicy, browserProxy, safeFetch } from "./egress.js";
 import { normalizeText } from "./comparison.js";
 import { locate, runSteps, type BrowserStep } from "./browser-steps.js";
 import { AttentionFailure, detectAttention } from "./attention.js";
-import { captureFailure, type CaptureStage, HttpError } from "./errors.js";
+import {
+  CaptureFailure,
+  captureFailure,
+  type CaptureStage,
+  HttpError,
+} from "./errors.js";
 import { checkDimensions, pngDimensions } from "./image.js";
 import type { Config } from "./config.js";
 export type Monitor = {
@@ -66,38 +71,35 @@ async function visibleText(locator: Locator, ignoreSelectors: string[]) {
     const excludedTags = new Set(["SCRIPT", "STYLE", "TEMPLATE", "NOSCRIPT"]);
     const chunks: string[] = [];
     for (const root of roots) {
-      const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
-      while (walker.nextNode()) {
-        const textNode = walker.currentNode;
-        let hidden = false;
-        for (
-          let current = textNode.parentElement;
-          current;
-          current = current.parentElement
-        ) {
-          if (excludedTags.has(current.tagName) || current.hasAttribute("hidden")) {
-            hidden = true;
-            break;
-          }
-          const style = window.getComputedStyle(current);
-          if (
-            style.display === "none" ||
-            style.visibility === "hidden" ||
-            style.visibility === "collapse" ||
-            style.contentVisibility === "hidden" ||
-            style.opacity === "0"
-          ) {
-            hidden = true;
-            break;
-          }
-          for (const selector of ignored)
-            if (current.matches(selector)) {
-              hidden = true;
-              break;
-            }
-          if (hidden) break;
+      // Check each element once and prune hidden subtrees. The previous
+      // text-node/ancestor walk called getComputedStyle repeatedly for large
+      // application pages, which could consume the whole capture budget.
+      const pending: Node[] = [root];
+      while (pending.length) {
+        const node = pending.pop()!;
+        if (node.nodeType === Node.TEXT_NODE) {
+          chunks.push(node.nodeValue ?? "");
+          continue;
         }
-        if (!hidden) chunks.push(textNode.nodeValue ?? "");
+        if (node.nodeType !== Node.ELEMENT_NODE) continue;
+        const element = node as Element;
+        if (
+          excludedTags.has(element.tagName) ||
+          element.hasAttribute("hidden") ||
+          ignored.some((selector) => element.matches(selector))
+        )
+          continue;
+        const style = window.getComputedStyle(element);
+        if (
+          style.display === "none" ||
+          style.visibility === "hidden" ||
+          style.visibility === "collapse" ||
+          style.contentVisibility === "hidden" ||
+          style.opacity === "0"
+        )
+          continue;
+        for (let index = element.childNodes.length - 1; index >= 0; index--)
+          pending.push(element.childNodes[index]);
       }
     }
     return chunks.join("\n");
@@ -123,6 +125,7 @@ export async function capture(
   let proxy: Awaited<ReturnType<typeof browserProxy>> | undefined;
   let browser: Browser | undefined;
   let timer: NodeJS.Timeout | undefined;
+  let deadlineElapsed = false;
   try {
     await policy.target(m.url);
     if (m.kind !== "browser") {
@@ -167,10 +170,10 @@ export async function capture(
       acceptDownloads: false,
       ignoreHTTPSErrors: false,
     });
-    timer = setTimeout(
-      () => void context.close().catch(() => {}),
-      Math.max(1, deadline - Date.now()),
-    );
+    timer = setTimeout(() => {
+      deadlineElapsed = true;
+      void context.close().catch(() => {});
+    }, Math.max(1, deadline - Date.now()));
     context.setDefaultTimeout(Math.min(cfg.CAPTURE_TIMEOUT_MS, 10000));
     await context.route("**/*", async (route) => {
       try {
@@ -317,6 +320,8 @@ export async function capture(
     return { text, screenshot, warning };
   } catch (error) {
     if (error instanceof AttentionFailure) throw error;
+    if (deadlineElapsed)
+      throw new CaptureFailure(stage, "timeout");
     throw captureFailure(error, stage);
   } finally {
     if (timer) clearTimeout(timer);
