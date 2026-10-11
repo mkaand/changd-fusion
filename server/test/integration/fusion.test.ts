@@ -462,6 +462,7 @@ test("real Playwright hybrid capture uses one session, selectors, masks, normali
     const result = await capture(m, cfg, policy);
     assert.equal(result.text, "Price 10");
     assert.ok(result.screenshot?.length);
+    assert.ok((result.timings?.font_wait ?? -1) >= 0);
     assert.equal(subresourceHits, 0);
     const xpath = await capture(
       {
@@ -474,6 +475,7 @@ test("real Playwright hybrid capture uses one session, selectors, masks, normali
       policy,
     );
     assert.equal(xpath.text, "Price 10");
+    assert.equal(xpath.timings?.font_wait, undefined);
     const defaultText = await capture(
       {
         ...m,
@@ -491,6 +493,44 @@ test("real Playwright hybrid capture uses one session, selectors, masks, normali
     await closeServer(fixture);
     await closeServer(privateServer);
   }
+});
+test("text-only browser capture does not wait for an irrelevant stalled font", async (t) => {
+  const fixture = managedServer(t, (req, res) => {
+    if (req.url === "/slow.woff2") return;
+    if (req.url === "/font.css") {
+      res.setHeader("Content-Type", "text/css");
+      res.end('@font-face{font-family:slow;src:url("/slow.woff2")} main{font-family:slow}');
+      return;
+    }
+    res.setHeader("Content-Type", "text/html");
+    res.end('<link rel="stylesheet" href="/font.css"><main>Font-independent text</main>');
+  });
+  await listenServer(fixture);
+  const port = (fixture.address() as AddressInfo).port;
+  const policy = new EgressPolicy(
+    async () => [{ address: "127.0.0.1", family: 4 }],
+    () => true,
+    new Set([port]),
+  );
+  const started = Date.now();
+  const result = await capture(
+    {
+      ...monitor,
+      url: `http://fixture.test:${port}`,
+      text_enabled: true,
+      visual_enabled: false,
+      selector: "",
+      ignore_selectors: [],
+      browser_steps: [],
+    },
+    { ...cfg, CAPTURE_TIMEOUT_MS: 1500 },
+    policy,
+  );
+  assert.equal(result.text, "Font-independent text");
+  assert.ok(Date.now() - started < 1500);
+  assert.equal(result.timings?.font_wait, undefined);
+  for (const stage of ["target_validation", "browser_launch", "navigation", "attention_detection", "text_extraction"])
+    assert.ok((result.timings as Record<string, number>)[stage] >= 0, stage);
 });
 test("visible browser text ignores hydration across repeated captures, detects real changes and preserves disabled notifications", async (t) => {
   let hydration = "A", title = "Example Feature", state = "Open";
