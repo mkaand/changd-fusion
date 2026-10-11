@@ -53,6 +53,8 @@ export type Capture = {
   text: string | null;
   screenshot: Buffer | null;
   warning?: string;
+  // In-memory timing only. It is intentionally not persisted with captures.
+  timings?: Partial<Record<CaptureStage, number>>;
 };
 
 // This runs only as part of our fixed capture implementation; monitors cannot
@@ -122,6 +124,16 @@ export async function capture(
 ): Promise<Capture> {
   const deadline = Date.now() + cfg.CAPTURE_TIMEOUT_MS;
   let stage: CaptureStage = "target_validation";
+  const timings: Partial<Record<CaptureStage, number>> = {};
+  let stageStarted = performance.now();
+  const enterStage = (next: CaptureStage) => {
+    timings[stage] = (timings[stage] ?? 0) + performance.now() - stageStarted;
+    stage = next;
+    stageStarted = performance.now();
+  };
+  const finishTimings = () => {
+    timings[stage] = (timings[stage] ?? 0) + performance.now() - stageStarted;
+  };
   let proxy: Awaited<ReturnType<typeof browserProxy>> | undefined;
   let browser: Browser | undefined;
   let timer: NodeJS.Timeout | undefined;
@@ -129,13 +141,14 @@ export async function capture(
   try {
     await policy.target(m.url);
     if (m.kind !== "browser") {
-      stage = "navigation";
+      enterStage("navigation");
       const response = await safeFetch(m.url, policy, cfg.CAPTURE_TIMEOUT_MS);
       const text =
         m.kind === "api"
           ? JSON.stringify(stableJSON(JSON.parse(response.body.toString())), null, 2)
           : response.body.toString();
-      return { text: normalizeText(text, m), screenshot: null };
+      finishTimings();
+      return { text: normalizeText(text, m), screenshot: null, timings };
     }
     const privateValues = m.private_values ?? {};
     const privateWorkflow = (m.browser_steps ?? []).some(
@@ -150,7 +163,7 @@ export async function capture(
         "Private workflows require HTTPS and text-only capture",
       );
     proxy = await browserProxy(policy);
-    stage = "browser_launch";
+    enterStage("browser_launch");
     browser = await chromium.launch({
       headless: true,
       timeout: Math.max(1, deadline - Date.now()),
@@ -158,7 +171,7 @@ export async function capture(
       executablePath: cfg.PLAYWRIGHT_EXECUTABLE_PATH,
       proxy: { server: proxy.url, bypass: "<-loopback>" },
     });
-    stage = "browser_context";
+    enterStage("browser_context");
     const context = await browser.newContext({
       viewport: { width: 1280, height: 900 },
       deviceScaleFactor: 1,
@@ -190,7 +203,7 @@ export async function capture(
       }
     });
     await context.routeWebSocket("**/*", (ws) => ws.close());
-    stage = "navigation";
+    enterStage("navigation");
     const page = await context.newPage();
     let navigationStatus = 200;
     page.on("response", (r) => {
@@ -213,14 +226,14 @@ export async function capture(
         ) ??
         new HttpError(422, "Website returned an unsuccessful HTTP response")
       );
-    stage = "browser_steps";
+    enterStage("browser_steps");
     const warning = await runSteps(
       page,
       m.browser_steps ?? [],
       Math.min(deadline, Date.now() + (m.step_budget_ms ?? 20000)),
       privateValues,
     );
-    stage = "attention_detection";
+    enterStage("attention_detection");
     const attention = detectAttention(
       navigationStatus,
       new URL(page.url()).pathname,
@@ -233,9 +246,14 @@ export async function capture(
         .count()) > 0,
     );
     if (attention) throw attention;
-    stage = "font_wait";
-    await page.evaluate(() => document.fonts.ready);
-    stage = "text_extraction";
+    // Font readiness can wait for third-party font downloads until the global
+    // capture deadline. Text-only monitors compare DOM text, so font rasterization
+    // cannot affect their result; visual captures keep the existing wait.
+    if (m.visual_enabled) {
+      enterStage("font_wait");
+      await page.evaluate(() => document.fonts.ready);
+    }
+    enterStage("text_extraction");
     const locator = m.selector
       ? m.selector_type === "xpath"
         ? page.locator("xpath=" + m.selector)
@@ -252,7 +270,7 @@ export async function capture(
     // Freeze animations and use the same page for DOM and all screenshot modes.
     let screenshot: Buffer | null = null;
     if (m.visual_enabled) {
-      stage = "screenshot";
+      enterStage("screenshot");
       await page.addStyleTag({
         content:
           "* { animation: none !important; transition: none !important; caret-color: transparent !important; }",
@@ -317,8 +335,10 @@ export async function capture(
     }
     if (text && text.length > 2_000_000)
       throw Error("Extracted text too large");
-    return { text, screenshot, warning };
+    finishTimings();
+    return { text, screenshot, warning, timings };
   } catch (error) {
+    finishTimings();
     if (error instanceof AttentionFailure) throw error;
     if (deadlineElapsed)
       throw new CaptureFailure(stage, "timeout");
