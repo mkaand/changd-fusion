@@ -111,7 +111,7 @@ test("fresh migration is repeatable and decimal columns are NUMERIC", async () =
   assert.equal(r.rows[0].data_type, "numeric");
   assert.equal(
     (await pool.query("SELECT count(*) FROM fusion_migrations")).rows[0].count,
-    "3",
+    "4",
   );
 });
 test("JWT, admin checks, CSRF, disabled registration and removed scheduler endpoint", async () => {
@@ -609,7 +609,7 @@ test("legacy migration preserves owner, historical references and NUMERIC decima
     assert.equal(
       (await legacy.query("SELECT count(*) FROM fusion_migrations")).rows[0]
         .count,
-      "3",
+      "4",
     );
     assert.equal(upgraded.baseline_id, preservedCapture);
     assert.equal(upgraded.latest_capture_id, preservedCapture);
@@ -1805,7 +1805,7 @@ test("private preview seed migrates all versions, is idempotent, preserves chang
     assert.equal(
       (await seededPool.query("SELECT count(*) FROM fusion_migrations")).rows[0]
         .count,
-      "3",
+      "4",
     );
     assert.equal(
       (await seededPool.query("SELECT count(*) FROM users")).rows[0].count,
@@ -2130,4 +2130,15 @@ test("Codespaces Telegram requires an explicit successful owned test before auto
   assert.ok(
     decrypt(stored.encrypted, cfg.CHANNEL_KEY).password === smtp.password,
   );
+});
+
+test("monitoring defaults and bulk channel assignment are owner-scoped and transactional", async () => {
+  const defaults = { interval_seconds: 900, capture_mode: "viewport", notification_mode: "digest", notification_cooldown_seconds: 900, channel_ids: [channelId] };
+  await ownerAgent.put("/api/v1/preferences/monitoring").set("X-Fusion-Request", "1").send(defaults).expect(200);
+  assert.equal((await ownerAgent.get("/api/v1/preferences/monitoring").expect(200)).body.notification_mode, "digest");
+  await otherAgent.put("/api/v1/preferences/monitoring").set("X-Fusion-Request", "1").send({ channel_ids: [channelId] }).expect(404);
+  await ownerAgent.post("/api/v1/monitors/notification-channels/bulk").set("X-Fusion-Request", "1").send({ monitor_ids: [monitor.id], channel_id: channelId, action: "add", confirm: true }).expect(204);
+  await otherAgent.post("/api/v1/monitors/notification-channels/bulk").set("X-Fusion-Request", "1").send({ monitor_ids: [monitor.id], channel_id: channelId, action: "remove", confirm: true }).expect(404);
+  const association = await pool.query("SELECT 1 FROM fusion_monitor_channels WHERE monitor_id=$1 AND channel_id=$2", [monitor.id, channelId]);
+  assert.equal(association.rowCount, 1);
 });

@@ -10,6 +10,7 @@ import {
   Space,
   Tag,
   Empty,
+  Typography,
 } from "antd";
 import { api } from "./api";
 export function Channels({
@@ -28,6 +29,7 @@ export function Channels({
     [saving, setSaving] = useState(false),
     [validating, setValidating] = useState<string>(),
     [testMonitorId, setTestMonitorId] = useState<string>();
+  const [preview, setPreview] = useState<{ kind: string; text: string }>();
   const [form] = Form.useForm();
   const provider = Form.useWatch("provider", form);
   const create = (channel?: any) => {
@@ -66,7 +68,9 @@ export function Channels({
         <Button type="primary" onClick={() => create()}>
           Add channel
         </Button>
+        <Select aria-label="Telegram message preview" placeholder="Preview Telegram message" style={{ minWidth: 220 }} onChange={async (kind) => { try { setPreview({ kind, text: (await api(`/notifications/preview/${kind}`)).text }); } catch (e) { report((e as Error).message); } }} options={["text", "visual", "combined", "dimensions", "failure", "authentication", "challenge", "test", "digest"].map((value) => ({ value, label: value.replace(/^./, (c) => c.toUpperCase()) }))} />
       </Space>
+      {preview && <Card className="telegram-preview" title={`Telegram preview: ${preview.kind}`} extra={<Button onClick={() => setPreview(undefined)}>Close</Button>}><Typography.Paragraph className="telegram-preview-text">{preview.text}</Typography.Paragraph><Typography.Text type="secondary">Preview only — no Telegram request is made.</Typography.Text></Card>}
       {!channels.length && (
         <Empty description="Add SMTP or Telegram to receive unified change alerts." />
       )}

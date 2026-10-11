@@ -31,6 +31,11 @@ export type Monitor = {
   monitor_state?: string;
   notify_failures?: boolean;
   notify_attention?: boolean;
+  notification_enabled?: boolean;
+  muted_until?: string | null;
+  notification_cooldown_seconds?: number;
+  notification_mode?: "immediate" | "digest";
+  digest_window_seconds?: number;
   visual_threshold: string;
   pixel_threshold: string;
   interval_seconds: number;

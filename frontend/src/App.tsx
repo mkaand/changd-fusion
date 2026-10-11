@@ -34,6 +34,7 @@ import { useThemeAdapter } from "./theme";
 import { AllMyThemeControls } from "./AllMyThemeControls";
 import { Login } from "./Login";
 import { MonitorForm, defaults } from "./MonitorForm";
+import { MonitorUrlActions } from "./MonitorUrlActions";
 const History = lazy(() =>
   import("./History").then((m) => ({ default: m.History })),
 );
@@ -156,8 +157,9 @@ export default function FusionApp() {
   const edit = async (m?: any) => {
     setEditing(m);
     form.resetFields();
+    const userDefaults = m ? {} : await api("/preferences/monitoring").catch(() => ({}));
     form.setFieldsValue(
-      m ? { ...defaults, ...(await api("/jobs/" + m.id)) } : defaults,
+      m ? { ...defaults, ...(await api("/jobs/" + m.id)) } : { ...defaults, ...userDefaults },
     );
     setOpen(true);
   };
@@ -379,7 +381,7 @@ export default function FusionApp() {
                     )}
                     <span>Every {current.interval_seconds}s</span>
                   </Space>
-                  <Typography.Paragraph>{current.url}</Typography.Paragraph>
+                  <Space wrap><Typography.Paragraph className="monitor-url">{current.url}</Typography.Paragraph><MonitorUrlActions url={current.url} message={message} /></Space>
                   {current.last_error && (
                     <Alert title={current.last_error} type="error" />
                   )}
@@ -511,9 +513,9 @@ export default function FusionApp() {
                               <Button aria-label={`More actions for ${m.name}`} type="text" icon={<MoreOutlined />} />
                             </Dropdown>
                           </div>
-                          <Typography.Paragraph className="monitor-url" type="secondary" ellipsis={{ rows: 2, tooltip: m.url }}>
+                          <Space className="monitor-url-line" wrap><Typography.Paragraph className="monitor-url" type="secondary" ellipsis={{ rows: 2, tooltip: m.url }}>
                             {m.url}
-                          </Typography.Paragraph>
+                          </Typography.Paragraph><MonitorUrlActions url={m.url} message={message} compact /></Space>
                           <Space className="monitor-tags" wrap>
                             {m.text_enabled && <Tag>Text</Tag>}
                             {m.visual_enabled && <Tag color="blue">Visual</Tag>}
@@ -571,6 +573,11 @@ export default function FusionApp() {
                             {m.kind !== "browser" && <Tag>{m.kind}</Tag>}
                           </Space>
                         ),
+                      },
+                      {
+                        title: "URL",
+                        responsive: ["md"],
+                        render: (_, m: any) => <Space><Typography.Text ellipsis={{ tooltip: m.url }} style={{ maxWidth: 180 }}>{m.url}</Typography.Text><MonitorUrlActions url={m.url} message={message} compact /></Space>,
                       },
                       {
                         title: "Visual change",
@@ -660,7 +667,7 @@ export default function FusionApp() {
         width={640}
         destroyOnHidden
       >
-        <MonitorForm form={form} channels={channels} />
+        <MonitorForm form={form} channels={channels} monitorId={editing?.id} />
       </Modal>
     </Layout>
   );

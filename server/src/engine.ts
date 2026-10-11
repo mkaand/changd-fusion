@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID, createHash } from "node:crypto";
 import { type Pool } from "./db.js";
 import { capture, type Monitor, type Capture } from "./capture.js";
 import {
@@ -12,6 +12,44 @@ import { pngDimensions } from "./image.js";
 import { openValues } from "./vault.js";
 import { AttentionFailure } from "./attention.js";
 import { publicFailure } from "./errors.js";
+
+async function queueNotification(c: any, monitor: any, eventId: string, fingerprint: string) {
+  if (!monitor.notification_enabled) {
+    await c.query("UPDATE fusion_events SET notification_state='disabled',notification_fingerprint=$2 WHERE id=$1", [eventId, fingerprint]);
+    return;
+  }
+  if (monitor.muted_until && new Date(monitor.muted_until).getTime() > Date.now()) {
+    await c.query("UPDATE fusion_events SET notification_state='muted',notification_fingerprint=$2 WHERE id=$1", [eventId, fingerprint]);
+    return;
+  }
+  const channels = await c.query("SELECT mc.channel_id FROM fusion_monitor_channels mc JOIN fusion_channels ch ON ch.id=mc.channel_id WHERE mc.monitor_id=$1 AND ch.enabled AND ch.user_id=$2", [monitor.id, monitor.user_id]);
+  if (!channels.rowCount) {
+    await c.query("UPDATE fusion_events SET notification_state='not_requested',notification_fingerprint=$2 WHERE id=$1", [eventId, fingerprint]);
+    return;
+  }
+  if (monitor.notification_mode === "digest") {
+    for (const row of channels.rows) await c.query(
+      "INSERT INTO fusion_notification_digests(monitor_id,channel_id,first_event_at,last_event_at,event_count,latest_event_id,due_at) VALUES($1,$2,now(),now(),1,$3,now()+$4*interval '1 second') ON CONFLICT(monitor_id,channel_id) DO UPDATE SET last_event_at=now(),event_count=fusion_notification_digests.event_count+1,latest_event_id=EXCLUDED.latest_event_id",
+      [monitor.id, row.channel_id, eventId, monitor.digest_window_seconds],
+    );
+    await c.query("UPDATE fusion_events SET notification_state='digest_pending',notification_fingerprint=$2 WHERE id=$1", [eventId, fingerprint]);
+    return;
+  }
+  const duplicate = await c.query("SELECT 1 FROM fusion_events e JOIN fusion_outbox o ON o.event_id=e.id WHERE e.monitor_id=$1 AND e.notification_fingerprint=$2 AND o.status IN ('pending','sending','sent') AND e.created_at>now()-interval '24 hours' LIMIT 1", [monitor.id, fingerprint]);
+  if (duplicate.rowCount) {
+    await c.query("UPDATE fusion_events SET notification_state='duplicate_suppressed',notification_fingerprint=$2 WHERE id=$1", [eventId, fingerprint]);
+    return;
+  }
+  if (monitor.notification_cooldown_seconds > 0) {
+    const recent = await c.query("SELECT 1 FROM fusion_outbox o JOIN fusion_events e ON e.id=o.event_id WHERE e.monitor_id=$1 AND o.status IN ('pending','sending','sent') AND e.created_at>now()-$2*interval '1 second' LIMIT 1", [monitor.id, monitor.notification_cooldown_seconds]);
+    if (recent.rowCount) {
+      await c.query("UPDATE fusion_events SET notification_state='cooldown',notification_fingerprint=$2 WHERE id=$1", [eventId, fingerprint]);
+      return;
+    }
+  }
+  await c.query("INSERT INTO fusion_outbox(event_id,channel_id) SELECT $1,mc.channel_id FROM fusion_monitor_channels mc JOIN fusion_channels ch ON ch.id=mc.channel_id WHERE mc.monitor_id=$2 AND ch.enabled AND ch.user_id=$3 ON CONFLICT DO NOTHING", [eventId, monitor.id, monitor.user_id]);
+  await c.query("UPDATE fusion_events SET notification_state='queued',notification_fingerprint=$2 WHERE id=$1", [eventId, fingerprint]);
+}
 export async function runMonitor(
   pool: Pool,
   cfg: Config,
@@ -152,10 +190,7 @@ export async function runMonitor(
           ],
         );
         if (status === "changed")
-          await c.query(
-            "INSERT INTO fusion_outbox(event_id,channel_id) SELECT $1,mc.channel_id FROM fusion_monitor_channels mc JOIN fusion_channels ch ON ch.id=mc.channel_id WHERE mc.monitor_id=$2 AND ch.enabled AND ch.user_id=$3 ON CONFLICT DO NOTHING",
-            [event.rows[0].id, id, m.user_id],
-          );
+          await queueNotification(c, m, event.rows[0].id, createHash("sha256").update(JSON.stringify({ text: text.parts, visual: visual?.percent ?? null, dimensions: visual?.dimensionChanged ?? false })).digest("hex"));
         await c.query("COMMIT");
       } catch (e) {
         await c.query("ROLLBACK");
@@ -193,10 +228,7 @@ export async function runMonitor(
           [id, publicFailure(e), state, warning, Date.now() - started],
         );
         if (shouldNotify)
-          await c.query(
-            "INSERT INTO fusion_outbox(event_id,channel_id) SELECT $1,mc.channel_id FROM fusion_monitor_channels mc JOIN fusion_channels ch ON ch.id=mc.channel_id WHERE mc.monitor_id=$2 AND ch.enabled AND ch.user_id=$3 ON CONFLICT DO NOTHING",
-            [event.rows[0].id, id, m.user_id],
-          );
+          await queueNotification(c, m, event.rows[0].id, createHash("sha256").update(JSON.stringify({ state, error: publicFailure(e) })).digest("hex"));
         await c.query("COMMIT");
       } catch (error) {
         await c.query("ROLLBACK");

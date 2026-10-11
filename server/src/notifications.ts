@@ -52,6 +52,9 @@ export type EventMessage = {
   eventType?: string;
   attempt?: number;
   imageLabels?: ("before" | "after" | "diff")[];
+  digestCount?: number;
+  digestStart?: string;
+  digestEnd?: string;
 };
 export const escapeHTML = (s: string) =>
   s.replace(
@@ -86,6 +89,16 @@ export function truncateText(value: string, limit: number) {
   }
   return result;
 }
+export function safeTextSummary(parts: Array<{ value?: unknown; added?: boolean; removed?: boolean }>) {
+  const sensitive = /(authorization|bearer\s+|cookie|bot\d{5,}:|token\s*[=:])/i;
+  const values = parts.filter((p) => p.added || p.removed).map((p) => ({ mark: p.added ? "Added" : "Removed", value: String(p.value ?? "") }));
+  const meaningful = values.map(({ mark, value }) => {
+    const cleaned = value.replace(/[\u0000-\u001f\u007f]/g, " ").replace(/\s+/g, " ").trim();
+    if (!cleaned || sensitive.test(cleaned) || (/^[{[]/.test(cleaned) && cleaned.length > 100)) return null;
+    return `${mark}: ${cleaned.replace(/https?:\/\/[^\s?#]+(?:\?[^\s#]*)?/g, "[URL]")}`;
+  }).filter(Boolean) as string[];
+  return truncateText(meaningful.slice(0, 3).join(" · ") || "Content changed. View the full difference.", 900);
+}
 // English is the default; keep translations outside provider transport/security logic.
 export const telegramEnglish = {
   attention: {
@@ -115,18 +128,21 @@ export function telegramSummary(
 ) {
   const state = telegramEnglish.attention[event.attentionState ?? ""];
   const test = event.eventType === "test";
+  const digest = event.eventType === "digest";
   const lines = [
-    `🔔 Changd Fusion | ${state?.[0] ?? (test ? "Test Notification" : "Change Detected!")}`,
+    `🔔 Changd Fusion | ${state?.[0] ?? (digest ? "Monitoring Digest" : test ? "Test Notification" : "Change Detected!")}`,
     "",
     `🌐 Monitor: ${truncateText(event.name, 120)}`,
     state?.[1] ??
-      (test
+      (digest
+        ? `📝 ${Math.max(1, Number(event.digestCount ?? 1))} changes detected during the selected period`
+        : test
         ? "🟢 Status: Testing the notification channel"
         : "🟢 Status: Content changed"),
   ];
-  if (event.textChanged && !test && !state)
+  if (event.textChanged && !test && !state && !digest)
     lines.push(
-      `📝 Text: ${truncateText(event.textSummary || "Text change detected", 900)}`,
+      `📝 Text: ${truncateText(event.textSummary || "Content changed. View the full difference.", 900)}`,
     );
   if (event.dimensionChanged && !state) {
     const size = (s: EventMessage["beforeDimensions"]) =>

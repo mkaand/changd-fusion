@@ -13,11 +13,12 @@ import type { Config } from "./config.js";
 import { HttpError } from "./errors.js";
 import { EgressPolicy } from "./egress.js";
 import { encrypt, decrypt } from "./crypto.js";
-import { smtpSchema, telegramSchema, telegramValidate, type TelegramValidate } from "./notifications.js";
+import { smtpSchema, telegramSchema, telegramValidate, telegramSummary, type TelegramValidate } from "./notifications.js";
 import { Storage } from "./storage.js";
 import { stepsSchema } from "./browser-steps.js";
 import { vaultSchema, sealValues } from "./vault.js";
 import { randomUUID } from "node:crypto";
+import { previewRegion } from "./region-picker.js";
 import pino from "pino";
 import { Decimal } from "decimal.js";
 import path from "node:path";
@@ -58,6 +59,13 @@ const monitorInput = z
     paused: z.boolean().default(false),
     notify_failures: z.boolean().default(false),
     notify_attention: z.boolean().default(false),
+    notification_enabled: z.boolean().default(true),
+    muted_until: z.string().datetime().nullable().optional(),
+    notification_cooldown_seconds: z
+      .union([z.literal(0), z.literal(300), z.literal(900), z.literal(1800), z.literal(3600), z.literal(21600), z.literal(86400)])
+      .default(0),
+    notification_mode: z.enum(["immediate", "digest"]).default("immediate"),
+    digest_window_seconds: z.number().int().min(300).max(86400).default(3600),
     visual_threshold: threshold.default("0.35"),
     pixel_threshold: z.coerce.number().min(0).max(1).default(0.1),
     interval_seconds: z.number().int().min(30).max(604800).default(300),
@@ -84,6 +92,15 @@ const monitorInput = z
     (m) => m.kind === "browser" || (m.text_enabled && !m.visual_enabled),
     { message: "HTML/API monitors require text-only detection" },
   );
+const monitoringDefaults = z.object({
+  interval_seconds: z.number().int().min(30).max(604800).optional(),
+  text_enabled: z.boolean().optional(), visual_enabled: z.boolean().optional(),
+  capture_mode: z.enum(["viewport", "full_page", "element"]).optional(),
+  visual_threshold: threshold.optional(), pixel_threshold: z.number().min(0).max(1).optional(),
+  channel_ids: z.array(uuid).max(20).optional(), notification_enabled: z.boolean().optional(),
+  notification_cooldown_seconds: z.union([z.literal(0), z.literal(300), z.literal(900), z.literal(1800), z.literal(3600), z.literal(21600), z.literal(86400)]).optional(),
+  notification_mode: z.enum(["immediate", "digest"]).optional(),
+}).strict();
 const credentials = z
   .object({
     email: z
@@ -297,6 +314,32 @@ export function createApp(
     ]);
     res.json({ api: "ok", monitoring: monitors.rows[0], deliveries: deliveries.rows[0], states: states.rows, retention_days: cfg.HISTORY_DAYS });
   });
+  app.get("/api/v1/preferences/monitoring", async (_req, res) => {
+    const r = await pool.query("SELECT monitoring_defaults FROM fusion_user_preferences WHERE user_id=$1", [res.locals.user.user_id]);
+    res.json(r.rows[0]?.monitoring_defaults ?? {});
+  });
+  app.put("/api/v1/preferences/monitoring", async (req, res) => {
+    const value = monitoringDefaults.parse(req.body);
+    if (value.channel_ids?.length) {
+      const own = await pool.query("SELECT id FROM fusion_channels WHERE user_id=$1 AND id=ANY($2::uuid[])", [res.locals.user.user_id, value.channel_ids]);
+      if (own.rowCount !== value.channel_ids.length) throw new HttpError(404, "Notification channel not found");
+    }
+    await pool.query("INSERT INTO fusion_user_preferences(user_id,monitoring_defaults) VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET monitoring_defaults=EXCLUDED.monitoring_defaults,updated_at=now()", [res.locals.user.user_id, JSON.stringify(value)]);
+    res.json(value);
+  });
+  app.post("/api/v1/monitors/notification-channels/bulk", async (req, res) => {
+    const body = z.object({ monitor_ids: z.array(uuid).min(1).max(100), channel_id: uuid, action: z.enum(["add", "remove", "replace"]), confirm: z.literal(true) }).strict().parse(req.body);
+    await transaction(pool, async (c) => {
+      const monitors = await c.query("SELECT id FROM fusion_monitors WHERE user_id=$1 AND id=ANY($2::uuid[]) FOR UPDATE", [res.locals.user.user_id, body.monitor_ids]);
+      if (monitors.rowCount !== body.monitor_ids.length) throw new HttpError(404, "Monitor not found");
+      const channel = await c.query("SELECT id FROM fusion_channels WHERE id=$1 AND user_id=$2", [body.channel_id, res.locals.user.user_id]);
+      if (!channel.rowCount) throw new HttpError(404, "Notification channel not found");
+      if (body.action === "replace") await c.query("DELETE FROM fusion_monitor_channels WHERE monitor_id=ANY($1::uuid[])", [body.monitor_ids]);
+      if (body.action === "remove") await c.query("DELETE FROM fusion_monitor_channels WHERE monitor_id=ANY($1::uuid[]) AND channel_id=$2", [body.monitor_ids, body.channel_id]);
+      else await c.query("INSERT INTO fusion_monitor_channels(monitor_id,channel_id) SELECT unnest($1::uuid[]),$2 ON CONFLICT DO NOTHING", [body.monitor_ids, body.channel_id]);
+    });
+    res.status(204).end();
+  });
   app.get("/api/v1/users", async (_req, res) => {
     if (res.locals.user.user_type !== 2)
       throw new HttpError(403, "Administrator required");
@@ -452,6 +495,12 @@ export function createApp(
       channel_ids: channels.rows.map((r) => r.channel_id),
     });
   });
+  app.post("/api/v1/jobs/:id/region-preview", async (req, res) => {
+    const monitor = await owner(String(req.params.id), res.locals.user.user_id);
+    const point = z.object({ x: z.number().finite(), y: z.number().finite() }).optional().parse(Object.keys(req.body ?? {}).length ? req.body : undefined);
+    const preview = await previewRegion(monitor, cfg, point);
+    res.json(preview);
+  });
   app.put("/api/v1/jobs/:id", async (req, res) => {
     const id = String(req.params.id);
     await owner(id, res.locals.user.user_id);
@@ -472,6 +521,11 @@ export function createApp(
           "paused",
           "notify_failures",
           "notify_attention",
+          "notification_enabled",
+          "muted_until",
+          "notification_cooldown_seconds",
+          "notification_mode",
+          "digest_window_seconds",
           "visual_threshold",
           "pixel_threshold",
           "step_budget_ms",
@@ -709,6 +763,11 @@ export function createApp(
       ).rows.map(publicChannel),
     ),
   );
+  app.get("/api/v1/notifications/preview/:kind", async (req, res) => {
+    const kind = z.enum(["text","visual","combined","dimensions","failure","authentication","challenge","test","digest"]).parse(req.params.kind);
+    const attention = kind === "failure" ? "persistent_failure" : kind === "authentication" ? "authentication_required" : kind === "challenge" ? "challenge_detected" : undefined;
+    res.json({ text: telegramSummary({ id: "preview", name: "Example Product Tracker", monitorId: "preview", textChanged: kind === "text" || kind === "combined", visualChanged: kind === "visual" || kind === "combined" || kind === "dimensions", dimensionChanged: kind === "dimensions", beforeDimensions: { width: 1280, height: 900 }, afterDimensions: { width: 1280, height: 960 }, percent: "0.35", textSummary: "Added: Price information updated", link: new URL("/jobs/preview", cfg.PUBLIC_URL).href, attentionState: attention, checkedAt: new Date("2026-10-11T00:15:00Z"), eventType: kind === "test" ? "test" : kind === "digest" ? "digest" : "changed", digestCount: 5, images: [] }, "UTC") });
+  });
   app.post("/api/v1/notifications", async (req, res) => {
     const b = channelInput.parse(req.body),
       value = (b.provider === "smtp" ? smtpSchema : telegramSchema).parse(

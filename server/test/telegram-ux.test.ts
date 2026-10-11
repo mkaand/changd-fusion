@@ -5,6 +5,7 @@ import {
   telegramSchema,
   deliver,
   truncateText,
+  safeTextSummary,
   type EventMessage,
 } from "../src/notifications.js";
 import type { Storage } from "../src/storage.js";
@@ -45,6 +46,18 @@ test("text-only Telegram event has no fabricated visual result", () => {
   });
   assert.ok(text.includes("📝 Text:"));
   assert.ok(!text.includes("🖼️"));
+});
+test("notification summaries redact oversized JSON and credentials without inventing a claim", () => {
+  const result = safeTextSummary([
+    { added: true, value: '{"uuid":"' + "x".repeat(300) + '"}' },
+    { removed: true, value: "Authorization: Bearer secret-value" },
+  ]);
+  assert.equal(result, "Content changed. View the full difference.");
+});
+test("digest is concise and carries only its recorded count", () => {
+  const text = telegramSummary({ ...event, eventType: "digest", digestCount: 5, textChanged: false, visualChanged: false });
+  assert.ok(text.includes("Monitoring Digest"));
+  assert.ok(text.includes("5 changes detected"));
 });
 test("visual-only Telegram event keeps tiny, zero and 100 percent precision", () => {
   for (const [percent, expected] of [

@@ -1,7 +1,7 @@
 import { type Pool } from "./db.js";
 import type { Config } from "./config.js";
 import { decrypt } from "./crypto.js";
-import { deliver, type EventMessage } from "./notifications.js";
+import { deliver, safeTextSummary, type EventMessage } from "./notifications.js";
 import { Storage } from "./storage.js";
 export async function dispatch(
   pool: Pool,
@@ -9,6 +9,20 @@ export async function dispatch(
   send: typeof deliver = deliver,
   options: { stopped?: () => boolean } = {},
 ) {
+  const digestConnection = await pool.connect();
+  try {
+    await digestConnection.query("BEGIN");
+    const due = await digestConnection.query("SELECT * FROM fusion_notification_digests WHERE due_at<=now() FOR UPDATE SKIP LOCKED");
+    for (const row of due.rows) {
+      const event = await digestConnection.query("INSERT INTO fusion_events(monitor_id,status,metadata,notification_state) VALUES($1,'digest',$2,'queued') RETURNING id", [row.monitor_id, JSON.stringify({ digest_count: row.event_count, period_start: row.first_event_at, period_end: row.last_event_at })]);
+      await digestConnection.query("INSERT INTO fusion_outbox(event_id,channel_id) VALUES($1,$2) ON CONFLICT DO NOTHING", [event.rows[0].id, row.channel_id]);
+      await digestConnection.query("DELETE FROM fusion_notification_digests WHERE monitor_id=$1 AND channel_id=$2", [row.monitor_id, row.channel_id]);
+    }
+    await digestConnection.query("COMMIT");
+  } catch (error) {
+    await digestConnection.query("ROLLBACK");
+    throw error;
+  } finally { digestConnection.release(); }
   const candidates = await pool.query(
     "SELECT id FROM fusion_outbox WHERE status IN ('pending','sending') AND next_attempt<=now() ORDER BY next_attempt LIMIT 10",
   );
@@ -25,7 +39,7 @@ export async function dispatch(
       ).rows[0].locked;
       if (!locked) continue;
       const r = await c.query(
-        `SELECT o.*,ch.provider,ch.config,ch.enabled,m.name,m.id monitor_id,e.created_at checked_at,e.status event_type,e.text_changed,e.visual_changed,e.visual_percent,e.dimension_changed,e.before_dimensions,e.after_dimensions,e.text_diff,e.diff_screenshot,e.attention_state,e.error,
+        `SELECT o.*,ch.provider,ch.config,ch.enabled,m.name,m.id monitor_id,e.created_at checked_at,e.status event_type,e.text_changed,e.visual_changed,e.visual_percent,e.dimension_changed,e.before_dimensions,e.after_dimensions,e.text_diff,e.metadata,e.diff_screenshot,e.attention_state,e.error,
     b.screenshot before_image,a.screenshot after_image FROM fusion_outbox o JOIN fusion_channels ch ON ch.id=o.channel_id JOIN fusion_events e ON e.id=o.event_id
     JOIN fusion_monitors m ON m.id=e.monitor_id LEFT JOIN fusion_captures b ON b.id=e.before_id LEFT JOIN fusion_captures a ON a.id=e.after_id
     WHERE o.id=$1 AND o.status IN ('pending','sending') AND o.next_attempt<=now() AND ch.user_id=m.user_id`,
@@ -66,16 +80,15 @@ export async function dispatch(
         dimensionChanged: row.dimension_changed,
         beforeDimensions: row.before_dimensions,
         afterDimensions: row.after_dimensions,
-        textSummary: row.text_diff
-          .filter((p: any) => p.added || p.removed)
-          .map((p: any) => (p.added ? "+ " : "- ") + p.value)
-          .join("\n")
-          .slice(0, 3000),
+        textSummary: safeTextSummary(Array.isArray(row.text_diff) ? row.text_diff : []),
         link: new URL("/jobs/" + row.monitor_id, cfg.PUBLIC_URL).href,
         attentionState: row.attention_state,
         attentionMessage: row.error,
         checkedAt: row.checked_at,
         eventType: row.event_type,
+        digestCount: row.metadata?.digest_count,
+        digestStart: row.metadata?.period_start,
+        digestEnd: row.metadata?.period_end,
         attempt: row.attempts + 1,
         imageLabels: (["before", "after", "diff"] as const).filter((_, i) =>
           Boolean([row.before_image, row.after_image, row.diff_screenshot][i]),

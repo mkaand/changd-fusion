@@ -1,5 +1,6 @@
-import { Form, Input, Select, Switch, InputNumber, Alert } from "antd";
+import { Form, Input, Select, Switch, InputNumber, Alert, DatePicker } from "antd";
 import { BrowserStepsEditor } from "./BrowserStepsEditor";
+import { RegionPicker } from "./RegionPicker";
 export const defaults = {
   kind: "browser",
   text_enabled: true,
@@ -14,6 +15,10 @@ export const defaults = {
   paused: false,
   notify_failures: false,
   notify_attention: false,
+  notification_enabled: true,
+  notification_cooldown_seconds: 0,
+  notification_mode: "immediate",
+  digest_window_seconds: 3600,
   pixel_threshold: 0.1,
   interval_seconds: 300,
   normalize_whitespace: true,
@@ -27,9 +32,11 @@ export const defaults = {
 export function MonitorForm({
   form,
   channels,
+  monitorId,
 }: {
   form: any;
   channels: any[];
+  monitorId?: string;
 }) {
   const kind = Form.useWatch("kind", form),
     text = Form.useWatch("text_enabled", form),
@@ -166,6 +173,7 @@ export function MonitorForm({
               >
                 <Input placeholder="#content or //main" maxLength={1000} />
               </Form.Item>
+              <RegionPicker monitorId={monitorId} onSelect={(selector) => form.setFieldsValue({ capture_selector_type: "css", capture_selector: selector })} />
             </>
           )}
 
@@ -216,6 +224,12 @@ export function MonitorForm({
           options={channels.map((c) => ({ value: c.id, label: c.name }))}
         />
       </Form.Item>
+      <div className="form-row">
+        <Form.Item name="notification_enabled" label="Send change notifications" valuePropName="checked"><Switch /></Form.Item>
+        <Form.Item name="muted_until" label="Mute notifications until"><DatePicker showTime allowClear /></Form.Item>
+        <Form.Item name="notification_cooldown_seconds" label="Minimum notification interval"><Select options={[{value:0,label:"Off"},{value:300,label:"5 minutes"},{value:900,label:"15 minutes"},{value:1800,label:"30 minutes"},{value:3600,label:"1 hour"},{value:21600,label:"6 hours"},{value:86400,label:"24 hours"}]} /></Form.Item>
+        <Form.Item name="notification_mode" label="Notification mode"><Select options={[{value:"immediate",label:"Immediate"},{value:"digest",label:"Digest (hourly by default)"}]} /></Form.Item>
+      </div>
     </Form>
   );
 }
