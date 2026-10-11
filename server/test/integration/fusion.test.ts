@@ -254,6 +254,35 @@ test("monitor validation rejects private URLs, injection, foreign channels; all 
     .send({})
     .expect(404);
 });
+test("owner-scoped timeline and analytics filter event history without exposing another owner", async () => {
+  await pool.query(
+    "INSERT INTO fusion_events(monitor_id,status,text_changed,created_at) VALUES($1,'changed',true,now()-interval '1 day'),($1,'failed',false,now())",
+    [monitor.id],
+  );
+  const timeline = await ownerAgent
+    .get(`/api/v1/timeline?monitor_id=${monitor.id}&status=changed&page=1&page_size=25`);
+  assert.equal(timeline.status, 200, JSON.stringify(timeline.body));
+  assert.ok(timeline.body.total >= 1);
+  assert.ok(timeline.body.items.every((event: any) => event.monitor_id === monitor.id && event.status === "changed"));
+  const analytics = await ownerAgent
+    .get(`/api/v1/analytics?monitor_id=${monitor.id}`);
+  assert.equal(analytics.status, 200, JSON.stringify(analytics.body));
+  assert.ok(Number(analytics.body.summary.total) >= 2);
+  assert.ok(Number(analytics.body.summary.changed) >= 1);
+  assert.ok(Number(analytics.body.summary.failed) >= 1);
+  assert.ok(analytics.body.trend.length >= 1);
+  await otherAgent.get(`/api/v1/timeline?monitor_id=${monitor.id}`).expect(200).expect((response: any) => {
+    assert.equal(response.body.total, 0);
+    assert.deepEqual(response.body.items, []);
+  });
+  await otherAgent.get(`/api/v1/analytics?monitor_id=${monitor.id}`).expect(200).expect((response: any) => {
+    assert.equal(Number(response.body.summary.total), 0);
+  });
+  await ownerAgent.get("/api/v1/timeline?from=not-a-date").expect(400);
+  await ownerAgent
+    .get("/api/v1/timeline?from=2026-01-02T00%3A00%3A00.000Z&to=2026-01-01T00%3A00%3A00.000Z")
+    .expect(400);
+});
 test("hybrid precision: 0.35% → PostgreSQL → API → notification, one event and one outbox entry", async () => {
   const take = (text: string, pixels: number) => async () => ({
     text,
@@ -1111,6 +1140,13 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await page.getByText("Notifications", { exact: true }).first().click();
     await page.getByRole("heading", { name: "Notification channels" }).waitFor();
     await page.screenshot({ path: path.join(output, "settings-notifications.png") });
+    await page.getByText("Timeline", { exact: true }).first().click();
+    await page.getByRole("heading", { name: "Timeline" }).waitFor();
+    await page.getByLabel("Filter timeline by status").waitFor();
+    await page.getByText("Analytics", { exact: true }).first().click();
+    await page.getByRole("heading", { name: "Analytics" }).waitFor();
+    await page.getByText("Successful captures", { exact: true }).waitFor();
+    assert.ok(await page.getByRole("img", { name: "Daily capture event trend" }).count());
     await page.getByText("Monitors", { exact: true }).first().click();
     await page.getByRole("searchbox", { name: "Search monitors" }).fill("");
     await page
