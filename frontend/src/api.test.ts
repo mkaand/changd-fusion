@@ -1,5 +1,5 @@
 import { it, expect, vi } from "vitest";
-import { api } from "./api";
+import { ApiError, api } from "./api";
 it("expired/revoked sessions emit a reauthentication event; invalid current passwords do not sign the user out", async () => {
   const listener = vi.fn();
   window.addEventListener("fusion-session-expired", listener);
@@ -29,4 +29,11 @@ it("expired/revoked sessions emit a reauthentication event; invalid current pass
     window.removeEventListener("fusion-session-expired", listener);
     vi.unstubAllGlobals();
   }
+});
+
+it("turns a non-JSON diagnostics failure into a safe API error with a request ID", async () => {
+  vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("<html>bad gateway</html>", { status: 502, headers: { "x-request-id": "safe-request-id" } })));
+  await expect(api("/system/diagnostics")).rejects.toMatchObject<ApiError>({
+    name: "ApiError", message: "Request failed. Retry.", requestId: "safe-request-id", status: 502,
+  });
 });

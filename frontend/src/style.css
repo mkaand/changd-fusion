@@ -457,3 +457,25 @@ details {
   .region-preview-modal .ant-modal-content { min-height: 100dvh; border-radius: 0; }
 }
 :root[data-theme="dark"] .monitor-editor-modal .ant-modal-footer { background: #1f1f1f; border-color: #2d4058; }
+.region-preview-modal .ant-alert,
+.region-preview-modal .ant-alert-content,
+.region-preview-modal .ant-alert-message,
+.region-preview-modal .ant-alert-description,
+.region-preview-modal .ant-alert-action {
+  min-width: 0;
+}
+.region-preview-modal .ant-alert-message,
+.region-preview-modal .ant-alert-description,
+.region-preview-modal .ant-alert-description code,
+.region-preview-modal .ant-alert-description span {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.region-preview-modal .ant-alert-action .ant-space { flex-wrap: wrap; }
+.region-preview-modal .region-preview { max-width: 100%; height: auto; }
+@media (max-width: 767px) {
+  .region-preview-modal .ant-modal-content { display: flex; flex-direction: column; }
+  .region-preview-modal .ant-modal-header { padding-top: max(16px, env(safe-area-inset-top)); }
+  .region-preview-modal .ant-modal-body { max-height: none; overflow-y: auto; padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
+  .region-preview-modal .ant-alert-action { margin-inline-start: 0; margin-top: 10px; }
+}

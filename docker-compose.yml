@@ -44,6 +44,9 @@ services:
   api:
     <<: *app
     command: ["node", "dist/index.js"]
+    # Region previews launch the same rootless sandboxed Chromium as the worker.
+    # Keep this service scoped to Changd Fusion's checked-in syscall profile.
+    security_opt: ["seccomp=./docker/chromium-seccomp.json"]
     depends_on:
       migrate: { condition: service_completed_successfully }
     healthcheck:

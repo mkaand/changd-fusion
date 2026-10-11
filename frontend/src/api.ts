@@ -3,6 +3,7 @@ export class ApiError extends Error {
   previewStage?: string;
   failureCode?: string;
   durationMs?: number;
+  status?: number;
   constructor(message: string, details: Record<string, unknown> = {}) {
     super(message);
     this.name = "ApiError";
@@ -11,6 +12,7 @@ export class ApiError extends Error {
       previewStage: details.preview_stage,
       failureCode: details.failure_code,
       durationMs: details.duration_ms,
+      status: details.status,
     });
   }
 }
@@ -28,10 +30,25 @@ export async function api<T = any>(
     headers: { "Content-Type": "application/json", "X-Fusion-Request": "1" },
     body: data === undefined ? undefined : JSON.stringify(data),
   });
-  const result = await response.json();
+  const requestId = response.headers?.get?.("x-request-id") ?? undefined;
+  let result: any;
+  try {
+    if (typeof response.text === "function") {
+      const body = await response.text();
+      result = body ? JSON.parse(body) : {};
+    } else {
+      result = await response.json();
+    }
+  } catch {
+    throw new ApiError(
+      response.ok ? "Server returned an invalid response." : "Request failed. Retry.",
+      { request_id: requestId, status: response.status },
+    );
+  }
   if (response.status === 401 && result.error === "Authentication required")
     window.dispatchEvent(new Event("fusion-session-expired"));
-  if (!response.ok) throw new ApiError(result.error ?? "Request failed", result);
+  if (!response.ok)
+    throw new ApiError(result.error ?? "Request failed", { ...result, request_id: result.request_id ?? requestId, status: response.status });
   return result;
 }
 export const loginUser = (values: { email: string; password: string }) =>

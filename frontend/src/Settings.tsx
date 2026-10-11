@@ -3,13 +3,14 @@ import { Alert, Button, Card, Descriptions, Form, InputNumber, Modal, Segmented,
 import { Channels } from "./Channels";
 import { Deliveries } from "./Deliveries";
 import { AccountSecurity } from "./AccountSecurity";
-import { api } from "./api";
+import { ApiError, api } from "./api";
 import type { ThemeAdapter } from "./theme";
 import { AllMyThemeControls } from "./AllMyThemeControls";
 
 export function Settings({ channels, monitors, reload, report, admin, signedOut, theme }: any) {
   const [section, setSection] = useState("general");
   const [diagnostics, setDiagnostics] = useState<any>();
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
   const [error, setError] = useState("");
   const [defaults, setDefaults] = useState<any>({});
   const [defaultForm] = Form.useForm();
@@ -18,11 +19,30 @@ export function Settings({ channels, monitors, reload, report, admin, signedOut,
   const [bulkChannel, setBulkChannel] = useState<string>();
   const [bulkAction, setBulkAction] = useState("add");
   useEffect(() => { api("/preferences/monitoring").then((d) => { setDefaults(d); defaultForm.setFieldsValue(d); }).catch(() => {}); }, [defaultForm]);
+  const diagnosticsMessage = (cause: unknown) => {
+    if (cause instanceof ApiError) {
+      if (cause.status === 403) return "Diagnostics access is not permitted.";
+      if (cause.status === 502 || (cause.status ?? 0) >= 500) return "Diagnostics is temporarily unavailable. Retry.";
+      return cause.message || "Diagnostics could not be loaded. Retry.";
+    }
+    if (cause instanceof DOMException && cause.name === "TimeoutError") return "Diagnostics request timed out. Retry.";
+    return "Diagnostics could not be loaded. Retry.";
+  };
+  const loadDiagnostics = async () => {
+    setDiagnosticsLoading(true);
+    try {
+      const value = await api("/system/diagnostics");
+      setDiagnostics(value);
+      setError("");
+    } catch (cause) {
+      setError(diagnosticsMessage(cause));
+    } finally {
+      setDiagnosticsLoading(false);
+    }
+  };
   useEffect(() => {
     if (section !== "system") return;
-    let alive = true;
-    api("/system/diagnostics").then((value) => alive && (setDiagnostics(value), setError(""))).catch((e) => alive && setError(e.message));
-    return () => { alive = false; };
+    void loadDiagnostics();
   }, [section]);
   return <section className="settings-page" aria-label="Settings">
     <Typography.Title level={2}>Settings</Typography.Title>
@@ -47,8 +67,8 @@ export function Settings({ channels, monitors, reload, report, admin, signedOut,
     </Space>}
     {section === "security" && <Card title="Account security"><Typography.Paragraph>Password changes and sign-out-all revoke active sessions.</Typography.Paragraph><AccountSecurity signedOut={signedOut} /></Card>}
     {section === "system" && <Card title="System & Diagnostics">
-      {error && <Alert type="error" title={error} />}
-      {!diagnostics ? <Spin /> : <Descriptions column={1} items={[
+      {error && <Alert type="error" title={error} action={<Button size="small" onClick={() => void loadDiagnostics()}>Retry</Button>} />}
+      {diagnosticsLoading && !diagnostics ? <span role="status" aria-label="Loading diagnostics"><Spin /></span> : !diagnostics ? (error ? null : <Alert type="info" title="Diagnostics are unavailable. Retry when the service is ready." />) : <Descriptions column={1} items={[
         { key: "api", label: "API", children: <Tag color="green">{diagnostics.api}</Tag> },
         { key: "monitors", label: "Monitoring", children: String(diagnostics.monitoring.active) + "/" + String(diagnostics.monitoring.total) + " active · " + String(diagnostics.monitoring.attention) + " need attention" },
         { key: "delivery", label: "Delivery queue", children: String(diagnostics.deliveries.pending) + " pending · " + String(diagnostics.deliveries.failed) + " failed" },

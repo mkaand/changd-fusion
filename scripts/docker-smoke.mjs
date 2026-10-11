@@ -10,6 +10,7 @@ import {randomBytes} from 'node:crypto';
 import {readFile} from 'node:fs/promises';
 import {chromium} from 'playwright';
 import {capture} from './dist/capture.js';
+import {previewRegion} from './dist/region-picker.js';
 import {EgressPolicy} from './dist/egress.js';
 import {readConfig} from './dist/config.js';
 import {pngDimensions} from './dist/image.js';
@@ -17,7 +18,7 @@ assert.equal(process.getuid(),1000);
 assert.equal((await readFile('/sys/fs/cgroup/memory.max','utf8')).trim(),'1073741824');
 assert.equal((await readFile('/sys/fs/cgroup/pids.max','utf8')).trim(),'256');
 assert.equal((await readFile('/sys/fs/cgroup/cpu.max','utf8')).trim(),'100000 100000');
-const fixture=http.createServer((_req,res)=>{res.setHeader('Content-Type','text/html');res.end('<style>body{margin:0}main{width:320px;height:240px}footer{height:1800px}</style><button id="cookie" onclick="this.remove()">Consent</button><main>Docker hybrid fixture</main><footer></footer>');});
+const fixture=http.createServer((_req,res)=>{res.setHeader('Content-Type','text/html');res.end('<style>body{margin:0}main{width:320px;height:240px}footer{height:1800px}</style><button id="cookie" onclick="this.remove()">Consent</button><main id="preview-target">Docker hybrid fixture</main><footer></footer>');});
 await new Promise(resolve=>fixture.listen(0,'127.0.0.1',resolve));
 const port=fixture.address().port;
 const cfg=readConfig({NODE_ENV:'test',DATABASE_URL:'postgresql://localhost/fixture',JWT_SECRET:randomBytes(32).toString('hex'),CHANNEL_KEY:randomBytes(32).toString('hex'),PLAYWRIGHT_EXECUTABLE_PATH:'/usr/bin/chromium'});
@@ -27,9 +28,11 @@ try {
   const result=await capture({url:'http://fixture.test:'+port,kind:'browser',text_enabled:true,visual_enabled:true,selector:'//main',selector_type:'xpath',ignore_selectors:[],mask_selectors:[],ignore_text:[],normalize_whitespace:true,ignore_case:false,capture_mode:mode,capture_selector:'//main',capture_selector_type:'xpath',browser_steps:[{action:'dismiss_cookie',selector:'#cookie'}]},cfg,policy);
   assert.equal(result.text,'Docker hybrid fixture');assert.equal(pngDimensions(result.screenshot).width,mode==='element'?320:1280);
  }
+ const preview=await previewRegion({id:'preview',url:'http://fixture.test:'+port,kind:'browser',text_enabled:false,visual_enabled:true,browser_steps:[]},cfg,{x:10,y:10},policy);
+ assert.equal(preview.selection.selector,'#preview-target');
  const browser=await chromium.launch({executablePath:'/usr/bin/chromium',chromiumSandbox:true,timeout:15000});
  try {const page=await browser.newPage();await page.goto('chrome://sandbox');assert.match(await page.locator('body').innerText(),/Seccomp-BPF sandbox\s+Yes/);} finally {await browser.close();}
- console.log('PASS: UID 1000, CPU/RAM/PID limits, Browser Steps, CSS/XPath hybrid capture modes and Seccomp-BPF sandbox');
+ console.log('PASS: UID 1000, CPU/RAM/PID limits, Browser Steps, API region preview, CSS/XPath hybrid capture modes and Seccomp-BPF sandbox');
 } finally {const done=new Promise(resolve=>fixture.close(resolve));fixture.closeAllConnections();await done;}
 `;
 const result = spawnSync(

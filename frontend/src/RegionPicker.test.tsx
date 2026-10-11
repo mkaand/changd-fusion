@@ -35,8 +35,9 @@ it("uses unsaved draft monitor settings without persisting them", async () => {
 });
 
 it("keeps the form usable after a safe preview error and offers retry and viewport fallback", async () => {
+  const requestId = `safe-${"request-id-".repeat(18)}`;
   const retry = new ApiError("Preview timed out. Retry, or use viewport capture instead.", {
-    request_id: "safe-request-id",
+    request_id: requestId,
     preview_stage: "navigation",
     failure_code: "timeout",
   });
@@ -46,7 +47,7 @@ it("keeps the form usable after a safe preview error and offers retry and viewpo
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: "Select region visually" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("Preview timed out");
-  expect(screen.getByRole("alert")).toHaveTextContent("navigation · timeout · Request safe-request-id");
+  expect(screen.getByRole("alert")).toHaveTextContent(`navigation · timeout · Request ${requestId}`);
   await user.click(screen.getByRole("button", { name: "Retry" }));
   await waitFor(() => expect(api).toHaveBeenCalledTimes(2));
   expect(screen.getByRole("alert")).toHaveTextContent("Preview timed out");
