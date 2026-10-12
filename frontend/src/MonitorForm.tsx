@@ -10,7 +10,7 @@ export const defaults = {
   text_direction: "both", text_source: "direct",
   channel_ids: [], ignore_selectors: [], ignore_text: [], mask_selectors: [],
 };
-export function MonitorForm({ form, channels, monitorId }: { form: any; channels: any[]; monitorId?: string }) {
+export function MonitorForm({ form, channels, monitorId, onOpenMobileRegion }: { form: any; channels: any[]; monitorId?: string; onOpenMobileRegion?: () => void }) {
   const kind = Form.useWatch("kind", form) ?? "browser", text = Form.useWatch("text_enabled", form) ?? true, visual = Form.useWatch("visual_enabled", form) ?? false, captureMode = Form.useWatch("capture_mode", form) ?? "viewport";
   const detection = <div className="form-row monitor-detection-row">
     <Form.Item name="text_enabled" label="Text detection" valuePropName="checked"><Switch aria-label="Text detection" disabled={kind !== "browser"} /></Form.Item>
@@ -43,7 +43,7 @@ export function MonitorForm({ form, channels, monitorId }: { form: any; channels
         {captureMode === "element" && <>
           <Form.Item name="capture_selector_type" label="Region selector type"><Select options={[{ value: "css", label: "CSS" }, { value: "xpath", label: "XPath" }]} /></Form.Item>
           <Form.Item name="capture_selector" label="Screenshot region selector" rules={[{ required: true, whitespace: true }]} extra="Must match exactly one visible element. Independent of the text extraction selector."><Input placeholder="#content or //main" maxLength={1000} /></Form.Item>
-          <RegionPicker monitorId={monitorId} getDraft={() => form.getFieldsValue(true)} onSelect={(selector) => form.setFieldsValue({ capture_selector_type: "css", capture_selector: selector })} onUseViewport={() => form.setFieldsValue({ capture_mode: "viewport", capture_selector: "" })} />
+          <RegionPicker monitorId={monitorId} onRequestMobile={onOpenMobileRegion} getDraft={() => form.getFieldsValue(true)} onSelect={(selector) => form.setFieldsValue({ capture_selector_type: "css", capture_selector: selector })} onUseViewport={() => form.setFieldsValue({ capture_mode: "viewport", capture_selector: "" })} />
         </>}
         <Form.Item name="visual_threshold" label="Visual alert threshold (%)" extra="For equal image sizes, alerts only above the threshold; equality does not alert. Dimension changes alert once without a percentage and advance the baseline."><InputNumber stringMode min="0" max="100" step="0.01" /></Form.Item>
         <Form.Item name="pixel_threshold" label="Pixel color tolerance"><InputNumber min={0} max={1} step={0.01} /></Form.Item>

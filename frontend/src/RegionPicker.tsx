@@ -3,11 +3,14 @@ import { Alert, Button, Modal, Space, Spin, Typography } from "antd";
 import { ApiError, api } from "./api";
 const PREVIEW_REQUEST_TIMEOUT_MS = 125000;
 type Draft = { url?: string; kind?: string; visual_enabled?: boolean; browser_steps?: unknown[] };
-export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport }: {
+export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mobilePage = false, onRequestMobile, onBackMobile }: {
   monitorId?: string;
   getDraft: () => Draft;
   onSelect: (selector: string) => void;
   onUseViewport: () => void;
+  mobilePage?: boolean;
+  onRequestMobile?: () => void;
+  onBackMobile?: () => void;
 }) {
   const [compact, setCompact] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches);
   const [open, setOpen] = useState(false), [preview, setPreview] = useState<any>(), [loading, setLoading] = useState(false), [error, setError] = useState<ApiError>();
@@ -37,8 +40,10 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport }: {
         {preview.selection && <Alert type="success" title="Unique visible element selected" description={preview.selection.selector} action={<Button onClick={() => { onSelect(preview.selection.selector); setOpen(false); }}>Use selector</Button>} />}
       </>}
     </>;
+  useEffect(() => { if (mobilePage) void load(); }, [mobilePage]);
+  if (mobilePage) return <section className="mobile-region-picker-page" aria-label="Select screenshot region"><div className="mobile-editor-header"><Button type="text" onClick={onBackMobile}>← Back</Button><Typography.Title level={4}>Select screenshot region</Typography.Title></div><div className="mobile-region-picker-body">{previewBody}</div></section>;
   return <>
-    <Button onClick={() => { setOpen(true); void load(); }}>Select region visually</Button>
-    {compact ? open && <section className="mobile-region-picker" aria-label="Select screenshot region"><div className="mobile-editor-header"><Button type="text" onClick={() => setOpen(false)}>← Back</Button><Typography.Title level={4}>Select screenshot region</Typography.Title></div><div className="mobile-region-picker-body">{previewBody}</div></section> : <Modal className="region-preview-modal" title="Select screenshot region" open={open} onCancel={() => setOpen(false)} footer={null} width={900} destroyOnHidden>{previewBody}</Modal>}
+    <Button onClick={() => { if (compact && onRequestMobile) return onRequestMobile(); setOpen(true); void load(); }}>Select region visually</Button>
+    {!compact && <Modal className="region-preview-modal" title="Select screenshot region" open={open} onCancel={() => setOpen(false)} footer={null} width={900} destroyOnHidden>{previewBody}</Modal>}
   </>;
 }
