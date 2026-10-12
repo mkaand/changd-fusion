@@ -226,6 +226,7 @@ export default function FusionApp() {
       void detail(location.pathname.split("/")[2]);
   }, [user]);
   const edit = async (m?: any) => {
+    setAdvancedOpen(false);
     setEditing(m);
     form.resetFields();
     const userDefaults = m ? {} : await api("/preferences/monitoring").catch(() => ({}));

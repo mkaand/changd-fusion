@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { Collapse, DatePicker, Form, Input, InputNumber, Select, Switch, Alert } from "antd";
 import { BrowserStepsEditor } from "./BrowserStepsEditor";
 import { RegionPicker } from "./RegionPicker";
@@ -11,6 +12,9 @@ export const defaults = {
   channel_ids: [], ignore_selectors: [], ignore_text: [], mask_selectors: [],
 };
 export function MonitorForm({ form, channels, monitorId, onOpenMobileRegion, advancedOpen, setAdvancedOpen }: { form: any; channels: any[]; monitorId?: string; onOpenMobileRegion?: () => void; advancedOpen?: boolean; setAdvancedOpen?: (open: boolean) => void }) {
+  const [localAdvancedOpen, setLocalAdvancedOpen] = useState(false);
+  const isAdvancedOpen = advancedOpen ?? localAdvancedOpen;
+  const updateAdvanced = (next: boolean) => setAdvancedOpen ? setAdvancedOpen(next) : setLocalAdvancedOpen(next);
   const kind = Form.useWatch("kind", form) ?? "browser", text = Form.useWatch("text_enabled", form) ?? true, visual = Form.useWatch("visual_enabled", form) ?? false, captureMode = Form.useWatch("capture_mode", form) ?? "viewport";
   const detection = <div className="form-row monitor-detection-row">
     <Form.Item name="text_enabled" label="Text detection" valuePropName="checked"><Switch aria-label="Text detection" disabled={kind !== "browser"} /></Form.Item>
@@ -25,7 +29,7 @@ export function MonitorForm({ form, channels, monitorId, onOpenMobileRegion, adv
       <Form.Item name="interval_seconds" label="Check interval (seconds)" rules={[{ required: true }]}><InputNumber min={30} max={604800} /></Form.Item>
       <Form.Item name="channel_ids" label="Notification channels"><Select mode="multiple" options={channels.map((c) => ({ value: c.id, label: c.name }))} /></Form.Item>
     </section>
-    <Collapse className="monitor-editor-advanced" activeKey={advancedOpen ? ["advanced"] : []} onChange={(keys) => setAdvancedOpen?.((keys as string[]).includes("advanced"))} items={[{ key: "advanced", label: "Advanced settings", children: <>
+    <Collapse className="monitor-editor-advanced" activeKey={isAdvancedOpen ? ["advanced"] : []} onChange={(keys) => updateAdvanced((keys as string[]).includes("advanced"))} items={[{ key: "advanced", label: "Advanced settings", children: <>
       <Form.Item name="kind" label="Source"><Select options={[{ value: "browser", label: "Browser — Text and Visual" }, { value: "api", label: "API / JSON" }, { value: "html", label: "HTML source" }]} onChange={(value) => { if (value !== "browser") form.setFieldsValue({ text_enabled: true, visual_enabled: false, capture_mode: "viewport", capture_selector: "", browser_steps: [] }); }} /></Form.Item>
       <div className="form-row"><Form.Item name="enabled" label="Active" valuePropName="checked"><Switch /></Form.Item><Form.Item name="paused" label="Pause schedule" valuePropName="checked"><Switch /></Form.Item></div>
       {kind === "browser" && <BrowserStepsEditor form={form} />}
