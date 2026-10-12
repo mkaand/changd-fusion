@@ -30,7 +30,9 @@ Changd Fusion combines text extraction and screenshot comparison in one monitor,
 
 ## Visual region picker
 
-For an already saved browser/visual monitor, choose **Selected element / region** and use **Select region visually**. The authenticated preview uses the same SSRF restrictions and Chromium sandbox as monitoring. Clicking a visible region proposes a unique CSS selector; it is not saved until the monitor form is saved. Private-value workflows are deliberately excluded from preview. CSS/XPath entry remains available as a fallback.
+For an already saved browser/visual monitor, choose **Selected element / region** and use **Select region visually**. On mobile this opens a dedicated application page, preserving the unsaved editor form until the user returns.
+
+![Changd Fusion mobile region picker](docs/images/region-picker-mobile.png) The authenticated preview uses the same SSRF restrictions and Chromium sandbox as monitoring. Clicking a visible region proposes a unique CSS selector; it is not saved until the monitor form is saved. Private-value workflows are deliberately excluded from preview. CSS/XPath entry remains available as a fallback.
 
 ## Docker self-hosting
 

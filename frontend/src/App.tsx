@@ -205,10 +205,15 @@ export default function FusionApp() {
       void message.error((e as Error).message);
     }
   };
+  const returnToEditor = () => {
+    if (location.pathname === "/jobs/editor/region-picker" && history.length > 1) history.back();
+    else { setPage("editor"); history.replaceState(null, "", "/jobs/editor"); }
+  };
   useEffect(() => {
     const restore = () => {
       if (location.pathname === "/jobs/editor/region-picker" && open) setPage("region-picker");
       else if (location.pathname === "/jobs/editor" && open) setPage("editor");
+      else if (location.pathname.startsWith("/jobs/editor")) { setPage("jobs"); history.replaceState(null, "", "/jobs"); }
       else if (location.pathname === "/jobs") setPage("jobs");
     };
     window.addEventListener("popstate", restore);
@@ -408,7 +413,7 @@ export default function FusionApp() {
                 <div className="mobile-editor-actions"><Button onClick={() => { setOpen(false); navigate("jobs"); }}>Cancel</Button><Button type="primary" loading={saving} onClick={save}>Save monitor</Button></div>
               </section>
             ) : page === "region-picker" && compactLayout && open ? (
-              <RegionPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onSelect={(selector) => { form.setFieldsValue({ capture_selector_type: "css", capture_selector: selector }); setPage("editor"); history.pushState(null, "", "/jobs/editor"); }} onUseViewport={() => { form.setFieldsValue({ capture_mode: "viewport", capture_selector: "" }); setPage("editor"); history.pushState(null, "", "/jobs/editor"); }} onBackMobile={() => { setPage("editor"); history.pushState(null, "", "/jobs/editor"); }} />
+              <RegionPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onSelect={(selector) => { form.setFieldsValue({ capture_selector_type: "css", capture_selector: selector }); returnToEditor(); }} onUseViewport={() => { form.setFieldsValue({ capture_mode: "viewport", capture_selector: "" }); returnToEditor(); }} onBackMobile={returnToEditor} />
             ) : page === "timeline" ? (
               <Timeline monitors={monitors} />
             ) : page === "analytics" ? (

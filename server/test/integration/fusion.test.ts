@@ -1237,6 +1237,11 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await page.screenshot({
       path: path.join(output, "capture-settings-mobile.png"),
     });
+    await page.getByRole("button", { name: "Select region visually", exact: true }).click();
+    await page.locator('section[aria-label="Select screenshot region"]').waitFor();
+    await page.screenshot({ path: path.join(output, "region-picker-mobile.png") });
+    await page.getByRole("button", { name: "← Back", exact: true }).click();
+    await mobileEditor.waitFor();
     await page
       .getByRole("button", { name: "Add browser step", exact: true })
       .click();
