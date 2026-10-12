@@ -18,7 +18,7 @@ import { Storage } from "./storage.js";
 import { stepsSchema } from "./browser-steps.js";
 import { vaultSchema, sealValues } from "./vault.js";
 import { randomUUID } from "node:crypto";
-import { previewRegion, type PreviewStage, type RegionPreviewFailure } from "./region-picker.js";
+import { previewRegion, releaseRegionPreviewSession, type PreviewStage, type RegionPreviewFailure } from "./region-picker.js";
 import { previewJinaText } from "./text-picker.js";
 import pino from "pino";
 import { Decimal } from "decimal.js";
@@ -154,7 +154,8 @@ const regionPreviewInput = z
   .strict();
 const textPreviewInput = z.object({
   session_id: uuid.optional(), monitor_id: uuid.optional(), url: z.string().url().max(2048).optional(),
-  line_index: z.number().int().min(0).max(1999).optional(), selected_value: z.string().min(1).max(500).optional(),
+  line_index: z.number().int().min(0).max(200_000).optional(), selected_value: z.string().min(1).max(500).optional(),
+  query: z.string().max(200).optional(), offset: z.number().int().min(0).max(200_000).optional(), limit: z.number().int().min(1).max(100).optional(),
 }).strict();
 const channelInput = z
   .object({
@@ -588,6 +589,11 @@ export function createApp(
     if (body.monitor_id) await owner(body.monitor_id, res.locals.user.user_id);
     await runRegionPreview(req, res, { ...body.monitor, id: body.monitor_id ?? "preview", browser_steps: body.monitor.browser_steps }, body.point, body.session_id, true, body.preview_request_id, body.refresh);
   });
+  app.delete("/api/v1/region-preview/:sessionId", async (req, res) => {
+    const sessionId = uuid.parse(req.params.sessionId);
+    await releaseRegionPreviewSession(res.locals.user.user_id, sessionId);
+    res.status(204).end();
+  });
   app.get("/api/v1/region-preview/status/:id", (req, res) => {
     const id = uuid.parse(req.params.id);
     const progress = previewProgress.get(id);
@@ -597,7 +603,7 @@ export function createApp(
   app.post("/api/v1/text-preview", async (req, res) => {
     const body = textPreviewInput.parse(req.body);
     if (body.monitor_id) await owner(body.monitor_id, res.locals.user.user_id);
-    res.json(await previewJinaText({ ownerId: res.locals.user.user_id, url: body.url, sessionId: body.session_id, lineIndex: body.line_index, selectedValue: body.selected_value }, cfg, policy));
+    res.json(await previewJinaText({ ownerId: res.locals.user.user_id, url: body.url, sessionId: body.session_id, lineIndex: body.line_index, selectedValue: body.selected_value, query: body.query, offset: body.offset, limit: body.limit }, cfg, policy));
   });
   // Retained for already released clients. New and edited forms use the draft-aware endpoint above.
   app.post("/api/v1/jobs/:id/region-preview", async (req, res) => {

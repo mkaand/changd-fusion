@@ -12,12 +12,12 @@ export type RegionPreviewFailure = { stage: CaptureStage; failure_code: RegionPr
 type Selection = { selector: string; label: string; visible: boolean; x: number; y: number; width: number; height: number };
 export type PreviewStage = "target_validation" | "proxy_initialization" | "browser_launch" | "browser_context" | "navigation" | "dom_ready" | "rendering_preparation" | "screenshot" | "serialization" | "ready";
 type PreviewTimings = Partial<Record<PreviewStage, number>>;
-type Session = { id: string; ownerId: string; expiresAt: number; browser: Browser; context: BrowserContext; page: Page; proxy: Awaited<ReturnType<typeof browserProxy>>; capacity?: ChromiumLease; image: Buffer; timings: PreviewTimings };
+type Session = { id: string; ownerId: string; createdAt: number; expiresAt: number; expiryTimer?: NodeJS.Timeout; closing?: Promise<void>; browser: Browser; context: BrowserContext; page: Page; proxy: Awaited<ReturnType<typeof browserProxy>>; capacity?: ChromiumLease; image: Buffer; timings: PreviewTimings };
 type PreviewOperations = {
   snapshot?: (page: Page) => Promise<void>;
   screenshot?: (context: BrowserContext, page: Page) => Promise<Buffer>;
 };
-const SESSION_TTL_MS = 90_000;
+export const REGION_PREVIEW_MAX_LIFETIME_MS = 45_000;
 const MAX_SESSIONS = 4;
 const sessions = new Map<string, Session>();
 const reservations = new Map<string, string>();
@@ -37,20 +37,35 @@ function reserveSession(ownerId: string, replaceOwnerSession: boolean) {
 }
 
 async function closeSession(session: Session) {
+  if (session.closing) return session.closing;
   sessions.delete(session.id);
-  try { await session.context.close(); } catch {}
-  try { await session.browser.close(); } catch {}
-  await session.proxy.close().catch(() => {});
-  await session.capacity?.release().catch(() => {});
+  if (session.expiryTimer) clearTimeout(session.expiryTimer);
+  session.closing = (async () => {
+    try { await session.context.close(); } catch {}
+    try { await session.browser.close(); } catch {}
+    await session.proxy.close().catch(() => {});
+    await session.capacity?.release().catch(() => {});
+  })();
+  return session.closing;
 }
 async function purgeExpired(now = Date.now()) {
   await Promise.all([...sessions.values()].filter((session) => session.expiresAt <= now).map(closeSession));
 }
-const cleanup = setInterval(() => void purgeExpired(), SESSION_TTL_MS);
+const cleanup = setInterval(() => void purgeExpired(), 5_000);
 cleanup.unref();
 export async function closeRegionPreviewSessions() {
   await Promise.all([...sessions.values()].map(closeSession));
 }
+export async function releaseRegionPreviewSession(ownerId: string, sessionId: string) {
+  await purgeExpired();
+  const session = sessions.get(sessionId);
+  // Missing and foreign sessions are deliberately indistinguishable. The
+  // operation stays idempotent without exposing another owner's session.
+  if (!session || session.ownerId !== ownerId) return false;
+  await closeSession(session);
+  return true;
+}
+export async function expireRegionPreviewSessions(now: number) { await purgeExpired(now); }
 
 function previewMessage(stage: CaptureStage, code: RegionPreviewCode) {
   if (code === "session_expired") return "Preview expired. Refresh the preview and try again.";
@@ -207,22 +222,24 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
   if (session?.id) {
     const active = sessions.get(session.id);
     if (!active || active.ownerId !== session.ownerId) throw regionPreviewFailure(new HttpError(410, "Preview expired. Create a new preview and try again."), "text_extraction");
+    const absoluteDeadline = Math.min(Date.now() + cfg.CAPTURE_TIMEOUT_MS, active.expiresAt);
+    const activeRemaining = () => Math.max(1, absoluteDeadline - Date.now());
     try {
       stage = "text_extraction";
       if (session.refresh) {
-        const refreshDeadline = Date.now() + cfg.CAPTURE_TIMEOUT_MS;
-        const refreshRemaining = () => Math.max(1, refreshDeadline - Date.now());
         session.progress?.("rendering_preparation");
-        await boundedPreviewOperation({ operation: () => (session.operations?.snapshot ?? snapshotLayout)(active.page), remaining: refreshRemaining, cancel: () => closeSession(active), stage: "screenshot", signal: session.signal });
+        await boundedPreviewOperation({ operation: () => (session.operations?.snapshot ?? snapshotLayout)(active.page), remaining: activeRemaining, cancel: () => closeSession(active), stage: "screenshot", signal: session.signal });
         session.progress?.("screenshot");
-        active.image = await boundedPreviewOperation({ operation: () => (session.operations?.screenshot ?? capturePreviewScreenshot)(active.context, active.page), remaining: refreshRemaining, cancel: () => closeSession(active), stage: "screenshot", signal: session.signal });
+        active.image = await boundedPreviewOperation({ operation: () => (session.operations?.screenshot ?? capturePreviewScreenshot)(active.context, active.page), remaining: activeRemaining, cancel: () => closeSession(active), stage: "screenshot", signal: session.signal });
         pngDimensions(active.image, { width: cfg.MAX_CAPTURE_WIDTH, height: cfg.MAX_CAPTURE_HEIGHT, pixels: cfg.MAX_CAPTURE_PIXELS });
       }
-      const picked = point ? await selectionAt(active.page, point) : null;
+      const picked = point ? await boundedPreviewOperation({ operation: () => selectionAt(active.page, point), remaining: activeRemaining, cancel: () => closeSession(active), stage: "text_extraction", signal: session.signal }) : null;
       if (picked) checkDimensions({ width: Math.ceil(picked.selection.width), height: Math.ceil(picked.selection.height) }, { width: cfg.MAX_CAPTURE_WIDTH, height: cfg.MAX_CAPTURE_HEIGHT, pixels: cfg.MAX_CAPTURE_PIXELS });
-      active.expiresAt = Date.now() + SESSION_TTL_MS;
       return { session_id: active.id, image: active.image.toString("base64"), width: 1280, height: 900, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings: active.timings, reused: true };
-    } catch (error) { throw regionPreviewFailure(error, stage); }
+    } catch (error) {
+      if (session.signal?.aborted || Date.now() >= active.expiresAt) await closeSession(active);
+      throw regionPreviewFailure(error, stage);
+    }
   }
   if (m.kind !== "browser" || !m.visual_enabled) throw new HttpError(422, "Visual browser capture is required");
   if ((m.browser_steps ?? []).some((step) => step.action === "fill_private")) throw new HttpError(422, "Region preview does not use private values");
@@ -288,7 +305,10 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
     timings.serialization = Math.round(performance.now() - stageStarted);
     session?.progress?.("ready");
     if (!session?.retain) return { image: encoded, width: 1280, height: 900, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings };
-    const active: Session = { id: randomUUID(), ownerId: session.ownerId, expiresAt: Date.now() + SESSION_TTL_MS, browser, context, page, proxy, capacity, image, timings };
+    const createdAt = Date.now();
+    const active: Session = { id: randomUUID(), ownerId: session.ownerId, createdAt, expiresAt: createdAt + REGION_PREVIEW_MAX_LIFETIME_MS, browser, context, page, proxy, capacity, image, timings };
+    active.expiryTimer = setTimeout(() => void closeSession(active), REGION_PREVIEW_MAX_LIFETIME_MS);
+    active.expiryTimer.unref();
     sessions.set(active.id, active);
     browser = undefined; context = undefined; proxy = undefined; capacity = undefined;
     return { session_id: active.id, image: encoded, width: 1280, height: 900, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings, reused: false };

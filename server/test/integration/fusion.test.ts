@@ -25,7 +25,7 @@ import type { AddressInfo } from "node:net";
 import { seedPreview } from "../../src/preview-seed.js";
 import { compareVisual } from "../../src/comparison.js";
 import { telegramSummary } from "../../src/notifications.js";
-import { closeRegionPreviewSessions, previewRegion } from "../../src/region-picker.js";
+import { closeRegionPreviewSessions, expireRegionPreviewSessions, previewRegion, REGION_PREVIEW_MAX_LIFETIME_MS } from "../../src/region-picker.js";
 import { acquireChromiumLease } from "../../src/chromium-capacity.js";
 const expectedMigrationCount = (await readdir(path.resolve(import.meta.dirname, "../../migrations"))).filter((file) => /^\d+_.+\.sql$/.test(file)).length;
 const dbURL = new URL(process.env.TEST_DATABASE_URL ?? "");
@@ -2695,6 +2695,13 @@ test("visual region picker preview maps screenshot coordinates to a unique visib
   assert.equal(selectedDraft.body.selection.selector, "#product");
   assert.equal(previewRequests, requestsAfterPreview, "selection reuses the authenticated draft preview instead of loading the target again");
   assert.equal(Number((await pool.query("SELECT count(*)::int AS count FROM fusion_monitors")).rows[0].count), monitorCount);
+  await pickerOther.delete(`/api/v1/region-preview/${draftPreview.body.session_id}`).set("X-Fusion-Request", "1").expect(204);
+  assert.equal(await acquireChromiumLease(pool, { workload: "preview", slots: 1 }), null, "a foreign release cannot free another owner's Chromium lease");
+  await pickerOwner.delete(`/api/v1/region-preview/${draftPreview.body.session_id}`).set("X-Fusion-Request", "1").expect(204);
+  await pickerOwner.delete(`/api/v1/region-preview/${draftPreview.body.session_id}`).set("X-Fusion-Request", "1").expect(204);
+  const releasedLease = await acquireChromiumLease(pool, { workload: "preview", slots: 1 });
+  assert.ok(releasedLease, "the owner release promptly frees the global Chromium slot");
+  await releasedLease!.release();
 
   const denied = await pickerOwner.post("/api/v1/region-preview").set("X-Fusion-Request", "1").send({
     monitor: { url: "http://127.0.0.1/?synthetic_secret=must-not-leak", kind: "browser", visual_enabled: true, browser_steps: [] },
@@ -2786,6 +2793,25 @@ test("PostgreSQL Chromium admission coordinates preview and scheduled capture le
   const recovered = await acquireChromiumLease(pool, { workload: "preview", slots: 1 });
   assert.ok(recovered, "capacity is reusable after cancellation/cleanup");
   await recovered!.release();
+});
+
+test("preview sessions have an absolute lifetime despite repeated selections and free scheduled capture capacity", async (t) => {
+  await closeRegionPreviewSessions();
+  const fixture = managedServer(t, (_req, res) => res.end("<!doctype html><main id='preview-target' style='position:absolute;left:100px;top:100px;width:200px;height:80px'>Bounded session</main>"));
+  await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
+  const port = (fixture.address() as AddressInfo).port;
+  const policy = new EgressPolicy(async () => [{ address: "127.0.0.1", family: 4 }], () => true, new Set([port]));
+  const monitor = { id: randomUUID(), url: `http://preview-lifetime.example:${port}/`, kind: "browser", text_enabled: false, visual_enabled: true, browser_steps: [] } as any;
+  const acquireCapacity = () => acquireChromiumLease(pool, { workload: "preview", slots: 1 });
+  const preview = await previewRegion(monitor, cfg, undefined, policy, { ownerId: "absolute-lifetime-owner", retain: true, acquireCapacity });
+  await previewRegion(monitor, cfg, { x: 120, y: 120 }, policy, { ownerId: "absolute-lifetime-owner", id: preview.session_id, retain: true });
+  await previewRegion(monitor, cfg, { x: 120, y: 120 }, policy, { ownerId: "absolute-lifetime-owner", id: preview.session_id, retain: true });
+  assert.equal(await acquireChromiumLease(pool, { workload: "capture", slots: 1, waitMs: 0 }), null, "resident preview holds its slot only until its absolute expiry");
+  await expireRegionPreviewSessions(Date.now() + REGION_PREVIEW_MAX_LIFETIME_MS + 1);
+  const scheduled = await acquireChromiumLease(pool, { workload: "capture", slots: 1, waitMs: 100 });
+  assert.ok(scheduled, "absolute expiry releases capacity for a scheduled capture after repeated selections");
+  await scheduled!.release();
+  await closeRegionPreviewSessions();
 });
 
 test("region preview bounds slow resources, resolves deep DOM selectors and rejects screenshot drift", async (t) => {
