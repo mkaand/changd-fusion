@@ -449,7 +449,7 @@ export default function FusionApp() {
                   </Button>
                 </Space>
                 <Card>
-                  <Space wrap>
+                  <Space wrap className="monitor-detail-meta">
                     <Tag
                       color={
                         current.last_error
@@ -474,7 +474,7 @@ export default function FusionApp() {
                     )}
                     <span>Every {current.interval_seconds}s</span>
                   </Space>
-                  <Space wrap><Typography.Paragraph className="monitor-url">{current.url}</Typography.Paragraph><MonitorUrlActions url={current.url} message={message} /></Space>
+                  <div className="monitor-detail-url-row"><Typography.Paragraph className="monitor-url">{current.url}</Typography.Paragraph><MonitorUrlActions url={current.url} message={message} /></div>
                   {current.last_error && (
                     <Alert title={current.last_error} type="error" />
                   )}

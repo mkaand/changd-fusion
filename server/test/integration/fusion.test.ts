@@ -25,6 +25,7 @@ import type { AddressInfo } from "node:net";
 import { seedPreview } from "../../src/preview-seed.js";
 import { compareVisual } from "../../src/comparison.js";
 import { telegramSummary } from "../../src/notifications.js";
+import { closeRegionPreviewSessions } from "../../src/region-picker.js";
 const expectedMigrationCount = (await readdir(path.resolve(import.meta.dirname, "../../migrations"))).filter((file) => /^\d+_.+\.sql$/.test(file)).length;
 const dbURL = new URL(process.env.TEST_DATABASE_URL ?? "");
 assert.ok(
@@ -52,6 +53,15 @@ function image(changed = 0, width = 100, height = 100) {
   p.data.fill(255);
   for (let i = 0; i < changed; i++) {
     p.data[i * 4] = p.data[i * 4 + 1] = p.data[i * 4 + 2] = 0;
+  }
+  return PNG.sync.write(p);
+}
+function previewImage() {
+  const p = new PNG({ width: 1280, height: 900 });
+  p.data.fill(245);
+  for (let y = 160; y < 240; y++) for (let x = 160; x < 520; x++) {
+    const offset = (y * p.width + x) * 4;
+    p.data[offset] = 38; p.data[offset + 1] = 112; p.data[offset + 2] = 191; p.data[offset + 3] = 255;
   }
   return PNG.sync.write(p);
 }
@@ -95,6 +105,7 @@ before(async () => {
       .expect(200);
 });
 after(async () => {
+  await closeRegionPreviewSessions();
   try {
     await pool?.end();
     await admin.query(`DROP DATABASE IF EXISTS ${dbName}`);
@@ -1028,6 +1039,20 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
       timeout: 15000,
     });
     const page = await browser.newPage();
+    // A controlled completed preview makes the documentation screenshot
+    // deterministic without contacting a production or external website.
+    await page.route("**/api/v1/region-preview", async (route) => {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          session_id: "00000000-0000-4000-8000-000000000099",
+          image: previewImage().toString("base64"),
+          width: 1280,
+          height: 900,
+          selection: { selector: "#fixture-price", x: 160, y: 160, width: 360, height: 80 },
+        }),
+      });
+    });
     const errors: string[] = [];
     let jobsRequests = 0, notificationRequests = 0;
     page.on("request", (request) => {
@@ -1245,6 +1270,7 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await page.getByRole("button", { name: "Select region visually", exact: true }).click();
     const picker = page.locator('section[aria-label="Select screenshot region"]');
     await picker.waitFor();
+    await picker.getByAltText("Secure monitor preview").waitFor();
     await page.screenshot({ path: path.join(output, "region-picker-mobile.png") });
     await page.getByRole("button", { name: "← Back", exact: true }).click();
     await mobileEditor.waitFor();
@@ -2525,7 +2551,8 @@ test("monitoring defaults and bulk channel assignment are owner-scoped and trans
 });
 
 test("visual region picker preview maps screenshot coordinates to a unique visible selector without mutating until saved", async (t) => {
-  const fixture = managedServer(t, (_req, res) => res.end(`<!doctype html><style>body{margin:0}#product{position:absolute;left:100px;top:120px;width:240px;height:80px}#hidden{display:none}</style><main id="product">Selected product</main><div id="hidden">Hidden</div>`));
+  let previewRequests = 0;
+  const fixture = managedServer(t, (_req, res) => { previewRequests++; res.end(`<!doctype html><style>body{margin:0}#product{position:absolute;left:100px;top:120px;width:240px;height:80px}#hidden{display:none}</style><main id="product">Selected product</main><div id="hidden">Hidden</div>`); });
   await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
   const port = (fixture.address() as AddressInfo).port;
   const pickerPolicy = new EgressPolicy(async () => [{ address: "127.0.0.1", family: 4 }], () => true, new Set([port]));
@@ -2548,9 +2575,16 @@ test("visual region picker preview maps screenshot coordinates to a unique visib
   const monitorCount = Number((await pool.query("SELECT count(*)::int AS count FROM fusion_monitors")).rows[0].count);
   const draftPreview = await pickerOwner.post("/api/v1/region-preview").set("X-Fusion-Request", "1").send({
     monitor: { url: `http://fixture.example:${port}/`, kind: "browser", visual_enabled: true, browser_steps: [] },
+  }).expect(200);
+  assert.match(draftPreview.body.session_id, /^[0-9a-f-]{36}$/);
+  const requestsAfterPreview = previewRequests;
+  const selectedDraft = await pickerOwner.post("/api/v1/region-preview").set("X-Fusion-Request", "1").send({
+    session_id: draftPreview.body.session_id,
+    monitor: { url: `http://fixture.example:${port}/`, kind: "browser", visual_enabled: true, browser_steps: [] },
     point: { x: 130, y: 150 },
   }).expect(200);
-  assert.equal(draftPreview.body.selection.selector, "#product");
+  assert.equal(selectedDraft.body.selection.selector, "#product");
+  assert.equal(previewRequests, requestsAfterPreview, "selection reuses the authenticated draft preview instead of loading the target again");
   assert.equal(Number((await pool.query("SELECT count(*)::int AS count FROM fusion_monitors")).rows[0].count), monitorCount);
 
   const denied = await pickerOwner.post("/api/v1/region-preview").set("X-Fusion-Request", "1").send({
@@ -2566,4 +2600,9 @@ test("visual region picker preview maps screenshot coordinates to a unique visib
     monitor_id: created.id,
     monitor: { url: `http://fixture.example:${port}/`, kind: "browser", visual_enabled: true, browser_steps: [] },
   }).expect(404);
+  await pickerOther.post("/api/v1/region-preview").set("X-Fusion-Request", "1").send({
+    session_id: draftPreview.body.session_id,
+    monitor: { url: `http://fixture.example:${port}/`, kind: "browser", visual_enabled: true, browser_steps: [] },
+    point: { x: 130, y: 150 },
+  }).expect(410);
 });

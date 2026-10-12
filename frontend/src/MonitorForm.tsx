@@ -8,7 +8,7 @@ export const defaults = {
   browser_steps: [], step_budget_ms: 20000, paused: false, notify_failures: false, notify_attention: false,
   notification_enabled: true, notification_cooldown_seconds: 0, notification_mode: "immediate", digest_window_seconds: 3600,
   pixel_threshold: 0.1, interval_seconds: 300, normalize_whitespace: true, ignore_case: false, enabled: true,
-  text_direction: "both", text_source: "direct",
+  text_direction: "both", text_source: "direct", extraction_mode: "full_text",
   channel_ids: [], ignore_selectors: [], ignore_text: [], mask_selectors: [],
 };
 export function MonitorForm({ form, channels, monitorId, onOpenMobileRegion, advancedOpen, setAdvancedOpen }: { form: any; channels: any[]; monitorId?: string; onOpenMobileRegion?: () => void; advancedOpen?: boolean; setAdvancedOpen?: (open: boolean) => void }) {
@@ -35,7 +35,7 @@ export function MonitorForm({ form, channels, monitorId, onOpenMobileRegion, adv
       {kind === "browser" && <BrowserStepsEditor form={form} />}
       {kind === "browser" && text && <>
         <Form.Item name="text_source" label="Text content source"><Select options={[{ value: "direct", label: "Direct browser content (default)" }, { value: "jina", label: "Jina Reader — sends the URL to a third party" }]} /></Form.Item>
-        <Form.Item noStyle shouldUpdate={(previous, current) => previous.text_source !== current.text_source}>{({ getFieldValue }) => getFieldValue("text_source") === "jina" && <Alert type="info" showIcon title="Jina Reader is optional" description="Only the monitor URL is sent to Jina Reader for text extraction. Visual capture, private values, and browser steps are not used." />}</Form.Item>
+        <Form.Item noStyle shouldUpdate={(previous, current) => previous.text_source !== current.text_source}>{({ getFieldValue }) => getFieldValue("text_source") === "jina" && <><Form.Item name="extraction_mode" label="Extraction mode"><Select options={[{ value: "full_text", label: "Full text (default)" }, { value: "product_price", label: "Product Price" }]} /></Form.Item><Alert type="info" showIcon title="Jina Reader is optional" description="Only the monitor URL is sent to Jina Reader for text extraction. Product Price compares only a confidently identified current selling price. Visual capture, private values, and browser steps are not used." /></>}</Form.Item>
         <Form.Item name="selector_type" label="Text extraction method"><Select options={[{ value: "css", label: "CSS selector" }, { value: "xpath", label: "XPath" }]} /></Form.Item>
         <Form.Item name="selector" label="Text selector (empty = visible page text)"><Input placeholder="#content or //main" /></Form.Item>
         <Form.Item name="ignore_selectors" label="Remove dynamic regions"><Select mode="tags" placeholder="CSS selectors" /></Form.Item>

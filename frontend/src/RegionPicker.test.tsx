@@ -22,16 +22,39 @@ const draft = {
 };
 
 it("uses unsaved draft monitor settings without persisting them", async () => {
-  vi.mocked(api).mockResolvedValue({ image: "aGVsbG8=", selection: null });
+  vi.mocked(api).mockResolvedValue({ session_id: "00000000-0000-4000-8000-000000000099", image: "aGVsbG8=", width: 1280, height: 900, selection: null });
   render(<RegionPicker getDraft={() => draft} onSelect={vi.fn()} onUseViewport={vi.fn()} />);
   await userEvent.setup().click(screen.getByRole("button", { name: "Select region visually" }));
   await waitFor(() => expect(api).toHaveBeenCalledWith(
     "/region-preview",
     "POST",
-    { monitor_id: undefined, monitor: { ...draft }, point: undefined },
+    { session_id: undefined, monitor_id: undefined, monitor: { ...draft }, point: undefined },
     { timeoutMs: 125000 },
   ));
   expect(screen.getByAltText("Secure monitor preview")).toBeInTheDocument();
+});
+
+it("zooms without selecting and maps a click to original preview coordinates", async () => {
+  vi.mocked(api)
+    .mockResolvedValueOnce({ session_id: "00000000-0000-4000-8000-000000000099", image: "aGVsbG8=", width: 1280, height: 900, selection: null })
+    .mockResolvedValueOnce({ session_id: "00000000-0000-4000-8000-000000000099", image: "aGVsbG8=", width: 1280, height: 900, selection: { selector: "#price", x: 100, y: 100, width: 200, height: 50 } });
+  render(<RegionPicker getDraft={() => draft} onSelect={vi.fn()} onUseViewport={vi.fn()} />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Select region visually" }));
+  await screen.findByAltText("Secure monitor preview");
+  await user.click(screen.getByRole("button", { name: "Zoom in" }));
+  expect(screen.getByLabelText("Current zoom")).toHaveTextContent("125%");
+  expect(api).toHaveBeenCalledTimes(1);
+  const image = screen.getByAltText("Secure monitor preview");
+  Object.defineProperty(image, "getBoundingClientRect", { value: () => ({ left: 10, top: 20, width: 640, height: 450 }) });
+  fireEvent.pointerDown(image, { pointerId: 1, clientX: 330, clientY: 245 });
+  fireEvent.pointerUp(image, { pointerId: 1, clientX: 330, clientY: 245 });
+  await waitFor(() => expect(api).toHaveBeenLastCalledWith(
+    "/region-preview",
+    "POST",
+    expect.objectContaining({ session_id: "00000000-0000-4000-8000-000000000099", point: { x: 640, y: 450 } }),
+    { timeoutMs: 125000 },
+  ));
 });
 
 it("keeps the form usable after a safe preview error and offers retry and viewport fallback", async () => {

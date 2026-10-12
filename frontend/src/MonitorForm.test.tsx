@@ -47,3 +47,15 @@ it("HTML/API selection returns to text-only viewport configuration", async () =>
     screen.getByRole("switch", { name: "Visual detection" }),
   ).toBeDisabled();
 });
+it("offers Product Price extraction only with the optional Jina Reader source", async () => {
+  const user = userEvent.setup();
+  render(<Fixture />);
+  await user.click(screen.getByText("Advanced settings", { exact: true }));
+  expect(screen.queryByLabelText("Extraction mode")).not.toBeInTheDocument();
+  await user.click(screen.getByLabelText("Text content source"));
+  await user.click(screen.getByText(/Jina Reader/));
+  expect(screen.getByLabelText("Extraction mode")).toBeInTheDocument();
+  await user.click(screen.getByLabelText("Extraction mode"));
+  await user.click(screen.getByText("Product Price", { exact: true }));
+  expect(current.getFieldValue("extraction_mode")).toBe("product_price");
+});
