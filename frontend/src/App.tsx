@@ -109,7 +109,8 @@ export default function FusionApp() {
     [navigationOpen, setNavigationOpen] = useState(false);
   const [open, setOpen] = useState(false),
     [editing, setEditing] = useState<any>(),
-    [saving, setSaving] = useState(false);
+    [saving, setSaving] = useState(false),
+    [advancedOpen, setAdvancedOpen] = useState(false);
   const [form] = Form.useForm();
   const requestRef = useRef<AbortController | undefined>(undefined);
   const requestVersion = useRef(0);
@@ -409,7 +410,7 @@ export default function FusionApp() {
             {page === "editor" && compactLayout && open ? (
               <section className="mobile-monitor-editor" aria-label={editing ? "Edit monitor" : "New monitor"}>
                 <div className="mobile-editor-header"><Button type="text" onClick={() => { setOpen(false); navigate("jobs"); }}>← Back</Button><Typography.Title level={3}>{editing ? "Edit monitor" : "New monitor"}</Typography.Title></div>
-                <MonitorForm form={form} channels={channels} monitorId={editing?.id} onOpenMobileRegion={() => { setPage("region-picker"); history.pushState(null, "", "/jobs/editor/region-picker"); }} />
+                <MonitorForm form={form} channels={channels} monitorId={editing?.id} advancedOpen={advancedOpen} setAdvancedOpen={setAdvancedOpen} onOpenMobileRegion={() => { setPage("region-picker"); history.pushState(null, "", "/jobs/editor/region-picker"); }} />
                 <div className="mobile-editor-actions"><Button onClick={() => { setOpen(false); navigate("jobs"); }}>Cancel</Button><Button type="primary" loading={saving} onClick={save}>Save monitor</Button></div>
               </section>
             ) : page === "region-picker" && compactLayout && open ? (
