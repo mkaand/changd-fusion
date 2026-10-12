@@ -1251,7 +1251,7 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     assert.equal(await page.getByLabel("URL", { exact: true }).inputValue(), urlBeforePicker, "Back preserves unsaved editor values");
     await page.getByText("Advanced settings", { exact: true }).waitFor();
     await page.getByLabel("Screenshot capture mode", { exact: true }).waitFor();
-    assert.equal(await page.getByLabel("Screenshot capture mode", { exact: true }).inputValue(), "element", "Back preserves selected capture mode");
+    assert.equal(await page.getByLabel("Screenshot capture mode", { exact: true }).locator("xpath=..").locator(".ant-select-selection-item").textContent(), "Selected element / region", "Back preserves selected capture mode");
     await page
       .getByRole("button", { name: "Add browser step", exact: true })
       .click();
@@ -2509,12 +2509,16 @@ test("Codespaces Telegram requires an explicit successful owned test before auto
 });
 
 test("monitoring defaults and bulk channel assignment are owner-scoped and transactional", async () => {
+  // A dedicated app gives this authorization test an independent test-only limiter store.
+  const bulkApp = createApp(pool, cfg, new EgressPolicy(async () => [{ address: "8.8.8.8", family: 4 }]));
+  const bulkOwner = request.agent(bulkApp), bulkOther = request.agent(bulkApp);
+  for (const [agent, email] of [[bulkOwner, "owner@example.com"], [bulkOther, "other@example.com"]] as const) await agent.post("/api/v1/login").set("X-Fusion-Request", "1").send({ email, password }).expect(200);
   const defaults = { interval_seconds: 900, capture_mode: "viewport", notification_mode: "digest", notification_cooldown_seconds: 900, channel_ids: [channelId] };
-  await ownerAgent.put("/api/v1/preferences/monitoring").set("X-Fusion-Request", "1").send(defaults).expect(200);
-  assert.equal((await ownerAgent.get("/api/v1/preferences/monitoring").expect(200)).body.notification_mode, "digest");
-  await otherAgent.put("/api/v1/preferences/monitoring").set("X-Fusion-Request", "1").send({ channel_ids: [channelId] }).expect(404);
-  await ownerAgent.post("/api/v1/monitors/notification-channels/bulk").set("X-Fusion-Request", "1").send({ monitor_ids: [monitor.id], channel_id: channelId, action: "add", confirm: true }).expect(204);
-  await otherAgent.post("/api/v1/monitors/notification-channels/bulk").set("X-Fusion-Request", "1").send({ monitor_ids: [monitor.id], channel_id: channelId, action: "remove", confirm: true }).expect(404);
+  await bulkOwner.put("/api/v1/preferences/monitoring").set("X-Fusion-Request", "1").send(defaults).expect(200);
+  assert.equal((await bulkOwner.get("/api/v1/preferences/monitoring").expect(200)).body.notification_mode, "digest");
+  await bulkOther.put("/api/v1/preferences/monitoring").set("X-Fusion-Request", "1").send({ channel_ids: [channelId] }).expect(404);
+  await bulkOwner.post("/api/v1/monitors/notification-channels/bulk").set("X-Fusion-Request", "1").send({ monitor_ids: [monitor.id], channel_id: channelId, action: "add", confirm: true }).expect(204);
+  await bulkOther.post("/api/v1/monitors/notification-channels/bulk").set("X-Fusion-Request", "1").send({ monitor_ids: [monitor.id], channel_id: channelId, action: "remove", confirm: true }).expect(404);
   const association = await pool.query("SELECT 1 FROM fusion_monitor_channels WHERE monitor_id=$1 AND channel_id=$2", [monitor.id, channelId]);
   assert.equal(association.rowCount, 1);
 });
