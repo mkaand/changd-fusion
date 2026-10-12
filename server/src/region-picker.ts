@@ -6,9 +6,12 @@ import { CaptureFailure, HttpError, captureFailure, type CaptureFailureCode, typ
 import { checkDimensions, pngDimensions } from "./image.js";
 import type { Monitor } from "./capture.js";
 
-export type RegionPreviewFailure = { stage: CaptureStage; failure_code: CaptureFailureCode; status: number; message: string };
-type Selection = { selector: string; visible: boolean; x: number; y: number; width: number; height: number };
-type Session = { id: string; ownerId: string; expiresAt: number; browser: Browser; context: BrowserContext; page: Page; proxy: Awaited<ReturnType<typeof browserProxy>>; image: Buffer };
+type RegionPreviewCode = CaptureFailureCode | "session_expired" | "stale_preview" | "ambiguous_selection";
+export type RegionPreviewFailure = { stage: CaptureStage; failure_code: RegionPreviewCode; status: number; message: string };
+type Selection = { selector: string; label: string; visible: boolean; x: number; y: number; width: number; height: number };
+export type PreviewStage = "target_validation" | "proxy_initialization" | "browser_launch" | "browser_context" | "navigation" | "dom_ready" | "rendering_preparation" | "screenshot" | "serialization" | "ready";
+type PreviewTimings = Partial<Record<PreviewStage, number>>;
+type Session = { id: string; ownerId: string; expiresAt: number; browser: Browser; context: BrowserContext; page: Page; proxy: Awaited<ReturnType<typeof browserProxy>>; image: Buffer; timings: PreviewTimings };
 const SESSION_TTL_MS = 90_000;
 const MAX_SESSIONS = 4;
 const sessions = new Map<string, Session>();
@@ -43,7 +46,10 @@ export async function closeRegionPreviewSessions() {
   await Promise.all([...sessions.values()].map(closeSession));
 }
 
-function previewMessage(stage: CaptureStage, code: CaptureFailureCode) {
+function previewMessage(stage: CaptureStage, code: RegionPreviewCode) {
+  if (code === "session_expired") return "Preview expired. Refresh the preview and try again.";
+  if (code === "stale_preview") return "The page changed after the screenshot. Refresh the preview before selecting.";
+  if (code === "ambiguous_selection") return "The selected point does not identify one stable visible element. Try a nearby point.";
   if (code === "timeout") return "Preview timed out. Retry, or use viewport capture instead.";
   if (code === "resource_limit") return "Preview capacity is busy. Retry shortly.";
   if (code === "egress_denied") return "Preview destination is not permitted.";
@@ -55,46 +61,106 @@ function previewMessage(stage: CaptureStage, code: CaptureFailureCode) {
 export function regionPreviewFailure(error: unknown, stage: CaptureStage): RegionPreviewFailure {
   const safe = captureFailure(error, stage);
   const validation = error instanceof HttpError && error.status >= 400 && error.status < 500;
-  return { stage: safe.stage, failure_code: safe.code, status: safe.code === "timeout" ? 504 : safe.code === "resource_limit" ? 429 : validation ? error.status : 422, message: previewMessage(safe.stage, safe.code) };
+  const code: RegionPreviewCode = error instanceof HttpError && error.status === 410 ? "session_expired" : error instanceof HttpError && error.status === 409 ? "stale_preview" : error instanceof HttpError && /unique visible/i.test(error.message) ? "ambiguous_selection" : safe.code;
+  return { stage: safe.stage, failure_code: code, status: safe.code === "timeout" ? 504 : safe.code === "resource_limit" ? 429 : validation ? error.status : 422, message: previewMessage(safe.stage, code) };
 }
 
-async function selectionAt(page: Page, point: { x: number; y: number }): Promise<Selection> {
+export async function snapshotLayout(page: Page) {
+  // tsx names nested helper functions with __name; define the inert helper in
+  // the isolated page before installing our fixed, non-user-authored picker.
+  await page.evaluate("window.__name = function(target) { return target; }");
+  await page.evaluate(() => {
+    const root = window as any;
+    const rects: Record<string, { x: number; y: number; width: number; height: number; text: string }> = {};
+    let sequence = 0;
+    for (const element of document.querySelectorAll("body *")) {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      if (rect.width <= 0 || rect.height <= 0 || style.display === "none" || style.visibility === "hidden") continue;
+      const id = `p${++sequence}`;
+      Object.defineProperty(element, "__changdPreviewId", { value: id, configurable: true });
+      rects[id] = { x: rect.x, y: rect.y, width: rect.width, height: rect.height, text: (element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 256) };
+    }
+    root.__changdPreviewRects = rects;
+  });
+}
+
+export async function selectionAt(page: Page, point: { x: number; y: number }): Promise<{ selection: Selection; candidates: Selection[] }> {
   if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || point.x < 0 || point.y < 0 || point.x > 1280 || point.y > 900)
     throw new HttpError(422, "Invalid preview point");
-  const selection = await page.evaluate(({ x, y }) => {
+  const result = await page.evaluate(({ x, y }) => {
     const element = document.elementFromPoint(x, y);
     if (!element) return null;
-    const parts: string[] = [];
-    let node: Element | null = element;
-    while (node && parts.length < 6) {
-      if (node.id && /^[A-Za-z][\w-]*$/.test(node.id)) { parts.unshift("#" + CSS.escape(node.id)); break; }
-      const parent: Element | null = node.parentElement;
+    const snapshot = (window as any).__changdPreviewRects as Record<string, { x: number; y: number; width: number; height: number; text: string }> | undefined;
+    const stableId = (value: string) => /^[A-Za-z][\w-]{0,63}$/.test(value) && !/(?:[a-f\d]{10,}|\d{6,})/i.test(value);
+    const unique = (selector: string, target: Element) => { try { const found = document.querySelectorAll(selector); return found.length === 1 && found[0] === target; } catch { return false; } };
+    const segment = (node: Element) => {
       const tag = node.tagName.toLowerCase();
-      if (!parent) { parts.unshift(tag); break; }
-      const same = [...parent.children].filter((child) => child.tagName === node!.tagName);
-      parts.unshift(tag + (same.length > 1 ? `:nth-of-type(${same.indexOf(node) + 1})` : ""));
-      node = parent;
+      for (const name of ["data-testid", "data-test", "data-qa", "itemprop", "name", "aria-label"]) {
+        const value = node.getAttribute(name);
+        if (value && value.length <= 80) {
+          const candidate = `${tag}[${name}="${CSS.escape(value)}"]`;
+          if (unique(candidate, node)) return candidate;
+        }
+      }
+      const classes = [...node.classList].filter((value) => value.length <= 40 && !/(?:[a-f\d]{10,}|\d{6,})/i.test(value)).slice(0, 3);
+      for (const value of classes) { const candidate = `${tag}.${CSS.escape(value)}`; if (unique(candidate, node)) return candidate; }
+      const parent = node.parentElement;
+      if (!parent) return tag;
+      const same = [...parent.children].filter((child) => child.tagName === node.tagName);
+      return tag + (same.length > 1 ? `:nth-of-type(${same.indexOf(node) + 1})` : "");
+    };
+    const selectorFor = (target: Element) => {
+      if (target.id && stableId(target.id)) { const id = `#${CSS.escape(target.id)}`; if (unique(id, target)) return id; }
+      const parts: string[] = [];
+      let node: Element | null = target;
+      for (let depth = 0; node && depth < 50; depth++, node = node.parentElement) {
+        if (node.id && stableId(node.id)) { parts.unshift(`#${CSS.escape(node.id)}`); const candidate = parts.join(" > "); if (unique(candidate, target)) return candidate; }
+        else parts.unshift(segment(node));
+        const candidate = parts.join(" > ");
+        if (unique(candidate, target)) return candidate;
+      }
+      return "";
+    };
+    const candidates: any[] = [];
+    let node: Element | null = element;
+    while (node && node !== document.documentElement && candidates.length < 6) {
+      const marker = (node as any).__changdPreviewId as string | undefined;
+      const previous = marker && snapshot?.[marker];
+      const rect = node.getBoundingClientRect();
+      if (!previous) { if (candidates.length) break; return { stale: true, candidates: [] }; }
+      const currentText = (node.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 256);
+      if (Math.abs(previous.x - rect.x) > 2 || Math.abs(previous.y - rect.y) > 2 || Math.abs(previous.width - rect.width) > 2 || Math.abs(previous.height - rect.height) > 2 || (!candidates.length && previous.text !== currentText))
+        return { stale: true, candidates: [] };
+      const selector = selectorFor(node);
+      if (selector && rect.width > 0 && rect.height > 0 && !candidates.some((candidate) => candidate.x === previous.x && candidate.y === previous.y && candidate.width === previous.width && candidate.height === previous.height)) {
+        const text = (node.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 48);
+        candidates.push({ selector, label: candidates.length ? `Parent: ${node.tagName.toLowerCase()}${text ? ` — ${text}` : ""}` : `Exact: ${node.tagName.toLowerCase()}${text ? ` — ${text}` : ""}`, visible: true, x: previous.x, y: previous.y, width: previous.width, height: previous.height });
+      }
+      node = node.parentElement;
     }
-    const rect = element.getBoundingClientRect();
-    return { selector: parts.join(" > "), visible: rect.width > 0 && rect.height > 0, x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    return { stale: false, candidates };
   }, point);
+  if (result?.stale) throw new HttpError(409, "Preview content changed after the screenshot. Refresh the preview before selecting.");
+  const candidates = result?.candidates ?? [];
+  const selection = candidates[0];
   if (!selection?.visible || !selection.selector || await page.locator(selection.selector).count() !== 1)
     throw new HttpError(422, "A unique visible region could not be selected");
-  return selection;
+  return { selection, candidates };
 }
 
-export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number; y: number }, policy = new EgressPolicy(), session?: { ownerId: string; id?: string; retain?: boolean }) {
+export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number; y: number }, policy = new EgressPolicy(), session?: { ownerId: string; id?: string; retain?: boolean; progress?: (stage: PreviewStage) => void; signal?: AbortSignal }) {
   let stage: CaptureStage = "target_validation";
   await purgeExpired();
   if (session?.id) {
     const active = sessions.get(session.id);
-    if (!active || active.ownerId !== session.ownerId) throw new HttpError(410, "Preview expired. Create a new preview and try again.");
+    if (!active || active.ownerId !== session.ownerId) throw regionPreviewFailure(new HttpError(410, "Preview expired. Create a new preview and try again."), "text_extraction");
     try {
       stage = "text_extraction";
-      const selection = point ? await selectionAt(active.page, point) : null;
-      if (selection) checkDimensions({ width: Math.ceil(selection.width), height: Math.ceil(selection.height) }, { width: cfg.MAX_CAPTURE_WIDTH, height: cfg.MAX_CAPTURE_HEIGHT, pixels: cfg.MAX_CAPTURE_PIXELS });
+      const picked = point ? await selectionAt(active.page, point) : null;
+      if (picked) checkDimensions({ width: Math.ceil(picked.selection.width), height: Math.ceil(picked.selection.height) }, { width: cfg.MAX_CAPTURE_WIDTH, height: cfg.MAX_CAPTURE_HEIGHT, pixels: cfg.MAX_CAPTURE_PIXELS });
       active.expiresAt = Date.now() + SESSION_TTL_MS;
-      return { session_id: active.id, image: active.image.toString("base64"), width: 1280, height: 900, selection };
+      return { session_id: active.id, image: active.image.toString("base64"), width: 1280, height: 900, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings: active.timings, reused: true };
     } catch (error) { throw regionPreviewFailure(error, stage); }
   }
   if (m.kind !== "browser" || !m.visual_enabled) throw new HttpError(422, "Visual browser capture is required");
@@ -105,32 +171,63 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
   let browser: Browser | undefined;
   let context: BrowserContext | undefined;
   let reservation: ReturnType<typeof reserveSession> | undefined;
+  const abort = () => { void context?.close().catch(() => {}); void browser?.close().catch(() => {}); };
+  const timings: PreviewTimings = {};
+  let previewStage: PreviewStage = "target_validation";
+  let stageStarted = performance.now();
+  const enter = (next: PreviewStage) => { timings[previewStage] = Math.round(performance.now() - stageStarted); previewStage = next; stageStarted = performance.now(); session?.progress?.(next); };
   try {
+    if (session?.signal?.aborted) throw new HttpError(499, "Preview request was cancelled");
+    session?.signal?.addEventListener("abort", abort, { once: true });
+    session?.progress?.("target_validation");
     await policy.target(m.url);
     reservation = reserveSession(session?.ownerId ?? randomUUID(), Boolean(session?.retain));
     if (reservation.existing) await closeSession(reservation.existing);
+    enter("proxy_initialization");
     proxy = await browserProxy(policy);
+    enter("browser_launch");
     stage = "browser_launch";
     browser = await chromium.launch({ headless: true, chromiumSandbox: true, executablePath: cfg.PLAYWRIGHT_EXECUTABLE_PATH, proxy: { server: proxy.url, bypass: "<-loopback>" }, timeout: remaining() });
     stage = "browser_context";
+    enter("browser_context");
     context = await browser.newContext({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1, locale: "en-US", timezoneId: "UTC", serviceWorkers: "block", ignoreHTTPSErrors: false });
-    await context.route("**/*", async (route) => { try { await policy.target(route.request().url()); await route.continue(); } catch { await route.abort("blockedbyclient"); } });
+    await context.routeWebSocket("**/*", (socket) => socket.close());
     const page = await context.newPage();
     stage = "navigation";
+    enter("navigation");
     const response = await page.goto(m.url, { waitUntil: "domcontentloaded", timeout: remaining() });
     if (!response?.ok()) throw new HttpError(422, `HTTP ${response?.status() ?? 0}`);
+    enter("dom_ready");
     await page.addStyleTag({ content: "* { animation:none !important; transition:none !important; caret-color:transparent !important; }" });
+    enter("rendering_preparation");
+    stage = "font_wait";
+    await page.evaluate(async () => {
+      await Promise.race([
+        Promise.all([document.fonts.ready.catch(() => undefined), Promise.all([...document.images].map((image) => image.complete ? undefined : new Promise<void>((resolve) => { image.addEventListener("load", () => resolve(), { once: true }); image.addEventListener("error", () => resolve(), { once: true }); })))]),
+        new Promise((resolve) => setTimeout(resolve, 1200)),
+      ]);
+    });
     stage = "screenshot";
-    const image = await page.screenshot({ type: "png", animations: "disabled", timeout: remaining() });
+    await snapshotLayout(page);
+    enter("screenshot");
+    const cdp = await context.newCDPSession(page);
+    const captured = await cdp.send("Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: false });
+    await cdp.detach();
+    const image = Buffer.from(captured.data, "base64");
     pngDimensions(image, { width: cfg.MAX_CAPTURE_WIDTH, height: cfg.MAX_CAPTURE_HEIGHT, pixels: cfg.MAX_CAPTURE_PIXELS });
-    const selection = point ? await selectionAt(page, point) : null;
-    if (!session?.retain) return { image: image.toString("base64"), width: 1280, height: 900, selection };
-    const active: Session = { id: randomUUID(), ownerId: session.ownerId, expiresAt: Date.now() + SESSION_TTL_MS, browser, context, page, proxy, image };
+    const picked = point ? await selectionAt(page, point) : null;
+    enter("serialization");
+    const encoded = image.toString("base64");
+    timings.serialization = Math.round(performance.now() - stageStarted);
+    session?.progress?.("ready");
+    if (!session?.retain) return { image: encoded, width: 1280, height: 900, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings };
+    const active: Session = { id: randomUUID(), ownerId: session.ownerId, expiresAt: Date.now() + SESSION_TTL_MS, browser, context, page, proxy, image, timings };
     sessions.set(active.id, active);
     browser = undefined; context = undefined; proxy = undefined;
-    return { session_id: active.id, image: image.toString("base64"), width: 1280, height: 900, selection };
+    return { session_id: active.id, image: encoded, width: 1280, height: 900, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings, reused: false };
   } catch (error) { throw regionPreviewFailure(error, stage); }
   finally {
+    session?.signal?.removeEventListener("abort", abort);
     if (reservation) reservations.delete(reservation.token);
     try { await context?.close(); } catch {}
     try { await browser?.close(); } finally { await proxy?.close(); }

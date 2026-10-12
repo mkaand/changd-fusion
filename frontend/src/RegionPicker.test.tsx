@@ -28,7 +28,7 @@ it("uses unsaved draft monitor settings without persisting them", async () => {
   await waitFor(() => expect(api).toHaveBeenCalledWith(
     "/region-preview",
     "POST",
-    { session_id: undefined, monitor_id: undefined, monitor: { ...draft }, point: undefined },
+    expect.objectContaining({ session_id: undefined, monitor_id: undefined, monitor: { ...draft }, point: undefined, preview_request_id: expect.any(String) }),
     { timeoutMs: 125000 },
   ));
   expect(screen.getByAltText("Secure monitor preview")).toBeInTheDocument();
@@ -99,8 +99,9 @@ it("keeps the form usable after a safe preview error and offers retry and viewpo
   const user = userEvent.setup();
   await user.click(screen.getByRole("button", { name: "Select region visually" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("Preview timed out");
-  expect(screen.getByRole("alert")).toHaveTextContent(`navigation · timeout · Request ${requestId}`);
-  await user.click(screen.getByRole("button", { name: "Retry" }));
+  expect(screen.getByRole("alert")).toHaveTextContent("navigation · timeout");
+  expect(screen.getByRole("alert")).toHaveTextContent(`Request ID: ${requestId}`);
+  await user.click(screen.getByRole("button", { name: "Refresh preview" }));
   await waitFor(() => expect(api).toHaveBeenCalledTimes(2));
   expect(screen.getByRole("alert")).toHaveTextContent("Preview timed out");
   await user.click(screen.getByRole("button", { name: "Use viewport instead" }));

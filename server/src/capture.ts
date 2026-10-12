@@ -12,6 +12,7 @@ import {
 import { checkDimensions, pngDimensions } from "./image.js";
 import type { Config } from "./config.js";
 import { canonicalProductPrice, extractProductPrice, jinaReaderText } from "./price-extraction.js";
+import { applySelectedTextRule, readableJinaLines, type SelectedTextRule } from "./selected-text.js";
 export type Monitor = {
   id: string;
   user_id: string;
@@ -21,7 +22,8 @@ export type Monitor = {
   text_enabled: boolean;
   text_direction?: "added" | "removed" | "both";
   text_source?: "direct" | "jina";
-  extraction_mode?: "full_text" | "product_price";
+  extraction_mode?: "full_text" | "product_price" | "selected_text";
+  extraction_rule?: SelectedTextRule | null;
   visual_enabled: boolean;
   selector: string;
   selector_type: "css" | "xpath";
@@ -180,11 +182,14 @@ export async function capture(
     if (m.text_source === "jina" && m.text_enabled && !m.visual_enabled) {
       enterStage("navigation");
       const response = await safeFetch(`https://r.jina.ai/${m.url}`, policy, cfg.CAPTURE_TIMEOUT_MS);
-      finishTimings();
+      enterStage("text_extraction");
       const readerText = validateJinaReaderContent(response.body);
       const text = m.extraction_mode === "product_price"
         ? canonicalProductPrice(extractProductPrice(readerText))
-        : normalizeText(readerText, m);
+        : m.extraction_mode === "selected_text"
+          ? normalizeText(applySelectedTextRule(readableJinaLines(readerText).join("\n"), m.extraction_rule!), { ...m, ignore_text: [], ignore_case: false, normalize_whitespace: true })
+          : normalizeText(readerText, m);
+      finishTimings();
       return { text, screenshot: null, timings };
     }
     proxy = await browserProxy(policy);

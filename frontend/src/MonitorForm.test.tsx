@@ -47,7 +47,7 @@ it("HTML/API selection returns to text-only viewport configuration", async () =>
     screen.getByRole("switch", { name: "Visual detection" }),
   ).toBeDisabled();
 });
-it("offers Product Price extraction only with the optional Jina Reader source", async () => {
+it("offers focused Jina extraction modes and hides incompatible browser controls", async () => {
   const user = userEvent.setup();
   render(<Fixture />);
   await user.click(screen.getByText("Advanced settings", { exact: true }));
@@ -58,4 +58,9 @@ it("offers Product Price extraction only with the optional Jina Reader source", 
   await user.click(screen.getByLabelText("Extraction mode"));
   await user.click(screen.getByText("Product Price", { exact: true }));
   expect(current.getFieldValue("extraction_mode")).toBe("product_price");
+  expect(screen.queryByLabelText("Text extraction method")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Add browser step" })).not.toBeInTheDocument();
+  await user.click(screen.getByLabelText("Extraction mode"));
+  await user.click(screen.getByText("Selected Text / Value", { exact: true }));
+  expect(screen.getByRole("button", { name: "Select text from preview" })).toBeInTheDocument();
 });

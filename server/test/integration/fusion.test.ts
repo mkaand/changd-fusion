@@ -393,6 +393,38 @@ test("failed image comparison preserves baseline and latest capture", async () =
   assert.deepEqual(after, before);
 });
 
+test("selected text values keep chronological baselines and existing notification delivery semantics", async () => {
+  const selectedApp = createApp(pool, cfg, new EgressPolicy(async () => [{ address: "8.8.8.8", family: 4 }]));
+  const selectedAgent = request.agent(selectedApp), isolatedOther = request.agent(selectedApp);
+  await selectedAgent.post("/api/v1/login").set("X-Fusion-Request", "1").send({ email: "owner@example.com", password }).expect(200);
+  await isolatedOther.post("/api/v1/login").set("X-Fusion-Request", "1").send({ email: "other@example.com", password }).expect(200);
+  await selectedAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({ name: "Invalid selected text", url: "https://example.com", kind: "browser", text_enabled: true, visual_enabled: false, text_source: "jina", extraction_mode: "selected_text" }).expect(400);
+  const selectedChannel = (await selectedAgent.post("/api/v1/notifications").set("X-Fusion-Request", "1").send({ name: "Selected value channel", provider: "telegram", config: { token: "123456:" + "s".repeat(24), chat_id: "654321" } }).expect(201)).body;
+  const selected = (await selectedAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({
+    name: "Selected value history", url: "https://example.com/product", kind: "browser", text_enabled: true, visual_enabled: false,
+    text_source: "jina", extraction_mode: "selected_text", extraction_rule: { version: 1, kind: "bounded_context", before: "Availability\n", after: "\nDelivery", max_length: 80 },
+    channel_ids: [selectedChannel.id],
+  }).expect(201)).body;
+  assert.equal(selected.extraction_mode, "selected_text");
+  assert.equal(selected.extraction_rule.before, "Availability\n");
+  await isolatedOther.get(`/api/v1/jobs/${selected.id}`).expect(404);
+  const take = (text: string) => runMonitor(pool, cfg, selected.id, { force: true, capture: async () => ({ text, screenshot: null }) });
+  await take("In stock");
+  await take("In stock");
+  const beforeChange = (await pool.query("SELECT baseline_id FROM fusion_monitors WHERE id=$1", [selected.id])).rows[0].baseline_id;
+  await take("Back ordered");
+  const afterChange = (await pool.query("SELECT baseline_id FROM fusion_monitors WHERE id=$1", [selected.id])).rows[0].baseline_id;
+  assert.notEqual(afterChange, beforeChange);
+  await runMonitor(pool, cfg, selected.id, { force: true, capture: async () => { throw new Error("synthetic Reader match failure"); } });
+  assert.equal((await pool.query("SELECT baseline_id FROM fusion_monitors WHERE id=$1", [selected.id])).rows[0].baseline_id, afterChange, "failed extraction preserves the selected-value baseline");
+  const events = (await pool.query("SELECT status,text_changed FROM fusion_events WHERE monitor_id=$1 ORDER BY created_at", [selected.id])).rows;
+  assert.deepEqual(events.slice(0, 3).map((event) => event.status), ["baseline", "unchanged", "changed"]);
+  assert.equal(events.find((event) => event.status === "changed")?.text_changed, true);
+  assert.equal(Number((await pool.query("SELECT count(*) FROM fusion_outbox o JOIN fusion_events e ON e.id=o.event_id WHERE e.monitor_id=$1", [selected.id])).rows[0].count), 1);
+  await pool.query("UPDATE fusion_outbox o SET status='sent',delivered_at=now() FROM fusion_events e WHERE o.event_id=e.id AND e.monitor_id=$1", [selected.id]);
+  await pool.query("UPDATE fusion_monitors SET paused=true,next_run=now()+interval '1 day' WHERE id=$1", [selected.id]);
+});
+
 test("same-monitor concurrency is rejected and configuration mutations cannot race captures", async () => {
   let release!: () => void, entered!: () => void;
   const started = new Promise<void>((r) => (entered = r)),
@@ -2625,7 +2657,8 @@ test("visual region picker preview maps screenshot coordinates to a unique visib
   const initial = await pickerOwner.post(`/api/v1/jobs/${created.id}/region-preview`).set("X-Fusion-Request", "1").send({}).expect(200);
   assert.ok(initial.body.image.length > 100);
   assert.equal(initial.body.selection, null);
-  const picked = await pickerOwner.post(`/api/v1/jobs/${created.id}/region-preview`).set("X-Fusion-Request", "1").send({ x: 130, y: 150 }).expect(200);
+  const picked = await pickerOwner.post(`/api/v1/jobs/${created.id}/region-preview`).set("X-Fusion-Request", "1").send({ x: 130, y: 150 });
+  assert.equal(picked.status, 200, JSON.stringify(picked.body));
   assert.equal(picked.body.selection.selector, "#product");
   assert.equal((await pickerOwner.get(`/api/v1/jobs/${created.id}`).expect(200)).body.capture_selector, "");
   await pickerOther.post(`/api/v1/jobs/${created.id}/region-preview`).set("X-Fusion-Request", "1").send({}).expect(404);
@@ -2721,5 +2754,54 @@ test("region preview capacity includes initializing browsers and releases reserv
   );
   const recovered = await previewRegion(monitor("/success"), cfg, undefined, policy, { ownerId: "recovery-owner", retain: true });
   assert.match(recovered.session_id!, /^[0-9a-f-]{36}$/, "a failed initialization releases its reserved slot");
+  await closeRegionPreviewSessions();
+});
+
+test("region preview bounds slow resources, resolves deep DOM selectors and rejects screenshot drift", async (t) => {
+  await closeRegionPreviewSessions();
+  let documentRequests = 0;
+  const fixture = managedServer(t, async (req, res) => {
+    if (req.url === "/slow-font.woff2" || req.url === "/slow-image.png") {
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      res.writeHead(404).end();
+      return;
+    }
+    documentRequests++;
+    const drifting = req.url === "/drift";
+    const nested = `<div class="level"><div class="level"><div class="level"><div class="level"><div class="level"><div class="level"><div class="level"><span class="target">Requested content</span></div></div></div></div></div></div></div>`;
+    res.end(`<!doctype html><style>@font-face{font-family:slow;src:url('/slow-font.woff2')}body{margin:0;font-family:slow}.level{display:block;padding:3px}.target{display:block;width:160px;height:40px}#root,.other{width:240px;height:120px}#root{position:absolute;left:100px;top:120px}.other{position:absolute;left:500px;top:120px}</style><div id="root">${nested}</div><div class="other">${nested}</div><img src="/slow-image.png">${drifting ? `<script>setTimeout(()=>document.querySelector('#root').style.left='180px',2000)</script>` : ""}`);
+  });
+  await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
+  const port = (fixture.address() as AddressInfo).port;
+  const policy = new EgressPolicy(async () => [{ address: "127.0.0.1", family: 4 }], () => true, new Set([port]));
+  const monitorFor = (pathName: string) => ({ id: randomUUID(), url: `http://preview-performance.example:${port}${pathName}`, kind: "browser", text_enabled: false, visual_enabled: true, browser_steps: [] }) as any;
+  const { chromium: playwrightChromium } = await import("playwright");
+  const legacyStarted = performance.now();
+  const legacyBrowser = await playwrightChromium.launch({ headless: true, chromiumSandbox: true, executablePath: cfg.PLAYWRIGHT_EXECUTABLE_PATH });
+  const legacyPage = await legacyBrowser.newPage({ viewport: { width: 1280, height: 900 } });
+  await legacyPage.goto(`http://127.0.0.1:${port}/stable`, { waitUntil: "domcontentloaded" });
+  await legacyPage.screenshot({ type: "png" });
+  await legacyBrowser.close();
+  const legacyMs = performance.now() - legacyStarted;
+  const started = performance.now();
+  const preview = await previewRegion(monitorFor("/stable"), cfg, undefined, policy, { ownerId: "performance-owner", retain: true });
+  const coldMs = performance.now() - started;
+  assert.ok(coldMs < 5000, `bounded preview should finish before slow optional resources (${Math.round(coldMs)}ms)`);
+  assert.ok(coldMs < legacyMs, `optimized ${Math.round(coldMs)}ms should beat legacy screenshot wait ${Math.round(legacyMs)}ms`);
+  assert.ok(preview.timings?.rendering_preparation! <= 1800, JSON.stringify(preview.timings));
+  const requestsAfterPreview = documentRequests;
+  const reuseStarted = performance.now();
+  const selected = await previewRegion(monitorFor("/stable"), cfg, { x: 130, y: 150 }, policy, { ownerId: "performance-owner", id: preview.session_id, retain: true });
+  const reuseMs = performance.now() - reuseStarted;
+  assert.ok(reuseMs < 1000, "selection reuses the loaded DOM");
+  t.diagnostic(`preview timing ms: legacy=${Math.round(legacyMs)} optimized=${Math.round(coldMs)} reuse=${Math.round(reuseMs)} stages=${JSON.stringify(preview.timings)}`);
+  assert.equal(documentRequests, requestsAfterPreview);
+  assert.match(selected.selection?.selector ?? "", /^#root/);
+  assert.ok((selected.selection?.selector.match(/ > /g) ?? []).length > 6, "selector traversal is not limited to six levels");
+  assert.ok((selected.candidates?.length ?? 0) >= 2, "nested parent boundaries are available without another navigation");
+
+  const drift = await previewRegion(monitorFor("/drift"), cfg, undefined, policy, { ownerId: "drift-owner", retain: true });
+  await new Promise((resolve) => setTimeout(resolve, 2200));
+  await assert.rejects(previewRegion(monitorFor("/drift"), cfg, { x: 210, y: 150 }, policy, { ownerId: "drift-owner", id: drift.session_id, retain: true }), (error: any) => error.status === 409 && error.failure_code === "stale_preview");
   await closeRegionPreviewSessions();
 });
