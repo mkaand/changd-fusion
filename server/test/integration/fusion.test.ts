@@ -1251,7 +1251,7 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     assert.equal(await page.getByLabel("URL", { exact: true }).inputValue(), urlBeforePicker, "Back preserves unsaved editor values");
     await page.getByText("Advanced settings", { exact: true }).waitFor();
     await page.getByLabel("Screenshot capture mode", { exact: true }).waitFor();
-    assert.equal(await page.getByLabel("Screenshot capture mode", { exact: true }).locator("xpath=..").locator(".ant-select-selection-item").textContent(), "Selected element / region", "Back preserves selected capture mode");
+    assert.equal(await page.locator(".ant-form-item").filter({ has: page.locator('label[title="Screenshot capture mode"]') }).locator(".ant-select-selection-item").textContent(), "Selected element / region", "Back preserves selected capture mode");
     await page
       .getByRole("button", { name: "Add browser step", exact: true })
       .click();
