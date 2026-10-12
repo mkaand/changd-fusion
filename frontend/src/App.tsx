@@ -37,6 +37,7 @@ import { AllMyThemeControls } from "./AllMyThemeControls";
 import { Login } from "./Login";
 import { MonitorForm, defaults } from "./MonitorForm";
 import { RegionPicker } from "./RegionPicker";
+import { TextPicker } from "./TextPicker";
 import { MonitorUrlActions } from "./MonitorUrlActions";
 const History = lazy(() =>
   import("./History").then((m) => ({ default: m.History })),
@@ -207,12 +208,13 @@ export default function FusionApp() {
     }
   };
   const returnToEditor = () => {
-    if (location.pathname === "/jobs/editor/region-picker" && history.length > 1) history.back();
+    if (["/jobs/editor/region-picker", "/jobs/editor/text-picker"].includes(location.pathname) && history.length > 1) history.back();
     else { setPage("editor"); history.replaceState(null, "", "/jobs/editor"); }
   };
   useEffect(() => {
     const restore = () => {
       if (location.pathname === "/jobs/editor/region-picker" && open) setPage("region-picker");
+      else if (location.pathname === "/jobs/editor/text-picker" && open) setPage("text-picker");
       else if (location.pathname === "/jobs/editor" && open) setPage("editor");
       else if (location.pathname.startsWith("/jobs/editor")) { setPage("jobs"); history.replaceState(null, "", "/jobs"); }
       else if (location.pathname === "/jobs") setPage("jobs");
@@ -411,11 +413,13 @@ export default function FusionApp() {
             {page === "editor" && compactLayout && open ? (
               <section className="mobile-monitor-editor" aria-label={editing ? "Edit monitor" : "New monitor"}>
                 <div className="mobile-editor-header"><Button type="text" onClick={() => { setOpen(false); navigate("jobs"); }}>← Back</Button><Typography.Title level={3}>{editing ? "Edit monitor" : "New monitor"}</Typography.Title></div>
-                <MonitorForm form={form} channels={channels} monitorId={editing?.id} advancedOpen={advancedOpen} setAdvancedOpen={setAdvancedOpen} onOpenMobileRegion={() => { setPage("region-picker"); history.pushState(null, "", "/jobs/editor/region-picker"); }} />
+                <MonitorForm form={form} channels={channels} monitorId={editing?.id} advancedOpen={advancedOpen} setAdvancedOpen={setAdvancedOpen} onOpenMobileRegion={() => { setPage("region-picker"); history.pushState(null, "", "/jobs/editor/region-picker"); }} onOpenMobileText={() => { setPage("text-picker"); history.pushState(null, "", "/jobs/editor/text-picker"); }} />
                 <div className="mobile-editor-actions"><Button onClick={() => { setOpen(false); navigate("jobs"); }}>Cancel</Button><Button type="primary" loading={saving} onClick={save}>Save monitor</Button></div>
               </section>
             ) : page === "region-picker" && compactLayout && open ? (
               <RegionPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onSelect={(selector) => { form.setFieldsValue({ capture_selector_type: "css", capture_selector: selector }); returnToEditor(); }} onUseViewport={() => { form.setFieldsValue({ capture_mode: "viewport", capture_selector: "" }); returnToEditor(); }} onBackMobile={returnToEditor} />
+            ) : page === "text-picker" && compactLayout && open ? (
+              <TextPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onApply={(rule) => { form.setFieldsValue({ extraction_mode: "selected_text", extraction_rule: rule }); returnToEditor(); }} onBackMobile={returnToEditor} />
             ) : page === "timeline" ? (
               <Timeline monitors={monitors} />
             ) : page === "analytics" ? (

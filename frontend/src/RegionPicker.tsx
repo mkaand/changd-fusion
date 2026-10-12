@@ -1,10 +1,12 @@
 import { useEffect, useRef, useState } from "react";
-import { Alert, Button, Modal, Space, Spin, Typography } from "antd";
+import { Alert, Button, Modal, Spin, Typography } from "antd";
 import { ApiError, api } from "./api";
 const PREVIEW_REQUEST_TIMEOUT_MS = 125000;
 const MIN_ZOOM = .5, MAX_ZOOM = 3, ZOOM_STEP = .25;
 type Draft = { url?: string; kind?: string; visual_enabled?: boolean; browser_steps?: unknown[] };
-type Preview = { session_id?: string; image: string; width: number; height: number; selection?: { selector: string; x: number; y: number; width: number; height: number } | null };
+type Selection = { selector: string; label?: string; x: number; y: number; width: number; height: number };
+type Preview = { session_id?: string; image: string; width: number; height: number; selection?: Selection | null; candidates?: Selection[]; timings?: Record<string, number>; reused?: boolean };
+const progressLabels: Record<string, string> = { target_validation: "Connecting to website", proxy_initialization: "Preparing secure connection", browser_launch: "Starting secure browser", browser_context: "Preparing isolated page", navigation: "Loading page", dom_ready: "Page content loaded", rendering_preparation: "Preparing preview", screenshot: "Rendering screenshot", serialization: "Transferring preview", ready: "Preview ready" };
 export const clampZoom = (value: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
 export const previewPoint = (clientX: number, clientY: number, rect: Pick<DOMRect, "left" | "top" | "width" | "height">) => ({
   x: Math.round((clientX - rect.left) * 1280 / rect.width),
@@ -16,10 +18,12 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
   mobilePage?: boolean; onRequestMobile?: () => void; onBackMobile?: () => void;
 }) {
   const [compact, setCompact] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches);
-  const [open, setOpen] = useState(false), [preview, setPreview] = useState<Preview>(), [loading, setLoading] = useState(false), [error, setError] = useState<ApiError>(), [zoom, setZoom] = useState(1);
+  const [open, setOpen] = useState(false), [preview, setPreview] = useState<Preview>(), [loading, setLoading] = useState(false), [error, setError] = useState<ApiError>(), [zoom, setZoom] = useState(1), [progress, setProgress] = useState("target_validation"), [clientTiming, setClientTiming] = useState<{ transfer?: number; decode?: number }>({});
   const canvas = useRef<HTMLDivElement>(null);
   const previewImage = useRef<HTMLImageElement>(null);
   const requestPending = useRef(false);
+  const lastPoint = useRef<{ x: number; y: number } | undefined>(undefined);
+  const imageDecodeStarted = useRef(0);
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const gesture = useRef<{ primaryId: number | null; x: number; y: number; left: number; top: number; distance?: number; zoom: number; moved: boolean; multi: boolean }>({ primaryId: null, x: 0, y: 0, left: 0, top: 0, zoom: 1, moved: false, multi: false });
   useEffect(() => { const media = window.matchMedia("(max-width: 767px)"); const update = () => setCompact(media.matches); update(); media.addEventListener("change", update); return () => media.removeEventListener("change", update); }, []);
@@ -32,17 +36,23 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
     }
     requestPending.current = true;
     setLoading(true);
+    if (point) lastPoint.current = point;
+    else { lastPoint.current = undefined; setProgress("target_validation"); }
+    const previewRequestId = crypto.randomUUID();
+    const requestStarted = performance.now();
+    const progressTimer = point ? undefined : window.setInterval(() => { void api<{ stage: string }>(`/region-preview/status/${previewRequestId}`).then((value) => setProgress(value.stage)).catch(() => undefined); }, 1000);
     try {
       const result = await api("/region-preview", "POST", {
         session_id: point ? preview?.session_id : undefined,
+        preview_request_id: previewRequestId,
         monitor_id: monitorId,
         monitor: { url: draft.url, kind: "browser", visual_enabled: true, browser_steps: draft.browser_steps ?? [] },
         point,
       }, { timeoutMs: PREVIEW_REQUEST_TIMEOUT_MS }) as Preview;
-      setPreview(result); setError(undefined);
+      imageDecodeStarted.current = performance.now(); setPreview(result); setError(undefined); setProgress("ready"); setClientTiming({ transfer: Math.round(performance.now() - requestStarted - Object.values(result.timings ?? {}).reduce((sum, value) => sum + value, 0)) });
     } catch (cause) {
       setError(cause instanceof ApiError ? cause : new ApiError("Website preview failed. Retry, or use viewport capture instead."));
-    } finally { requestPending.current = false; setLoading(false); }
+    } finally { if (progressTimer) window.clearInterval(progressTimer); requestPending.current = false; setLoading(false); }
   };
   const changeZoom = (next: number) => setZoom(clampZoom(next));
   const pointerDown = (event: React.PointerEvent) => {
@@ -100,8 +110,8 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
   };
   const reset = () => { setZoom(1); if (canvas.current) { canvas.current.scrollLeft = 0; canvas.current.scrollTop = 0; } };
   const previewBody = <>
-    {error && <Alert type="error" title={error.message} description={error.failureCode ? `Preview: ${error.previewStage ?? "unknown"} · ${error.failureCode}${error.requestId ? ` · Request ${error.requestId}` : ""}` : undefined} action={<Space><Button onClick={() => void load()}>Retry</Button><Button onClick={() => { onUseViewport(); setOpen(false); }}>Use viewport instead</Button></Space>} />}
-    {loading && !preview && <div className="region-preview-loading" role="status" aria-label="Loading region preview"><Spin /></div>}
+    {error && <div className="region-preview-error" role="alert" aria-live="assertive"><strong>{error.message}</strong><p>{error.failureCode ? `${error.previewStage ?? "preview"} · ${error.failureCode}` : "The preview could not be completed."}</p><div className="region-preview-error-actions">{preview?.session_id && lastPoint.current && error.status !== 410 && error.failureCode !== "stale_preview" && <Button onClick={() => void load(lastPoint.current)}>Retry selection</Button>}<Button onClick={() => void load()}>Refresh preview</Button><Button onClick={() => { onUseViewport(); setOpen(false); }}>Use viewport instead</Button></div>{error.requestId && <details><summary>Technical details</summary><code>Request ID: {error.requestId}</code></details>}</div>}
+    {loading && !preview && <div className="region-preview-loading" role="status" aria-label="Loading region preview"><Spin /><strong>{progressLabels[progress] ?? "Preparing preview"}</strong></div>}
     {preview && <>
       <Typography.Paragraph>Use +/− or pinch to zoom. Drag to pan while zoomed, then click or tap a visible element. The preview uses the current form URL through the normal SSRF, TLS, and sandbox restrictions.</Typography.Paragraph>
       <div className="region-preview-toolbar" aria-label="Preview zoom controls">
@@ -113,11 +123,12 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
       </div>
       <div ref={canvas} className="region-preview-canvas" onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => finishPointer(event, false)} onPointerCancel={(event) => finishPointer(event, true)}>
         <div className="region-preview-stage" style={{ width: `${zoom * 100}%` }}>
-          <img ref={previewImage} draggable={false} className="region-preview" src={`data:image/png;base64,${preview.image}`} alt="Secure monitor preview" />
+          <img ref={previewImage} draggable={false} className="region-preview" src={`data:image/png;base64,${preview.image}`} alt="Secure monitor preview" onLoad={() => setClientTiming((value) => ({ ...value, decode: Math.round(performance.now() - imageDecodeStarted.current) }))} />
           {preview.selection && <span className="region-preview-highlight" aria-hidden="true" style={{ left: `${preview.selection.x / 1280 * 100}%`, top: `${preview.selection.y / 900 * 100}%`, width: `${preview.selection.width / 1280 * 100}%`, height: `${preview.selection.height / 900 * 100}%` }} />}
         </div>
       </div>
-      {preview.selection && <Alert type="success" title="Unique visible element selected" description={preview.selection.selector} action={<Button onClick={() => { onSelect(preview.selection!.selector); setOpen(false); }}>Use selector</Button>} />}
+      {preview.timings && <Typography.Text type="secondary" className="region-preview-timing">Preview ready · server {Object.values(preview.timings).reduce((sum, value) => sum + value, 0)} ms{clientTiming.transfer !== undefined ? ` · transfer ${Math.max(0, clientTiming.transfer)} ms` : ""}{clientTiming.decode !== undefined ? ` · display ${clientTiming.decode} ms` : ""}</Typography.Text>}
+      {preview.selection && <div className="region-preview-selection"><strong>Selected visible element</strong>{(preview.candidates?.length ?? 0) > 1 && <div className="region-preview-candidates" aria-label="Element boundary choices">{preview.candidates!.map((candidate, index) => <Button key={candidate.selector} type={candidate.selector === preview.selection?.selector ? "primary" : "default"} onClick={() => setPreview((current) => current ? { ...current, selection: candidate } : current)}>{candidate.label || (index ? `Parent ${index}` : "Exact element")}</Button>)}</div>}<code>{preview.selection.selector}</code><Button type="primary" onClick={() => { onSelect(preview.selection!.selector); setOpen(false); }}>Use selector</Button></div>}
     </>}
   </>;
   useEffect(() => { if (mobilePage) void load(); }, [mobilePage]);

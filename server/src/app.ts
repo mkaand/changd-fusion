@@ -18,7 +18,8 @@ import { Storage } from "./storage.js";
 import { stepsSchema } from "./browser-steps.js";
 import { vaultSchema, sealValues } from "./vault.js";
 import { randomUUID } from "node:crypto";
-import { previewRegion, type RegionPreviewFailure } from "./region-picker.js";
+import { previewRegion, type PreviewStage, type RegionPreviewFailure } from "./region-picker.js";
+import { previewJinaText } from "./text-picker.js";
 import pino from "pino";
 import { Decimal } from "decimal.js";
 import path from "node:path";
@@ -43,7 +44,12 @@ const monitorInput = z
     text_enabled: z.boolean().default(true),
     text_direction: z.enum(["added", "removed", "both"]).default("both"),
     text_source: z.enum(["direct", "jina"]).default("direct"),
-    extraction_mode: z.enum(["full_text", "product_price"]).default("full_text"),
+    extraction_mode: z.enum(["full_text", "product_price", "selected_text"]).default("full_text"),
+    extraction_rule: z.object({
+      version: z.literal(1), kind: z.literal("bounded_context"),
+      before: z.string().max(160), after: z.string().max(160),
+      max_length: z.number().int().min(1).max(500),
+    }).strict().nullable().default(null),
     visual_enabled: z.boolean().default(false),
     selector: z.string().max(1000).default(""),
     selector_type: z.enum(["css", "xpath"]).default("css"),
@@ -84,7 +90,7 @@ const monitorInput = z
   })
   .refine(
     (m) =>
-      !m.browser_steps.some((s) => s.action === "fill_private") ||
+      m.text_source === "jina" || !m.browser_steps.some((s) => s.action === "fill_private") ||
       (!m.visual_enabled && new URL(m.url).protocol === "https:"),
     { message: "Private steps require HTTPS text-only capture" },
   )
@@ -94,11 +100,11 @@ const monitorInput = z
   .refine((m) => m.text_source === "direct" || (m.kind === "browser" && m.text_enabled && !m.visual_enabled), {
     message: "Jina Reader is available only for text-only Browser monitors",
   })
-  .refine((m) => m.text_source === "direct" || (!m.selector && m.ignore_selectors.length === 0 && m.browser_steps.length === 0), {
-    message: "Jina Reader does not support selectors, dynamic-region removal, or Browser Steps",
-  })
   .refine((m) => m.extraction_mode === "full_text" || m.text_source === "jina", {
-    message: "Product Price extraction requires Jina Reader",
+    message: "Special extraction modes require Jina Reader",
+  })
+  .refine((m) => m.extraction_mode !== "selected_text" || !!m.extraction_rule, {
+    message: "Selected Text extraction requires a validated rule",
   })
   .refine(
     (m) => m.kind === "browser" || (m.text_enabled && !m.visual_enabled),
@@ -129,6 +135,7 @@ const credentials = z
 const regionPreviewInput = z
   .object({
     session_id: uuid.optional(),
+    preview_request_id: uuid.optional(),
     monitor_id: uuid.optional(),
     monitor: z
       .object({
@@ -143,6 +150,10 @@ const regionPreviewInput = z
       .optional(),
   })
   .strict();
+const textPreviewInput = z.object({
+  session_id: uuid.optional(), monitor_id: uuid.optional(), url: z.string().url().max(2048).optional(),
+  line_index: z.number().int().min(0).max(1999).optional(), selected_value: z.string().min(1).max(500).optional(),
+}).strict();
 const channelInput = z
   .object({
     name: z.string().trim().min(1).max(100),
@@ -164,6 +175,14 @@ export function createApp(
 ) {
   const app = express();
   const log = pino({ level: cfg.LOG_LEVEL });
+  const previewProgress = new Map<string, { ownerId: string; stage: PreviewStage; updatedAt: number }>();
+  const updatePreviewProgress = (id: string, ownerId: string, stage: PreviewStage) => {
+    if (previewProgress.size > 100) for (const [key, value] of previewProgress) if (Date.now() - value.updatedAt > 120_000) previewProgress.delete(key);
+    const existing = previewProgress.get(id);
+    if (existing && existing.ownerId !== ownerId) return;
+    if (!existing && previewProgress.size >= 256) previewProgress.delete(previewProgress.keys().next().value!);
+    previewProgress.set(id, { ownerId, stage, updatedAt: Date.now() });
+  };
   app.disable("x-powered-by");
   app.use(helmet());
   if (options.allowedHosts) {
@@ -524,16 +543,21 @@ export function createApp(
       channel_ids: channels.rows.map((r) => r.channel_id),
     });
   });
-  const runRegionPreview = async (req: Request, res: Response, monitor: any, point?: { x: number; y: number }, sessionId?: string, useSession = false) => {
+  const runRegionPreview = async (req: Request, res: Response, monitor: any, point?: { x: number; y: number }, sessionId?: string, useSession = false, previewRequestId?: string) => {
     const started = performance.now();
+    const cancellation = new AbortController();
+    const cancelled = () => { if (!res.writableEnded) cancellation.abort(); };
+    req.once("aborted", cancelled);
+    res.once("close", cancelled);
     try {
       const preview = await previewRegion(
         monitor,
         cfg,
         point,
         policy,
-        { ownerId: res.locals.user.user_id, id: useSession ? sessionId : undefined, retain: useSession },
+        { ownerId: res.locals.user.user_id, id: useSession ? sessionId : undefined, retain: useSession, signal: cancellation.signal, progress: previewRequestId ? (stage) => updatePreviewProgress(previewRequestId, res.locals.user.user_id, stage) : undefined },
       );
+      if (previewRequestId) updatePreviewProgress(previewRequestId, res.locals.user.user_id, "ready");
       res.json(preview);
     } catch (error) {
       const failure = error as RegionPreviewFailure;
@@ -547,12 +571,23 @@ export function createApp(
         failure_code: failure.failure_code ?? "unknown",
         duration_ms: duration,
       });
-    }
+    } finally { req.off("aborted", cancelled); res.off("close", cancelled); }
   };
   app.post("/api/v1/region-preview", async (req, res) => {
     const body = regionPreviewInput.parse(req.body);
     if (body.monitor_id) await owner(body.monitor_id, res.locals.user.user_id);
-    await runRegionPreview(req, res, { ...body.monitor, id: body.monitor_id ?? "preview", browser_steps: body.monitor.browser_steps }, body.point, body.session_id, true);
+    await runRegionPreview(req, res, { ...body.monitor, id: body.monitor_id ?? "preview", browser_steps: body.monitor.browser_steps }, body.point, body.session_id, true, body.preview_request_id);
+  });
+  app.get("/api/v1/region-preview/status/:id", (req, res) => {
+    const id = uuid.parse(req.params.id);
+    const progress = previewProgress.get(id);
+    if (!progress || progress.ownerId !== res.locals.user.user_id || Date.now() - progress.updatedAt > 120_000) throw new HttpError(404, "Preview progress is unavailable.");
+    res.json({ stage: progress.stage });
+  });
+  app.post("/api/v1/text-preview", async (req, res) => {
+    const body = textPreviewInput.parse(req.body);
+    if (body.monitor_id) await owner(body.monitor_id, res.locals.user.user_id);
+    res.json(await previewJinaText({ ownerId: res.locals.user.user_id, url: body.url, sessionId: body.session_id, lineIndex: body.line_index, selectedValue: body.selected_value }, cfg, policy));
   });
   // Retained for already released clients. New and edited forms use the draft-aware endpoint above.
   app.post("/api/v1/jobs/:id/region-preview", async (req, res) => {
