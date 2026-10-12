@@ -1225,11 +1225,11 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
       })
       .screenshot({ path: path.join(output, "dimensions-mobile.png") });
     await page.getByRole("button", { name: "Edit", exact: true }).click();
-    const mobileEditor = page.getByRole("dialog", { name: "Edit monitor" });
+    const mobileEditor = page.locator('section[aria-label="Edit monitor"]');
     await mobileEditor.waitFor();
     assert.equal(await page.getByLabel("Screenshot capture mode", { exact: true }).count(), 0, "advanced controls start collapsed");
     await mobileEditor.locator(".monitor-editor-form").waitFor();
-    await page.getByRole("button", { name: "Save monitor", exact: true }).waitFor();
+    await mobileEditor.getByRole("button", { name: "Save monitor", exact: true }).waitFor();
     const editorBounds = await mobileEditor.boundingBox();
     assert.ok(editorBounds && editorBounds.width <= 390, "mobile editor fits the Safari-sized viewport");
     await page.getByText("Advanced settings", { exact: true }).click();
@@ -2166,7 +2166,7 @@ test("private preview seed migrates all versions, is idempotent, preserves chang
     assert.equal(
       (await seededPool.query("SELECT count(*) FROM fusion_migrations")).rows[0]
         .count,
-      "6",
+      String(expectedMigrationCount),
     );
     assert.equal(
       (await seededPool.query("SELECT count(*) FROM users")).rows[0].count,
