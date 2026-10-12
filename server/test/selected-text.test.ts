@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applySelectedTextRule, generateSelectedTextRule, readableJinaLines } from "../src/selected-text.js";
+import { applySelectedTextRule, generateSelectedTextRule, readableJinaLines, readableJinaPreview } from "../src/selected-text.js";
 
 test("selected text rules track arbitrary changing values without hardcoding the original", () => {
   const first = readableJinaLines("GMKtec G3 Plus\nPrice today\n32.999,00 TL\nSeller: Teknobiyotik");
@@ -8,6 +8,13 @@ test("selected text rules track arbitrary changing values without hardcoding the
   assert.equal(generated.extracted, "32.999,00 TL");
   const changed = readableJinaLines("GMKtec G3 Plus\nPrice today\n31.499,00 TL\nSeller: Teknobiyotik").join("\n");
   assert.equal(applySelectedTextRule(changed, generated.rule), "31.499,00 TL");
+});
+
+test("Reader preview reports its bounded line window instead of silently hiding truncation", () => {
+  const preview = readableJinaPreview(Array.from({ length: 2001 }, (_, index) => `Line ${index}`).join("\n"));
+  assert.equal(preview.lines.length, 2000);
+  assert.equal(preview.totalLines, 2001);
+  assert.equal(preview.truncated, true);
 });
 
 test("selected text rules require one target occurrence even when duplicate values are identical", () => {

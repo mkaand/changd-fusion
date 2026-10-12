@@ -1,5 +1,6 @@
-import { HttpError } from "./errors.js";
+import { HttpError, type CaptureTimings } from "./errors.js";
 export class AttentionFailure extends HttpError {
+  timings?: CaptureTimings;
   constructor(
     public state: "authentication_required" | "challenge_detected",
     public confidence: "confirmed" | "heuristic",

@@ -3,7 +3,7 @@ import type { Config } from "./config.js";
 import { EgressPolicy, safeFetch } from "./egress.js";
 import { HttpError } from "./errors.js";
 import { validateJinaReaderContent } from "./capture.js";
-import { generateSelectedTextRule, readableJinaLines } from "./selected-text.js";
+import { generateSelectedTextRule, readableJinaPreview } from "./selected-text.js";
 
 type TextSession = { id: string; ownerId: string; expiresAt: number; lines: string[] };
 const TTL_MS = 90_000;
@@ -39,11 +39,12 @@ export async function previewJinaText(input: {
   initializing++;
   try {
     const response = await safeFetch(`https://r.jina.ai/${input.url}`, policy, cfg.CAPTURE_TIMEOUT_MS);
-    const lines = readableJinaLines(validateJinaReaderContent(response.body));
+    const readable = readableJinaPreview(validateJinaReaderContent(response.body));
+    const lines = readable.lines;
     if (!lines.length) throw new HttpError(422, "Reader returned no selectable text.");
     const session: TextSession = { id: randomUUID(), ownerId: input.ownerId, expiresAt: Date.now() + TTL_MS, lines };
     sessions.set(session.id, session);
-    return { session_id: session.id, lines };
+    return { session_id: session.id, lines, truncated: readable.truncated, total_line_count: readable.totalLines };
   } finally { initializing--; }
 }
 

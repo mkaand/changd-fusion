@@ -11,11 +11,14 @@ export type SelectedTextRule = {
 const MAX_ANCHOR = 160;
 const MAX_VALUE = 500;
 
-export function readableJinaLines(text: string) {
+export function readableJinaPreview(text: string) {
   const normalized = text.replace(/\r\n?/g, "\n").replace(/[\t ]+/g, " ");
   if (normalized.length > 200_000) throw new HttpError(422, "Reader content is too large to preview safely.");
-  return normalized.split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 2000);
+  const available = normalized.split("\n").map((line) => line.trim()).filter(Boolean);
+  return { lines: available.slice(0, 2000), truncated: available.length > 2000, totalLines: available.length };
 }
+
+export function readableJinaLines(text: string) { return readableJinaPreview(text).lines; }
 
 function occurrences(haystack: string, needle: string) {
   const result: number[] = [];

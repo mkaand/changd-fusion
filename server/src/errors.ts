@@ -9,6 +9,7 @@ export class HttpError extends Error {
 
 export const captureStages = [
   "target_validation",
+  "proxy_initialization",
   "browser_launch",
   "browser_context",
   "navigation",
@@ -17,6 +18,13 @@ export const captureStages = [
   "font_wait",
   "text_extraction",
   "screenshot",
+  "selector_lookup",
+  "visibility_validation",
+  "scroll_into_view",
+  "element_stability",
+  "screenshot_rasterization",
+  "image_validation",
+  "cleanup",
   "comparison",
   "storage",
   "database",
@@ -36,12 +44,19 @@ export const captureFailureCodes = [
   "browser_crashed",
   "navigation_failed",
   "selector_failed",
+  "selector_missing",
+  "selector_ambiguous",
+  "element_not_visible",
+  "element_unstable",
+  "screenshot_timeout",
+  "capacity_busy",
   "resource_limit",
   "capture_failed",
   "internal_error",
   "unknown",
 ] as const;
 export type CaptureFailureCode = (typeof captureFailureCodes)[number];
+export type CaptureTimings = Partial<Record<CaptureStage, number>>;
 
 export class CaptureFailure extends Error {
   constructor(
@@ -49,6 +64,7 @@ export class CaptureFailure extends Error {
     public code: CaptureFailureCode,
     message = "Website capture failed. Check monitor diagnostics.",
     public httpStatus: number | null = null,
+    public timings?: CaptureTimings,
   ) {
     super(message);
   }
@@ -87,7 +103,7 @@ export function captureFailure(
   const name = error instanceof Error ? error.name : "";
   const message = error instanceof Error ? error.message : "";
   if (/timeout/i.test(name) || /timeout/i.test(message))
-    return new CaptureFailure(stage, "timeout");
+    return new CaptureFailure(stage, stage === "screenshot_rasterization" ? "screenshot_timeout" : "timeout");
   if (/dns|enotfound|getaddrinfo/i.test(message))
     return new CaptureFailure(stage, "dns_failure");
   if (/tls|certificate|ssl/i.test(message))
@@ -100,7 +116,7 @@ export function captureFailure(
   if (stage === "browser_steps") return new CaptureFailure(stage, "capture_failed");
   if (stage === "text_extraction" && /large|limit/i.test(message))
     return new CaptureFailure(stage, "resource_limit");
-  if (stage === "screenshot" && /limit|dimension|pixel/i.test(message))
+  if ((stage === "screenshot" || stage === "image_validation") && /limit|dimension|pixel/i.test(message))
     return new CaptureFailure(stage, "resource_limit");
   return new CaptureFailure(stage, "unknown");
 }

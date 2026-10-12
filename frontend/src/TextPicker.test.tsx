@@ -21,3 +21,17 @@ it("shows safe Reader text and applies a server-validated contextual rule", asyn
   expect(apply).toHaveBeenCalledWith(rule);
   await waitFor(() => expect(api).toHaveBeenLastCalledWith("/text-preview", "POST", { session_id: "session", line_index: 1, selected_value: "32.999,00 TL" }));
 });
+
+it("searches Turkish Reader text immediately while preserving original line indexes", async () => {
+  vi.mocked(api).mockResolvedValueOnce({ session_id: "session", lines: ["İşlemci: Intel N150", "Stokta yok", "İstanbul teslimat"], truncated: true });
+  render(<TextPicker getDraft={() => ({ url: "https://example.com", text_source: "jina" })} onApply={vi.fn()} />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Select text from preview" }));
+  const search = await screen.findByRole("searchbox", { name: "Search Reader output" });
+  await user.type(search, "istanbul");
+  expect(screen.getByText("1 matching line · Preview is limited to the first 2,000 safe lines")).toBeInTheDocument();
+  expect(screen.getByRole("listitem")).toHaveTextContent("İstanbul teslimat");
+  await user.click(screen.getByRole("listitem"));
+  await user.click(screen.getByRole("button", { name: "Generate extraction rule" }));
+  await waitFor(() => expect(api).toHaveBeenLastCalledWith("/text-preview", "POST", { session_id: "session", line_index: 2, selected_value: "İstanbul teslimat" }));
+});

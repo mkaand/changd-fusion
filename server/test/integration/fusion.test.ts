@@ -26,6 +26,7 @@ import { seedPreview } from "../../src/preview-seed.js";
 import { compareVisual } from "../../src/comparison.js";
 import { telegramSummary } from "../../src/notifications.js";
 import { closeRegionPreviewSessions, previewRegion } from "../../src/region-picker.js";
+import { acquireChromiumLease } from "../../src/chromium-capacity.js";
 const expectedMigrationCount = (await readdir(path.resolve(import.meta.dirname, "../../migrations"))).filter((file) => /^\d+_.+\.sql$/.test(file)).length;
 const dbURL = new URL(process.env.TEST_DATABASE_URL ?? "");
 assert.ok(
@@ -1521,7 +1522,7 @@ test("capture modes use one browser page for text and image; limits, selector er
         cfg,
         policy,
       ),
-      /exactly one element/,
+      (error: any) => error.stage === "selector_lookup" && error.code === "selector_missing",
     );
     const before = (await ownerAgent.get(`/api/v1/jobs/${monitor.id}`)).body;
     await runMonitor(pool, cfg, monitor.id, {
@@ -1537,6 +1538,8 @@ test("capture modes use one browser page for text and image; limits, selector er
     assert.equal(after.baseline_id, before.baseline_id);
     assert.equal(after.latest_capture_id, before.latest_capture_id);
     assert.match(after.last_error, /image dimension\/pixel limits/);
+    assert.equal(typeof after.last_capture_timings?.screenshot, "number");
+    assert.ok(!JSON.stringify(after.last_capture_timings).includes("fixture.test"));
     const started = Date.now();
     await assert.rejects(
       capture(
@@ -2751,7 +2754,7 @@ test("region preview capacity includes initializing browsers and releases reserv
   assert.equal(blockedRequests, 4, "four admitted previews can reach navigation concurrently");
   await assert.rejects(
     previewRegion(monitor("/blocked"), cfg, undefined, policy, { ownerId: "capacity-owner-excess", retain: true }),
-    (error: any) => error.failure_code === "resource_limit" && error.status === 429,
+    (error: any) => error.failure_code === "capacity_busy" && error.status === 429,
   );
   assert.equal(blockedRequests, 4, "the rejected preview never launches Chromium or reaches the target");
   releaseBlocked();
@@ -2769,6 +2772,22 @@ test("region preview capacity includes initializing browsers and releases reserv
   await closeRegionPreviewSessions();
 });
 
+test("PostgreSQL Chromium admission coordinates preview and scheduled capture leases", async () => {
+  const preview = await acquireChromiumLease(pool, { workload: "preview", slots: 1 });
+  assert.ok(preview, "first preview reserves the only cross-process Chromium slot");
+  assert.equal(await acquireChromiumLease(pool, { workload: "preview", slots: 1 }), null, "excess preview is rejected before browser launch");
+  const waitingCapture = acquireChromiumLease(pool, { workload: "capture", slots: 1, waitMs: 1000 });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(await acquireChromiumLease(pool, { workload: "preview", slots: 1 }), null, "a waiting scheduled capture has priority over a new preview");
+  await preview!.release();
+  const captureLease = await waitingCapture;
+  assert.ok(captureLease, "scheduled capture acquires capacity after the resident preview releases it");
+  await captureLease!.release();
+  const recovered = await acquireChromiumLease(pool, { workload: "preview", slots: 1 });
+  assert.ok(recovered, "capacity is reusable after cancellation/cleanup");
+  await recovered!.release();
+});
+
 test("region preview bounds slow resources, resolves deep DOM selectors and rejects screenshot drift", async (t) => {
   await closeRegionPreviewSessions();
   let documentRequests = 0;
@@ -2780,8 +2799,9 @@ test("region preview bounds slow resources, resolves deep DOM selectors and reje
     }
     documentRequests++;
     const drifting = req.url === "/drift";
+    const ancestorDrift = req.url === "/ancestor-drift";
     const nested = `<div class="level"><div class="level"><div class="level"><div class="level"><div class="level"><div class="level"><div class="level"><span class="target">Requested content</span></div></div></div></div></div></div></div>`;
-    res.end(`<!doctype html><style>@font-face{font-family:slow;src:url('/slow-font.woff2')}body{margin:0;font-family:slow}.level{display:block;padding:3px}.target{display:block;width:160px;height:40px}#root,.other{width:240px;height:120px}#root{position:absolute;left:100px;top:120px}.other{position:absolute;left:500px;top:120px}</style><div id="root">${nested}</div><div class="other">${nested}</div><img src="/slow-image.png">${drifting ? `<script>setTimeout(()=>document.querySelector('#root').style.left='180px',2000)</script>` : ""}`);
+    res.end(`<!doctype html><style>@font-face{font-family:slow;src:url('/slow-font.woff2')}body{margin:0;font-family:slow}.level{display:block;padding:3px}.target{display:block;width:160px;height:40px}#root,.other{width:240px;height:120px}#root{position:absolute;left:100px;top:120px}.other{position:absolute;left:500px;top:120px}</style><div id="root">${nested}</div><div class="other">${nested}</div><img src="/slow-image.png">${drifting ? `<script>setTimeout(()=>document.querySelector('#root').style.left='180px',2000)</script>` : ""}${ancestorDrift ? `<script>setTimeout(()=>document.querySelector('#root').style.width='400px',2000)</script>` : ""}`);
   });
   await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
   const port = (fixture.address() as AddressInfo).port;
@@ -2815,6 +2835,14 @@ test("region preview bounds slow resources, resolves deep DOM selectors and reje
   const drift = await previewRegion(monitorFor("/drift"), cfg, undefined, policy, { ownerId: "drift-owner", retain: true });
   await new Promise((resolve) => setTimeout(resolve, 2200));
   await assert.rejects(previewRegion(monitorFor("/drift"), cfg, { x: 210, y: 150 }, policy, { ownerId: "drift-owner", id: drift.session_id, retain: true }), (error: any) => error.status === 409 && error.failure_code === "stale_preview");
+  const requestsBeforeRefresh = documentRequests;
+  const refreshed = await previewRegion(monitorFor("/drift"), cfg, { x: 210, y: 150 }, policy, { ownerId: "drift-owner", id: drift.session_id, retain: true, refresh: true });
+  assert.ok(refreshed.selection?.selector, "stale selection can refresh screenshot and DOM metadata in the existing session");
+  assert.equal(documentRequests, requestsBeforeRefresh, "selection refresh does not navigate the target again");
+  const ancestor = await previewRegion(monitorFor("/ancestor-drift"), cfg, undefined, policy, { ownerId: "ancestor-drift-owner", retain: true });
+  await new Promise((resolve) => setTimeout(resolve, 2200));
+  const stillAccurate = await previewRegion(monitorFor("/ancestor-drift"), cfg, { x: 130, y: 150 }, policy, { ownerId: "ancestor-drift-owner", id: ancestor.session_id, retain: true });
+  assert.ok(stillAccurate.selection?.selector, "unrelated ancestor resizing does not invalidate the unchanged exact target");
   await closeRegionPreviewSessions();
 });
 

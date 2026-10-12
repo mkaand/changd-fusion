@@ -1,4 +1,4 @@
-import { chromium, type Browser, type Locator } from "playwright";
+import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright";
 import { EgressPolicy, browserProxy, safeFetch } from "./egress.js";
 import { normalizeText } from "./comparison.js";
 import { locate, runSteps, type BrowserStep } from "./browser-steps.js";
@@ -7,6 +7,7 @@ import {
   CaptureFailure,
   captureFailure,
   type CaptureStage,
+  type CaptureTimings,
   HttpError,
 } from "./errors.js";
 import { checkDimensions, pngDimensions } from "./image.js";
@@ -59,9 +60,42 @@ export type Capture = {
   text: string | null;
   screenshot: Buffer | null;
   warning?: string;
-  // In-memory timing only. It is intentionally not persisted with captures.
-  timings?: Partial<Record<CaptureStage, number>>;
+  // Numeric-only stage timings; the engine persists this bounded diagnostic
+  // map without URLs, selectors, page content, or raw provider errors.
+  timings?: CaptureTimings;
 };
+
+async function cdpScreenshot(context: BrowserContext, page: Page, clip?: { x: number; y: number; width: number; height: number }) {
+  const cdp = await context.newCDPSession(page);
+  try {
+    const captured = await cdp.send("Page.captureScreenshot", {
+      format: "png",
+      fromSurface: true,
+      captureBeyondViewport: Boolean(clip),
+      ...(clip ? { clip: { ...clip, scale: 1 } } : {}),
+    });
+    return Buffer.from(captured.data, "base64");
+  } finally { await cdp.detach().catch(() => {}); }
+}
+
+const boxIsClose = (a: { x: number; y: number; width: number; height: number }, b: { x: number; y: number; width: number; height: number }) =>
+  Math.abs(a.x - b.x) <= 1 && Math.abs(a.y - b.y) <= 1 && Math.abs(a.width - b.width) <= 1 && Math.abs(a.height - b.height) <= 1;
+
+export async function stableElementBounds(
+  sample: () => Promise<{ x: number; y: number; width: number; height: number } | null>,
+  nextFrame: () => Promise<void>,
+  deadline: number,
+) {
+  let previous = await sample(), bounds = previous;
+  for (let attempt = 0; attempt < 4 && Date.now() < deadline; attempt++) {
+    await nextFrame();
+    const current = await sample();
+    if (previous && current && boxIsClose(previous, current)) return current;
+    previous = current;
+    bounds = current;
+  }
+  return bounds ? null : undefined;
+}
 
 // This runs only as part of our fixed capture implementation; monitors cannot
 // provide arbitrary JavaScript. It preserves DOM order without mutating the
@@ -141,15 +175,15 @@ export async function capture(
 ): Promise<Capture> {
   const deadline = Date.now() + cfg.CAPTURE_TIMEOUT_MS;
   let stage: CaptureStage = "target_validation";
-  const timings: Partial<Record<CaptureStage, number>> = {};
+  const timings: CaptureTimings = {};
   let stageStarted = performance.now();
   const enterStage = (next: CaptureStage) => {
-    timings[stage] = (timings[stage] ?? 0) + performance.now() - stageStarted;
+    timings[stage] = Math.round((timings[stage] ?? 0) + performance.now() - stageStarted);
     stage = next;
     stageStarted = performance.now();
   };
   const finishTimings = () => {
-    timings[stage] = (timings[stage] ?? 0) + performance.now() - stageStarted;
+    timings[stage] = Math.round((timings[stage] ?? 0) + performance.now() - stageStarted);
   };
   let proxy: Awaited<ReturnType<typeof browserProxy>> | undefined;
   let browser: Browser | undefined;
@@ -192,6 +226,7 @@ export async function capture(
       finishTimings();
       return { text, screenshot: null, timings };
     }
+    enterStage("proxy_initialization");
     proxy = await browserProxy(policy);
     enterStage("browser_launch");
     browser = await chromium.launch({
@@ -218,19 +253,16 @@ export async function capture(
       void context.close().catch(() => {});
     }, Math.max(1, deadline - Date.now()));
     context.setDefaultTimeout(Math.min(cfg.CAPTURE_TIMEOUT_MS, 10000));
-    await context.route("**/*", async (route) => {
+    // The pinned-IP proxy validates every redirect and subresource at socket
+    // connection time. Keep only the stricter same-origin rule needed by
+    // private workflows; duplicating DNS validation for every normal request
+    // adds avoidable navigation latency without strengthening egress safety.
+    if (privateWorkflow) await context.route("**/*", async (route) => {
       try {
         const requested = route.request().url();
-        if (
-          privateWorkflow &&
-          new URL(requested).origin !== new URL(m.url).origin
-        )
-          throw Error();
-        await policy.target(requested);
+        if (new URL(requested).origin !== new URL(m.url).origin) throw Error();
         await route.continue();
-      } catch {
-        await route.abort("blockedbyclient");
-      }
+      } catch { await route.abort("blockedbyclient"); }
     });
     await context.routeWebSocket("**/*", (ws) => ws.close());
     enterStage("navigation");
@@ -327,35 +359,44 @@ export async function capture(
         ),
       };
       if (m.capture_mode === "element") {
+        enterStage("selector_lookup");
         const region = locate(
           page,
           m.capture_selector,
           m.capture_selector_type,
         );
-        if ((await region.count()) !== 1)
-          throw new HttpError(
-            422,
-            "Capture selector must match exactly one element",
-          );
+        const count = await region.count();
+        if (count === 0) throw new CaptureFailure("selector_lookup", "selector_missing", "Capture selector matched no element.");
+        if (count !== 1) throw new CaptureFailure("selector_lookup", "selector_ambiguous", "Capture selector must match exactly one element.");
+        enterStage("visibility_validation");
         if (!(await region.isVisible()))
-          throw new HttpError(422, "Capture region is not visible");
+          throw new CaptureFailure("visibility_validation", "element_not_visible", "Capture region is not visible.");
+        enterStage("scroll_into_view");
         await region.scrollIntoViewIfNeeded();
         // locator.screenshot performs another potentially long actionability
         // wait. Resolve a stable, validated box and use the bounded page
         // screenshot path shared by the other capture modes instead.
-        const boxes = await Promise.all([
-          region.boundingBox(),
-          page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))).then(() => region.boundingBox()),
-        ]);
-        const bounds = boxes[1];
-        if (!bounds) throw new HttpError(422, "Capture region is not visible");
-        if (!boxes[0] || Math.abs(boxes[0].x - bounds.x) > 1 || Math.abs(boxes[0].y - bounds.y) > 1 || Math.abs(boxes[0].width - bounds.width) > 1 || Math.abs(boxes[0].height - bounds.height) > 1)
-          throw new HttpError(422, "Capture region is still moving. Retry after the page settles.");
+        enterStage("element_stability");
+        // Sequential samples avoid the overlapping measurements that rejected
+        // harmless single-frame layout movement. The window remains strictly
+        // bounded and still requires two consecutive equivalent boxes.
+        const bounds = await stableElementBounds(
+          () => region.boundingBox(),
+          () => page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))),
+          deadline,
+        );
+        if (bounds === undefined) throw new CaptureFailure("element_stability", "element_not_visible", "Capture region is not visible.");
+        if (bounds === null) throw new CaptureFailure("element_stability", "element_unstable", "Capture region did not become stable in the bounded sampling window.");
         checkDimensions(
           { width: Math.ceil(bounds.width), height: Math.ceil(bounds.height) },
           limits,
         );
-        screenshot = await page.screenshot({ ...options, clip: bounds });
+        enterStage("screenshot_rasterization");
+        if (m.mask_selectors.length) screenshot = await page.screenshot({ ...options, clip: bounds });
+        else {
+          const scroll = await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
+          screenshot = await cdpScreenshot(context, page, { x: bounds.x + scroll.x, y: bounds.y + scroll.y, width: bounds.width, height: bounds.height });
+        }
       } else {
         const size =
           m.capture_mode === "full_page"
@@ -373,11 +414,12 @@ export async function capture(
               }))
             : { width: 1280, height: 900 };
         checkDimensions(size, limits);
-        screenshot = await page.screenshot({
-          ...options,
-          fullPage: m.capture_mode === "full_page",
-        });
+        enterStage("screenshot_rasterization");
+        screenshot = m.capture_mode === "viewport" && !m.mask_selectors.length
+          ? await cdpScreenshot(context, page)
+          : await page.screenshot({ ...options, fullPage: m.capture_mode === "full_page" });
       }
+      enterStage("image_validation");
       pngDimensions(screenshot, limits);
     }
     if (text && text.length > 2_000_000)
@@ -386,16 +428,20 @@ export async function capture(
     return { text, screenshot, warning, timings };
   } catch (error) {
     finishTimings();
-    if (error instanceof AttentionFailure) throw error;
-    if (deadlineElapsed)
-      throw new CaptureFailure(stage, "timeout");
-    throw captureFailure(error, stage);
+    if (error instanceof AttentionFailure) { error.timings = timings; throw error; }
+    const failure = deadlineElapsed
+      ? new CaptureFailure(stage, (stage as string) === "screenshot_rasterization" ? "screenshot_timeout" : "timeout")
+      : captureFailure(error, stage);
+    failure.timings = timings;
+    throw failure;
   } finally {
     if (timer) clearTimeout(timer);
+    enterStage("cleanup");
     try {
       await browser?.close();
     } finally {
       await proxy?.close();
+      finishTimings();
     }
   }
 }

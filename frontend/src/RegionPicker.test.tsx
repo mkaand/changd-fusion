@@ -108,6 +108,28 @@ it("keeps the form usable after a safe preview error and offers retry and viewpo
   expect(viewport).toHaveBeenCalledOnce();
 });
 
+it("refreshes a stale selection inside the existing session and clears the old error while loading", async () => {
+  const sessionId = "00000000-0000-4000-8000-000000000099";
+  let resolveRefresh!: (value: unknown) => void;
+  vi.mocked(api)
+    .mockResolvedValueOnce({ session_id: sessionId, image: "aGVsbG8=", width: 1280, height: 900, selection: null })
+    .mockRejectedValueOnce(new ApiError("The page changed after the screenshot.", { status: 409, failure_code: "stale_preview", preview_stage: "text_extraction" }))
+    .mockImplementationOnce(() => new Promise((resolve) => { resolveRefresh = resolve; }));
+  render(<RegionPicker getDraft={() => draft} onSelect={vi.fn()} onUseViewport={vi.fn()} />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Select region visually" }));
+  const image = await screen.findByAltText("Secure monitor preview");
+  Object.defineProperty(image, "getBoundingClientRect", { value: () => ({ left: 0, top: 0, width: 1280, height: 900 }) });
+  fireEvent.pointerDown(image, { pointerId: 7, pointerType: "mouse", button: 0, clientX: 100, clientY: 100 });
+  fireEvent.pointerUp(image.closest(".region-preview-canvas")!, { pointerId: 7, pointerType: "mouse", clientX: 100, clientY: 100 });
+  expect(await screen.findByRole("alert")).toHaveTextContent("stale_preview");
+  await user.click(screen.getByRole("button", { name: "Retry selection" }));
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(api).toHaveBeenLastCalledWith("/region-preview", "POST", expect.objectContaining({ session_id: sessionId, point: { x: 100, y: 100 }, refresh: true }), { timeoutMs: 125000 });
+  resolveRefresh({ session_id: sessionId, image: "aGVsbG8=", width: 1280, height: 900, selection: { selector: "#target", x: 90, y: 90, width: 20, height: 20 } });
+  expect(await screen.findByText("Selected visible element")).toBeInTheDocument();
+});
+
 it("does not open a network preview when the visual draft is incomplete", async () => {
   render(<RegionPicker getDraft={() => ({ kind: "browser", visual_enabled: false })} onSelect={vi.fn()} onUseViewport={vi.fn()} />);
   fireEvent.click(screen.getByRole("button", { name: "Select region visually" }));

@@ -27,7 +27,7 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const gesture = useRef<{ primaryId: number | null; x: number; y: number; left: number; top: number; distance?: number; zoom: number; moved: boolean; multi: boolean }>({ primaryId: null, x: 0, y: 0, left: 0, top: 0, zoom: 1, moved: false, multi: false });
   useEffect(() => { const media = window.matchMedia("(max-width: 767px)"); const update = () => setCompact(media.matches); update(); media.addEventListener("change", update); return () => media.removeEventListener("change", update); }, []);
-  const load = async (point?: { x: number; y: number }) => {
+  const load = async (point?: { x: number; y: number }, refreshSession = false) => {
     if (requestPending.current) return;
     const draft = getDraft();
     if (!draft.url || draft.kind !== "browser" || !draft.visual_enabled) {
@@ -36,6 +36,7 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
     }
     requestPending.current = true;
     setLoading(true);
+    setError(undefined);
     if (point) lastPoint.current = point;
     else { lastPoint.current = undefined; setProgress("target_validation"); }
     const previewRequestId = crypto.randomUUID();
@@ -43,7 +44,8 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
     const progressTimer = point ? undefined : window.setInterval(() => { void api<{ stage: string }>(`/region-preview/status/${previewRequestId}`).then((value) => setProgress(value.stage)).catch(() => undefined); }, 1000);
     try {
       const result = await api("/region-preview", "POST", {
-        session_id: point ? preview?.session_id : undefined,
+        session_id: point || refreshSession ? preview?.session_id : undefined,
+        refresh: refreshSession,
         preview_request_id: previewRequestId,
         monitor_id: monitorId,
         monitor: { url: draft.url, kind: "browser", visual_enabled: true, browser_steps: draft.browser_steps ?? [] },
@@ -110,7 +112,7 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
   };
   const reset = () => { setZoom(1); if (canvas.current) { canvas.current.scrollLeft = 0; canvas.current.scrollTop = 0; } };
   const previewBody = <>
-    {error && <div className="region-preview-error" role="alert" aria-live="assertive"><strong>{error.message}</strong><p>{error.failureCode ? `${error.previewStage ?? "preview"} · ${error.failureCode}` : "The preview could not be completed."}</p><div className="region-preview-error-actions">{preview?.session_id && lastPoint.current && error.status !== 410 && error.failureCode !== "stale_preview" && <Button onClick={() => void load(lastPoint.current)}>Retry selection</Button>}<Button onClick={() => void load()}>Refresh preview</Button><Button onClick={() => { onUseViewport(); setOpen(false); }}>Use viewport instead</Button></div>{error.requestId && <details><summary>Technical details</summary><code>Request ID: {error.requestId}</code></details>}</div>}
+    {error && <div className="region-preview-error" role="alert" aria-live="assertive"><strong>{error.message}</strong><p>{error.failureCode ? `${error.previewStage ?? "preview"} · ${error.failureCode}` : "The preview could not be completed."}</p><div className="region-preview-error-actions">{preview?.session_id && lastPoint.current && error.status !== 410 && <Button onClick={() => void load(lastPoint.current, error.failureCode === "stale_preview")}>Retry selection</Button>}<Button onClick={() => void load()}>Refresh preview</Button><Button onClick={() => { onUseViewport(); setOpen(false); }}>Use viewport instead</Button></div>{error.requestId && <details><summary>Technical details</summary><code>Request ID: {error.requestId}</code></details>}</div>}
     {loading && !preview && <div className="region-preview-loading" role="status" aria-label="Loading region preview"><Spin /><strong>{progressLabels[progress] ?? "Preparing preview"}</strong></div>}
     {preview && <>
       <Typography.Paragraph>Use +/− or pinch to zoom. Drag to pan while zoomed, then click or tap a visible element. The preview uses the current form URL through the normal SSRF, TLS, and sandbox restrictions.</Typography.Paragraph>
