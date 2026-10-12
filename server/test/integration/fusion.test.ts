@@ -1237,11 +1237,19 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await page.screenshot({
       path: path.join(output, "capture-settings-mobile.png"),
     });
+    const captureMode = page.getByLabel("Screenshot capture mode", { exact: true });
+    await captureMode.click();
+    await page.getByText("Selected element / region", { exact: true }).last().click();
+    await page.getByRole("button", { name: "Select region visually", exact: true }).waitFor();
+    const urlBeforePicker = await page.getByLabel("URL", { exact: true }).inputValue();
     await page.getByRole("button", { name: "Select region visually", exact: true }).click();
-    await page.locator('section[aria-label="Select screenshot region"]').waitFor();
+    const picker = page.locator('section[aria-label="Select screenshot region"]');
+    await picker.waitFor();
     await page.screenshot({ path: path.join(output, "region-picker-mobile.png") });
     await page.getByRole("button", { name: "← Back", exact: true }).click();
     await mobileEditor.waitFor();
+    assert.equal(await page.getByLabel("URL", { exact: true }).inputValue(), urlBeforePicker, "Back preserves unsaved editor values");
+    await page.getByLabel("Screenshot capture mode", { exact: true }).waitFor();
     await page
       .getByRole("button", { name: "Add browser step", exact: true })
       .click();
