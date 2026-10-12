@@ -24,7 +24,16 @@ export type CaptureFailureDiagnostic = {
   code: string;
   httpStatus: number | null;
   durationMs: number;
+  timings: Record<string, number>;
 };
+
+function safeTimings(input: unknown) {
+  if (!input || typeof input !== "object") return {};
+  return Object.fromEntries(Object.entries(input as Record<string, unknown>)
+    .filter(([, value]) => typeof value === "number" && Number.isFinite(value))
+    .slice(0, 24)
+    .map(([key, value]) => [key, Math.max(0, Math.min(300_000, Math.round(value as number)))]));
+}
 export type RunMonitorOptions = {
   capture?: typeof capture;
   comparator?: VisualComparator;
@@ -225,7 +234,7 @@ export async function runMonitor(
           [captureId, id, current.text, image],
         );
         const event = await c.query(
-          "INSERT INTO fusion_events(monitor_id,before_id,after_id,text_changed,visual_changed,visual_percent,diff_screenshot,text_diff,status,dimension_changed,before_dimensions,after_dimensions,execution_ms,warning_code) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14) RETURNING id",
+          "INSERT INTO fusion_events(monitor_id,before_id,after_id,text_changed,visual_changed,visual_percent,diff_screenshot,text_diff,status,dimension_changed,before_dimensions,after_dimensions,execution_ms,warning_code,capture_timings) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id",
           [
             id,
             before?.id ?? null,
@@ -241,10 +250,11 @@ export async function runMonitor(
             !extractionTransition && visual ? JSON.stringify(visual.afterDimensions) : null,
             Date.now() - started,
             current.warning ?? null,
+            JSON.stringify(safeTimings(current.timings)),
           ],
         );
         await c.query(
-          "UPDATE fusion_monitors SET latest_capture_id=$2,baseline_id=CASE WHEN $3 THEN $2 ELSE baseline_id END,last_percent=$4,last_dimension_change=$5,last_run=now(),next_run=now()+interval_seconds*interval '1 second',failure_count=0,last_error=null,failure_stage=null,failure_code=null,last_success_at=now(),last_change_at=CASE WHEN $6='changed' THEN now() ELSE last_change_at END,monitor_state=$6,execution_ms=$7,warning_code=$8,browser_text_extraction_version=CASE WHEN $9 THEN $10 ELSE browser_text_extraction_version END WHERE id=$1",
+          "UPDATE fusion_monitors SET latest_capture_id=$2,baseline_id=CASE WHEN $3 THEN $2 ELSE baseline_id END,last_percent=$4,last_dimension_change=$5,last_run=now(),next_run=now()+interval_seconds*interval '1 second',failure_count=0,last_error=null,failure_stage=null,failure_code=null,last_success_at=now(),last_change_at=CASE WHEN $6='changed' THEN now() ELSE last_change_at END,monitor_state=$6,execution_ms=$7,warning_code=$8,browser_text_extraction_version=CASE WHEN $9 THEN $10 ELSE browser_text_extraction_version END,last_capture_timings=$11::jsonb WHERE id=$1",
           [
             id,
             captureId,
@@ -258,6 +268,7 @@ export async function runMonitor(
             current.warning ?? null,
             advancesExtractionVersion,
             VISIBLE_BROWSER_TEXT_EXTRACTION_VERSION,
+            JSON.stringify(safeTimings(current.timings)),
           ],
         );
         if (status === "changed") {
@@ -293,7 +304,7 @@ export async function runMonitor(
       await c.query("BEGIN");
       try {
         await c.query(
-          "UPDATE fusion_monitors SET failure_count=failure_count+1,last_error=$2,last_run=now(),next_run=now()+greatest($5,least(3600,30*power(2,least(failure_count,7))))*interval '1 second',monitor_state=$3,execution_ms=$4,warning_code=$6,failure_stage=$7,failure_code=$8 WHERE id=$1",
+          "UPDATE fusion_monitors SET failure_count=failure_count+1,last_error=$2,last_run=now(),next_run=now()+greatest($5,least(3600,30*power(2,least(failure_count,7))))*interval '1 second',monitor_state=$3,execution_ms=$4,warning_code=$6,failure_stage=$7,failure_code=$8,last_capture_timings=$9::jsonb WHERE id=$1",
           [
             id,
             publicFailure(e),
@@ -303,11 +314,12 @@ export async function runMonitor(
             warning,
             diagnostic?.stage ?? null,
             diagnostic?.code ?? null,
+            JSON.stringify(safeTimings(diagnostic?.timings ?? (e instanceof AttentionFailure ? e.timings : undefined))),
           ],
         );
         const event = await c.query(
-          "INSERT INTO fusion_events(monitor_id,status,error,attention_state,warning_code,execution_ms,failure_stage,failure_code) VALUES($1,'failed',$2,$3,$4,$5,$6,$7) RETURNING id",
-          [id, publicFailure(e), state, warning, Date.now() - started, diagnostic?.stage ?? null, diagnostic?.code ?? null],
+          "INSERT INTO fusion_events(monitor_id,status,error,attention_state,warning_code,execution_ms,failure_stage,failure_code,capture_timings) VALUES($1,'failed',$2,$3,$4,$5,$6,$7,$8::jsonb) RETURNING id",
+          [id, publicFailure(e), state, warning, Date.now() - started, diagnostic?.stage ?? null, diagnostic?.code ?? null, JSON.stringify(safeTimings(diagnostic?.timings ?? (e instanceof AttentionFailure ? e.timings : undefined)))],
         );
         if (shouldNotify)
           await queueNotification(c, m, event.rows[0].id, createHash("sha256").update(JSON.stringify({ state, error: publicFailure(e) })).digest("hex"));
@@ -319,6 +331,7 @@ export async function runMonitor(
             code: diagnostic.code,
             httpStatus: diagnostic.httpStatus,
             durationMs: Date.now() - started,
+            timings: safeTimings(diagnostic.timings),
           });
       } catch (error) {
         await c.query("ROLLBACK");

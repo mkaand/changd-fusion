@@ -83,12 +83,12 @@ test("region preview telemetry exposes only safe stage and code", () => {
 
 test("region preview capacity failures are safe and retryable", () => {
   const failure = regionPreviewFailure(
-    new CaptureFailure("browser_launch", "resource_limit", "Preview capacity is busy. Retry shortly."),
+    new CaptureFailure("browser_launch", "capacity_busy", "Preview capacity is busy. Retry shortly."),
     "target_validation",
   );
   assert.deepEqual(failure, {
     stage: "browser_launch",
-    failure_code: "resource_limit",
+    failure_code: "capacity_busy",
     status: 429,
     message: "Preview capacity is busy. Retry shortly.",
   });

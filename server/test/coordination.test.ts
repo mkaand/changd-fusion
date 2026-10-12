@@ -5,6 +5,7 @@ import { runMonitor, retainHistory } from "../src/engine.js";
 import { migrate } from "../src/migrate.js";
 import { dispatch } from "../src/outbox.js";
 import { readConfig } from "../src/config.js";
+import { acquireChromiumLease } from "../src/chromium-capacity.js";
 const cfg = readConfig({
   DATABASE_URL: "postgresql://localhost/fixture",
   JWT_SECRET: randomBytes(32).toString("hex"),
@@ -75,5 +76,15 @@ test("failed transaction rollback destroys the database connection and preserves
     }),
     (e) => e === original,
   );
+  assert.equal(destroyed, true);
+});
+
+test("Chromium admission destroys an uncertain database session after lock failure", async () => {
+  let destroyed: unknown;
+  const pool = { connect: async () => ({
+    query: async () => { throw Error("synthetic admission failure"); },
+    release: (value: unknown) => { destroyed = value; },
+  }) } as any;
+  await assert.rejects(acquireChromiumLease(pool, { workload: "preview", slots: 1 }), /admission failure/);
   assert.equal(destroyed, true);
 });

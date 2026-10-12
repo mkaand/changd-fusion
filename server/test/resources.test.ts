@@ -4,6 +4,7 @@ import http from "node:http";
 import { randomBytes } from "node:crypto";
 import { closeServer } from "./helpers/server.js";
 import { readConfig } from "../src/config.js";
+import { stableElementBounds } from "../src/capture.js";
 test("fixture cleanup closes active keep-alive sockets even when responses never end", async () => {
   const server = http.createServer((_req, res) => {
     res.writeHead(200);
@@ -42,4 +43,12 @@ test("resource configuration is bounded and defaults to a single Chromium captur
   ]) {
     assert.throws(() => readConfig({ ...env, [key]: value }));
   }
+});
+
+test("element stability accepts a settled transient and rejects continuous movement within a bounded window", async () => {
+  const box = (x: number) => ({ x, y: 0, width: 100, height: 40 });
+  const settled = [box(0), box(4), box(4)];
+  assert.deepEqual(await stableElementBounds(async () => settled.shift() ?? box(4), async () => {}, Date.now() + 1000), box(4));
+  const moving = [box(0), box(3), box(6), box(9), box(12)];
+  assert.equal(await stableElementBounds(async () => moving.shift() ?? box(15), async () => {}, Date.now() + 1000), null);
 });

@@ -10,11 +10,42 @@ export type SelectedTextRule = {
 
 const MAX_ANCHOR = 160;
 const MAX_VALUE = 500;
+export const MAX_READER_CONTENT = 200_000;
+export const MAX_READER_RESULTS = 100;
 
-export function readableJinaLines(text: string) {
+function normalizedJinaLines(text: string) {
   const normalized = text.replace(/\r\n?/g, "\n").replace(/[\t ]+/g, " ");
-  if (normalized.length > 200_000) throw new HttpError(422, "Reader content is too large to preview safely.");
-  return normalized.split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 2000);
+  if (normalized.length > MAX_READER_CONTENT) throw new HttpError(422, "Reader content is too large to preview safely.");
+  return normalized.split("\n").map((line) => line.trim()).filter(Boolean);
+}
+
+export function readableJinaPreview(text: string) {
+  const lines = normalizedJinaLines(text);
+  return { lines, totalLines: lines.length };
+}
+
+export function readableJinaLines(text: string) { return readableJinaPreview(text).lines; }
+
+const searchKey = (value: string) => value.toLocaleLowerCase("tr-TR");
+export function searchJinaLines(lines: string[], query = "", offset = 0, limit = MAX_READER_RESULTS) {
+  const needle = searchKey(query.trim());
+  const safeOffset = Math.max(0, Math.trunc(offset));
+  const safeLimit = Math.max(1, Math.min(MAX_READER_RESULTS, Math.trunc(limit)));
+  const items: { index: number; text: string }[] = [];
+  let matchingLineCount = 0;
+  for (let index = 0; index < lines.length; index++) {
+    if (!needle || searchKey(lines[index]).includes(needle)) {
+      if (matchingLineCount >= safeOffset && items.length < safeLimit) items.push({ index, text: lines[index] });
+      matchingLineCount++;
+    }
+  }
+  return {
+    items,
+    matching_line_count: matchingLineCount,
+    total_line_count: lines.length,
+    offset: safeOffset,
+    has_more: safeOffset + items.length < matchingLineCount,
+  };
 }
 
 function occurrences(haystack: string, needle: string) {

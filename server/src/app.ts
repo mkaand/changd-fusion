@@ -18,11 +18,12 @@ import { Storage } from "./storage.js";
 import { stepsSchema } from "./browser-steps.js";
 import { vaultSchema, sealValues } from "./vault.js";
 import { randomUUID } from "node:crypto";
-import { previewRegion, type PreviewStage, type RegionPreviewFailure } from "./region-picker.js";
+import { previewRegion, releaseRegionPreviewSession, type PreviewStage, type RegionPreviewFailure } from "./region-picker.js";
 import { previewJinaText } from "./text-picker.js";
 import pino from "pino";
 import { Decimal } from "decimal.js";
 import path from "node:path";
+import { acquireChromiumLease } from "./chromium-capacity.js";
 const uuid = z.string().uuid();
 const threshold = z
   .union([
@@ -148,11 +149,13 @@ const regionPreviewInput = z
     point: z
       .object({ x: z.number().finite(), y: z.number().finite() })
       .optional(),
+    refresh: z.boolean().optional().default(false),
   })
   .strict();
 const textPreviewInput = z.object({
   session_id: uuid.optional(), monitor_id: uuid.optional(), url: z.string().url().max(2048).optional(),
-  line_index: z.number().int().min(0).max(1999).optional(), selected_value: z.string().min(1).max(500).optional(),
+  line_index: z.number().int().min(0).max(200_000).optional(), selected_value: z.string().min(1).max(500).optional(),
+  query: z.string().max(200).optional(), offset: z.number().int().min(0).max(200_000).optional(), limit: z.number().int().min(1).max(100).optional(),
 }).strict();
 const channelInput = z
   .object({
@@ -543,7 +546,7 @@ export function createApp(
       channel_ids: channels.rows.map((r) => r.channel_id),
     });
   });
-  const runRegionPreview = async (req: Request, res: Response, monitor: any, point?: { x: number; y: number }, sessionId?: string, useSession = false, previewRequestId?: string) => {
+  const runRegionPreview = async (req: Request, res: Response, monitor: any, point?: { x: number; y: number }, sessionId?: string, useSession = false, previewRequestId?: string, refresh = false) => {
     const started = performance.now();
     const cancellation = new AbortController();
     const cancelled = () => { if (!res.writableEnded) cancellation.abort(); };
@@ -555,7 +558,15 @@ export function createApp(
         cfg,
         point,
         policy,
-        { ownerId: res.locals.user.user_id, id: useSession ? sessionId : undefined, retain: useSession, signal: cancellation.signal, progress: previewRequestId ? (stage) => updatePreviewProgress(previewRequestId, res.locals.user.user_id, stage) : undefined },
+        {
+          ownerId: res.locals.user.user_id,
+          id: useSession ? sessionId : undefined,
+          retain: useSession,
+          refresh,
+          signal: cancellation.signal,
+          progress: previewRequestId ? (stage) => updatePreviewProgress(previewRequestId, res.locals.user.user_id, stage) : undefined,
+          acquireCapacity: () => acquireChromiumLease(pool, { workload: "preview", slots: cfg.CHROMIUM_CONCURRENCY, signal: cancellation.signal }),
+        },
       );
       if (previewRequestId) updatePreviewProgress(previewRequestId, res.locals.user.user_id, "ready");
       res.json(preview);
@@ -576,7 +587,12 @@ export function createApp(
   app.post("/api/v1/region-preview", async (req, res) => {
     const body = regionPreviewInput.parse(req.body);
     if (body.monitor_id) await owner(body.monitor_id, res.locals.user.user_id);
-    await runRegionPreview(req, res, { ...body.monitor, id: body.monitor_id ?? "preview", browser_steps: body.monitor.browser_steps }, body.point, body.session_id, true, body.preview_request_id);
+    await runRegionPreview(req, res, { ...body.monitor, id: body.monitor_id ?? "preview", browser_steps: body.monitor.browser_steps }, body.point, body.session_id, true, body.preview_request_id, body.refresh);
+  });
+  app.delete("/api/v1/region-preview/:sessionId", async (req, res) => {
+    const sessionId = uuid.parse(req.params.sessionId);
+    await releaseRegionPreviewSession(res.locals.user.user_id, sessionId);
+    res.status(204).end();
   });
   app.get("/api/v1/region-preview/status/:id", (req, res) => {
     const id = uuid.parse(req.params.id);
@@ -587,7 +603,7 @@ export function createApp(
   app.post("/api/v1/text-preview", async (req, res) => {
     const body = textPreviewInput.parse(req.body);
     if (body.monitor_id) await owner(body.monitor_id, res.locals.user.user_id);
-    res.json(await previewJinaText({ ownerId: res.locals.user.user_id, url: body.url, sessionId: body.session_id, lineIndex: body.line_index, selectedValue: body.selected_value }, cfg, policy));
+    res.json(await previewJinaText({ ownerId: res.locals.user.user_id, url: body.url, sessionId: body.session_id, lineIndex: body.line_index, selectedValue: body.selected_value, query: body.query, offset: body.offset, limit: body.limit }, cfg, policy));
   });
   // Retained for already released clients. New and edited forms use the draft-aware endpoint above.
   app.post("/api/v1/jobs/:id/region-preview", async (req, res) => {
