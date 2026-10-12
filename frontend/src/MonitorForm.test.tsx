@@ -64,3 +64,43 @@ it("offers focused Jina extraction modes and hides incompatible browser controls
   await user.click(screen.getByText("Selected Text / Value", { exact: true }));
   expect(screen.getByRole("button", { name: "Select text from preview" })).toBeInTheDocument();
 });
+
+it.each([
+  ["Full text (default)", "full_text"],
+  ["Product Price", "product_price"],
+  ["Selected Text / Value", "selected_text"],
+])("submits Direct Browser with full text after switching from Jina %s", async (label, mode) => {
+  const user = userEvent.setup();
+  render(<Fixture />);
+  await user.click(screen.getByText("Advanced settings", { exact: true }));
+  await user.click(screen.getByLabelText("Text content source"));
+  await user.click(screen.getByText(/Jina Reader —/));
+  if (mode !== "full_text") {
+    await user.click(screen.getByLabelText("Extraction mode"));
+    await user.click(screen.getByText(label, { exact: true }));
+  }
+  if (mode === "selected_text") current.setFieldValue("extraction_rule", { version: 1, kind: "bounded_context", before: "Before", after: "After", max_length: 64 });
+  await user.click(screen.getByLabelText("Text content source"));
+  await user.click(screen.getByText(/Direct browser content/));
+  expect(current.getFieldValue("text_source")).toBe("direct");
+  expect(current.getFieldValue("extraction_mode")).toBe("full_text");
+  if (mode === "selected_text") expect(current.getFieldValue("extraction_rule")).toMatchObject({ before: "Before" });
+});
+
+it("restores unsaved Jina extraction settings when switching back before save", async () => {
+  const user = userEvent.setup();
+  render(<Fixture />);
+  await user.click(screen.getByText("Advanced settings", { exact: true }));
+  await user.click(screen.getByLabelText("Text content source"));
+  await user.click(screen.getByText(/Jina Reader —/));
+  await user.click(screen.getByLabelText("Extraction mode"));
+  await user.click(screen.getByText("Selected Text / Value", { exact: true }));
+  const rule = { version: 1, kind: "bounded_context", before: "Availability", after: "Delivery", max_length: 64 };
+  current.setFieldValue("extraction_rule", rule);
+  await user.click(screen.getByLabelText("Text content source"));
+  await user.click(screen.getByText(/Direct browser content/));
+  await user.click(screen.getByLabelText("Text content source"));
+  await user.click(screen.getByText(/Jina Reader —/));
+  expect(current.getFieldValue("extraction_mode")).toBe("selected_text");
+  expect(current.getFieldValue("extraction_rule")).toEqual(rule);
+});

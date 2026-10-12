@@ -29,15 +29,15 @@ export function applySelectedTextRule(text: string, rule: SelectedTextRule) {
     throw new HttpError(422, "Selected text rule is invalid.");
   if (!rule.before && !rule.after) throw new HttpError(422, "Selected text rule has no stable context.");
   const starts = rule.before ? occurrences(text, rule.before).map((index) => index + rule.before.length) : [0];
-  const values: string[] = [];
+  const matches: string[] = [];
   for (const start of starts) {
     const end = rule.after ? text.indexOf(rule.after, start) : Math.min(text.length, start + rule.max_length);
     if (end < start || end - start > rule.max_length) continue;
     const value = text.slice(start, end).trim();
-    if (value && !values.includes(value)) values.push(value);
+    if (value) matches.push(value);
   }
-  if (values.length !== 1) throw new HttpError(422, values.length ? "Selected text is ambiguous in the current Reader output." : "Selected text could not be found in the current Reader output.");
-  return values[0];
+  if (matches.length !== 1) throw new HttpError(422, matches.length ? "Selected text is ambiguous in the current Reader output." : "Selected text could not be found in the current Reader output.");
+  return matches[0];
 }
 
 export function generateSelectedTextRule(lines: string[], lineIndex: number, selectedValue: string) {

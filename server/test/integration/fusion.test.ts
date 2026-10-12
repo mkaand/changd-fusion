@@ -407,6 +407,17 @@ test("selected text values keep chronological baselines and existing notificatio
   }).expect(201)).body;
   assert.equal(selected.extraction_mode, "selected_text");
   assert.equal(selected.extraction_rule.before, "Availability\n");
+  await selectedAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({
+    name: "Invalid direct special mode", url: "https://example.com/direct-invalid", kind: "browser", text_enabled: true, visual_enabled: false,
+    text_source: "direct", extraction_mode: "product_price",
+  }).expect(400);
+  const direct = (await selectedAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({
+    name: "Direct source after Jina", url: "https://example.com/direct", kind: "browser", text_enabled: true, visual_enabled: false,
+    text_source: "direct", extraction_mode: "full_text", extraction_rule: selected.extraction_rule,
+  }).expect(201)).body;
+  assert.equal(direct.text_source, "direct");
+  assert.equal(direct.extraction_mode, "full_text");
+  assert.equal(direct.extraction_rule.before, "Availability\n", "switching source does not erase the reusable Jina rule");
   await isolatedOther.get(`/api/v1/jobs/${selected.id}`).expect(404);
   const take = (text: string) => runMonitor(pool, cfg, selected.id, { force: true, capture: async () => ({ text, screenshot: null }) });
   await take("In stock");
@@ -423,6 +434,7 @@ test("selected text values keep chronological baselines and existing notificatio
   assert.equal(Number((await pool.query("SELECT count(*) FROM fusion_outbox o JOIN fusion_events e ON e.id=o.event_id WHERE e.monitor_id=$1", [selected.id])).rows[0].count), 1);
   await pool.query("UPDATE fusion_outbox o SET status='sent',delivered_at=now() FROM fusion_events e WHERE o.event_id=e.id AND e.monitor_id=$1", [selected.id]);
   await pool.query("UPDATE fusion_monitors SET paused=true,next_run=now()+interval '1 day' WHERE id=$1", [selected.id]);
+  await pool.query("UPDATE fusion_monitors SET paused=true,next_run=now()+interval '1 day' WHERE id=$1", [direct.id]);
 });
 
 test("same-monitor concurrency is rejected and configuration mutations cannot race captures", async () => {
@@ -2803,5 +2815,67 @@ test("region preview bounds slow resources, resolves deep DOM selectors and reje
   const drift = await previewRegion(monitorFor("/drift"), cfg, undefined, policy, { ownerId: "drift-owner", retain: true });
   await new Promise((resolve) => setTimeout(resolve, 2200));
   await assert.rejects(previewRegion(monitorFor("/drift"), cfg, { x: 210, y: 150 }, policy, { ownerId: "drift-owner", id: drift.session_id, retain: true }), (error: any) => error.status === 409 && error.failure_code === "stale_preview");
+  await closeRegionPreviewSessions();
+});
+
+test("region preview deadline and cancellation stop browser work and release capacity", async (t) => {
+  await closeRegionPreviewSessions();
+  const fixture = managedServer(t, (req, res) => {
+    if (req.url === "/large") {
+      res.end(`<!doctype html><main>${"<span>node</span>".repeat(50_010)}</main>`);
+      return;
+    }
+    res.end("<!doctype html><main id='preview-target' style='width:200px;height:80px'>Bounded preview</main>");
+  });
+  await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
+  const port = (fixture.address() as AddressInfo).port;
+  const policy = new EgressPolicy(async () => [{ address: "127.0.0.1", family: 4 }], () => true, new Set([port]));
+  const monitorFor = (pathName = "/") => ({ id: randomUUID(), url: `http://preview-deadline.example:${port}${pathName}`, kind: "browser", text_enabled: false, visual_enabled: true, browser_steps: [] }) as any;
+  const deadlineCfg = { ...cfg, CAPTURE_TIMEOUT_MS: 2000 };
+  const never = (page: any, entered: () => void) => async () => {
+    entered();
+    await page.evaluate(() => new Promise(() => {}));
+  };
+
+  let snapshotEntered!: () => void;
+  const snapshotStarted = new Promise<void>((resolve) => { snapshotEntered = resolve; });
+  const snapshotTimeout = previewRegion(monitorFor(), deadlineCfg, undefined, policy, {
+    ownerId: "snapshot-timeout-owner", retain: true,
+    operations: { snapshot: async (page) => never(page, snapshotEntered)() },
+  });
+  await snapshotStarted;
+  const snapshotError: any = await snapshotTimeout.then(() => null, (error) => error);
+  assert.deepEqual({ stage: snapshotError?.stage, code: snapshotError?.failure_code, status: snapshotError?.status }, { stage: "screenshot", code: "timeout", status: 504 });
+
+  let screenshotEntered!: () => void;
+  const screenshotStarted = new Promise<void>((resolve) => { screenshotEntered = resolve; });
+  const screenshotTimeout = previewRegion(monitorFor(), deadlineCfg, undefined, policy, {
+    ownerId: "screenshot-timeout-owner", retain: true,
+    operations: { screenshot: async (_context, page) => { screenshotEntered(); await page.evaluate(() => new Promise(() => {})); return Buffer.alloc(0); } },
+  });
+  await screenshotStarted;
+  const screenshotError: any = await screenshotTimeout.then(() => null, (error) => error);
+  assert.deepEqual({ stage: screenshotError?.stage, code: screenshotError?.failure_code, status: screenshotError?.status }, { stage: "screenshot", code: "timeout", status: 504 });
+
+  let cancelledEntered!: () => void;
+  const cancellationStarted = new Promise<void>((resolve) => { cancelledEntered = resolve; });
+  const controller = new AbortController();
+  const cancelled = previewRegion(monitorFor(), cfg, undefined, policy, {
+    ownerId: "cancelled-owner", retain: true, signal: controller.signal,
+    operations: { snapshot: async (page) => never(page, cancelledEntered)() },
+  });
+  await cancellationStarted;
+  controller.abort();
+  await assert.rejects(cancelled, (error: any) => error.stage === "screenshot" && error.status === 499);
+
+  await assert.rejects(
+    previewRegion(monitorFor("/large"), cfg, undefined, policy, { ownerId: "large-dom-owner", retain: true }),
+    (error: any) => error.stage === "screenshot" && error.failure_code === "resource_limit",
+  );
+
+  const recovered = await previewRegion(monitorFor(), cfg, undefined, policy, { ownerId: "recovered-owner", retain: true });
+  assert.match(recovered.session_id!, /^[0-9a-f-]{36}$/, "timeouts and cancellation release preview capacity");
+  const selected = await previewRegion(monitorFor(), cfg, { x: 100, y: 40 }, policy, { ownerId: "recovered-owner", id: recovered.session_id, retain: true });
+  assert.equal(selected.selection?.selector, "#preview-target", "a recovered session remains coordinate accurate and reusable");
   await closeRegionPreviewSessions();
 });

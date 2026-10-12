@@ -12,6 +12,10 @@ type Selection = { selector: string; label: string; visible: boolean; x: number;
 export type PreviewStage = "target_validation" | "proxy_initialization" | "browser_launch" | "browser_context" | "navigation" | "dom_ready" | "rendering_preparation" | "screenshot" | "serialization" | "ready";
 type PreviewTimings = Partial<Record<PreviewStage, number>>;
 type Session = { id: string; ownerId: string; expiresAt: number; browser: Browser; context: BrowserContext; page: Page; proxy: Awaited<ReturnType<typeof browserProxy>>; image: Buffer; timings: PreviewTimings };
+type PreviewOperations = {
+  snapshot?: (page: Page) => Promise<void>;
+  screenshot?: (context: BrowserContext, page: Page) => Promise<Buffer>;
+};
 const SESSION_TTL_MS = 90_000;
 const MAX_SESSIONS = 4;
 const sessions = new Map<string, Session>();
@@ -73,16 +77,58 @@ export async function snapshotLayout(page: Page) {
     const root = window as any;
     const rects: Record<string, { x: number; y: number; width: number; height: number; text: string }> = {};
     let sequence = 0;
-    for (const element of document.querySelectorAll("body *")) {
+    const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_ELEMENT);
+    for (let node = walker.nextNode(); node; node = walker.nextNode()) {
+      if (++sequence > 50_000) throw new Error("Preview DOM exceeds the safe element limit");
+      const element = node as Element;
       const rect = element.getBoundingClientRect();
       const style = getComputedStyle(element);
       if (rect.width <= 0 || rect.height <= 0 || style.display === "none" || style.visibility === "hidden") continue;
-      const id = `p${++sequence}`;
+      const id = `p${sequence}`;
       Object.defineProperty(element, "__changdPreviewId", { value: id, configurable: true });
       rects[id] = { x: rect.x, y: rect.y, width: rect.width, height: rect.height, text: (element.textContent ?? "").replace(/\s+/g, " ").trim().slice(0, 256) };
     }
     root.__changdPreviewRects = rects;
   });
+}
+
+async function capturePreviewScreenshot(context: BrowserContext, page: Page) {
+  const cdp = await context.newCDPSession(page);
+  try {
+    const captured = await cdp.send("Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: false });
+    return Buffer.from(captured.data, "base64");
+  } finally { await cdp.detach().catch(() => {}); }
+}
+
+async function boundedPreviewOperation<T>(input: {
+  operation: () => Promise<T>;
+  remaining: () => number;
+  cancel: () => Promise<void>;
+  stage: CaptureStage;
+  signal?: AbortSignal;
+}) {
+  const budget = input.remaining();
+  let interruption: HttpError | CaptureFailure | undefined;
+  let cancelling: Promise<void> | undefined;
+  const interrupt = (error: HttpError | CaptureFailure) => {
+    if (interruption) return;
+    interruption = error;
+    cancelling = input.cancel();
+  };
+  const abort = () => interrupt(new HttpError(499, "Preview request was cancelled"));
+  const timer = setTimeout(() => interrupt(new CaptureFailure(input.stage, "timeout")), budget);
+  input.signal?.addEventListener("abort", abort, { once: true });
+  try {
+    const result = await input.operation();
+    if (interruption) { await cancelling; throw interruption; }
+    return result;
+  } catch (error) {
+    if (interruption) { await cancelling; throw interruption; }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+    input.signal?.removeEventListener("abort", abort);
+  }
 }
 
 export async function selectionAt(page: Page, point: { x: number; y: number }): Promise<{ selection: Selection; candidates: Selection[] }> {
@@ -149,7 +195,7 @@ export async function selectionAt(page: Page, point: { x: number; y: number }): 
   return { selection, candidates };
 }
 
-export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number; y: number }, policy = new EgressPolicy(), session?: { ownerId: string; id?: string; retain?: boolean; progress?: (stage: PreviewStage) => void; signal?: AbortSignal }) {
+export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number; y: number }, policy = new EgressPolicy(), session?: { ownerId: string; id?: string; retain?: boolean; progress?: (stage: PreviewStage) => void; signal?: AbortSignal; operations?: PreviewOperations }) {
   let stage: CaptureStage = "target_validation";
   await purgeExpired();
   if (session?.id) {
@@ -171,14 +217,18 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
   let browser: Browser | undefined;
   let context: BrowserContext | undefined;
   let reservation: ReturnType<typeof reserveSession> | undefined;
-  const abort = () => { void context?.close().catch(() => {}); void browser?.close().catch(() => {}); };
+  const cancelBrowser = async () => {
+    try { await context?.close(); } catch {}
+    try { await browser?.close(); } catch {}
+  };
+  const abortBrowser = () => { void cancelBrowser(); };
   const timings: PreviewTimings = {};
   let previewStage: PreviewStage = "target_validation";
   let stageStarted = performance.now();
   const enter = (next: PreviewStage) => { timings[previewStage] = Math.round(performance.now() - stageStarted); previewStage = next; stageStarted = performance.now(); session?.progress?.(next); };
   try {
     if (session?.signal?.aborted) throw new HttpError(499, "Preview request was cancelled");
-    session?.signal?.addEventListener("abort", abort, { once: true });
+    session?.signal?.addEventListener("abort", abortBrowser, { once: true });
     session?.progress?.("target_validation");
     await policy.target(m.url);
     reservation = reserveSession(session?.ownerId ?? randomUUID(), Boolean(session?.retain));
@@ -208,12 +258,9 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
       ]);
     });
     stage = "screenshot";
-    await snapshotLayout(page);
+    await boundedPreviewOperation({ operation: () => (session?.operations?.snapshot ?? snapshotLayout)(page), remaining, cancel: cancelBrowser, stage, signal: session?.signal });
     enter("screenshot");
-    const cdp = await context.newCDPSession(page);
-    const captured = await cdp.send("Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: false });
-    await cdp.detach();
-    const image = Buffer.from(captured.data, "base64");
+    const image = await boundedPreviewOperation({ operation: () => (session?.operations?.screenshot ?? capturePreviewScreenshot)(context!, page), remaining, cancel: cancelBrowser, stage, signal: session?.signal });
     pngDimensions(image, { width: cfg.MAX_CAPTURE_WIDTH, height: cfg.MAX_CAPTURE_HEIGHT, pixels: cfg.MAX_CAPTURE_PIXELS });
     const picked = point ? await selectionAt(page, point) : null;
     enter("serialization");
@@ -227,7 +274,7 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
     return { session_id: active.id, image: encoded, width: 1280, height: 900, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings, reused: false };
   } catch (error) { throw regionPreviewFailure(error, stage); }
   finally {
-    session?.signal?.removeEventListener("abort", abort);
+    session?.signal?.removeEventListener("abort", abortBrowser);
     if (reservation) reservations.delete(reservation.token);
     try { await context?.close(); } catch {}
     try { await browser?.close(); } finally { await proxy?.close(); }
