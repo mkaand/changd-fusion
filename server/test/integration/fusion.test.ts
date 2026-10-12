@@ -17,7 +17,7 @@ import { PNG } from "pngjs";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { hash } from "bcryptjs";
 import jwt from "jsonwebtoken";
-import { mkdtemp, rm, readFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, readFile, mkdir, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
@@ -25,6 +25,7 @@ import type { AddressInfo } from "node:net";
 import { seedPreview } from "../../src/preview-seed.js";
 import { compareVisual } from "../../src/comparison.js";
 import { telegramSummary } from "../../src/notifications.js";
+const expectedMigrationCount = (await readdir(path.resolve(import.meta.dirname, "../../migrations"))).filter((file) => /^\d+_.+\.sql$/.test(file)).length;
 const dbURL = new URL(process.env.TEST_DATABASE_URL ?? "");
 assert.ok(
   ["127.0.0.1", "localhost"].includes(dbURL.hostname),
@@ -110,10 +111,7 @@ test("fresh migration is repeatable and decimal columns are NUMERIC", async () =
     "SELECT data_type FROM information_schema.columns WHERE table_name='fusion_events' AND column_name='visual_percent'",
   );
   assert.equal(r.rows[0].data_type, "numeric");
-  assert.equal(
-    (await pool.query("SELECT count(*) FROM fusion_migrations")).rows[0].count,
-    "6",
-  );
+  assert.equal(Number((await pool.query("SELECT count(*) FROM fusion_migrations")).rows[0].count), expectedMigrationCount);
 });
 test("JWT, admin checks, CSRF, disabled registration and removed scheduler endpoint", async () => {
   await request(app).get("/api/v1/jobs").expect(401);
@@ -872,11 +870,7 @@ test("legacy migration preserves owner, historical references and NUMERIC decima
     assert.equal(upgraded.browser_text_extraction_version, 2);
     assert.deepEqual(upgraded.browser_steps, []);
     assert.equal(upgraded.monitor_state, "healthy");
-    assert.equal(
-      (await legacy.query("SELECT count(*) FROM fusion_migrations")).rows[0]
-        .count,
-      "6",
-    );
+    assert.equal(Number((await legacy.query("SELECT count(*) FROM fusion_migrations")).rows[0].count), expectedMigrationCount);
     assert.equal(upgraded.baseline_id, preservedCapture);
     assert.equal(upgraded.latest_capture_id, preservedCapture);
     assert.equal(upgraded.last_percent, "0.3500000000");

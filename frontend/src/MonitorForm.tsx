@@ -7,6 +7,7 @@ export const defaults = {
   browser_steps: [], step_budget_ms: 20000, paused: false, notify_failures: false, notify_attention: false,
   notification_enabled: true, notification_cooldown_seconds: 0, notification_mode: "immediate", digest_window_seconds: 3600,
   pixel_threshold: 0.1, interval_seconds: 300, normalize_whitespace: true, ignore_case: false, enabled: true,
+  text_direction: "both", text_source: "direct",
   channel_ids: [], ignore_selectors: [], ignore_text: [], mask_selectors: [],
 };
 export function MonitorForm({ form, channels, monitorId }: { form: any; channels: any[]; monitorId?: string }) {
@@ -29,11 +30,14 @@ export function MonitorForm({ form, channels, monitorId }: { form: any; channels
       <div className="form-row"><Form.Item name="enabled" label="Active" valuePropName="checked"><Switch /></Form.Item><Form.Item name="paused" label="Pause schedule" valuePropName="checked"><Switch /></Form.Item></div>
       {kind === "browser" && <BrowserStepsEditor form={form} />}
       {kind === "browser" && text && <>
+        <Form.Item name="text_source" label="Text content source"><Select options={[{ value: "direct", label: "Direct browser content (default)" }, { value: "jina", label: "Jina Reader — sends the URL to a third party" }]} /></Form.Item>
+        <Form.Item noStyle shouldUpdate={(previous, current) => previous.text_source !== current.text_source}>{({ getFieldValue }) => getFieldValue("text_source") === "jina" && <Alert type="info" showIcon title="Jina Reader is optional" description="Only the monitor URL is sent to Jina Reader for text extraction. Visual capture, private values, and browser steps are not used." />}</Form.Item>
         <Form.Item name="selector_type" label="Text extraction method"><Select options={[{ value: "css", label: "CSS selector" }, { value: "xpath", label: "XPath" }]} /></Form.Item>
         <Form.Item name="selector" label="Text selector (empty = visible page text)"><Input placeholder="#content or //main" /></Form.Item>
         <Form.Item name="ignore_selectors" label="Remove dynamic regions"><Select mode="tags" placeholder="CSS selectors" /></Form.Item>
       </>}
       {text && <><Form.Item name="ignore_text" label="Ignore literal text"><Select mode="tags" /></Form.Item><div className="form-row"><Form.Item name="normalize_whitespace" label="Normalize whitespace" valuePropName="checked"><Switch /></Form.Item><Form.Item name="ignore_case" label="Ignore case" valuePropName="checked"><Switch /></Form.Item></div></>}
+      {text && <Form.Item name="text_direction" label="Text notification direction" extra="Filters delivery only. History, Timeline, and the text baseline always retain both directions."><Select options={[{ value: "both", label: "Added & Removed (default)" }, { value: "added", label: "Added only" }, { value: "removed", label: "Removed only" }]} /></Form.Item>}
       {visual && <>
         <Form.Item name="capture_mode" label="Screenshot capture mode" extra="Fixed 1280×900 viewport, scale 1. Full-page and region captures are subject to server image limits."><Select options={[{ value: "viewport", label: "Viewport (default)" }, { value: "full_page", label: "Full page" }, { value: "element", label: "Selected element / region" }]} /></Form.Item>
         {captureMode === "element" && <>

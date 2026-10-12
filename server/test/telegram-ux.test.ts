@@ -10,7 +10,7 @@ import {
 } from "../src/notifications.js";
 import type { Storage } from "../src/storage.js";
 import { PNG } from "pngjs";
-import { notificationFingerprint } from "../src/engine.js";
+import { notificationFingerprint, textDirectionMatches } from "../src/engine.js";
 const event: EventMessage = {
   id: "fixture",
   monitorId: "fixture",
@@ -79,16 +79,25 @@ test("notification fingerprints are stable for ignored hydration and distinguish
   assert.equal(aToB, same);
   assert.notEqual(aToB, bToA);
 });
+test("text direction filters delivery without changing the complete text diff", () => {
+  const added = [{ value: "new", added: true }];
+  const removed = [{ value: "old", removed: true }];
+  const mixed = [...added, ...removed];
+  assert.equal(textDirectionMatches(added, "added"), true);
+  assert.equal(textDirectionMatches(added, "removed"), false);
+  assert.equal(textDirectionMatches(removed, "removed"), true);
+  assert.equal(textDirectionMatches(mixed, "both"), true);
+});
 test("digest is concise and carries only its recorded count", () => {
   const text = telegramSummary({ ...event, eventType: "digest", digestCount: 5, textChanged: false, visualChanged: false });
   assert.ok(text.includes("Monitoring Digest"));
   assert.ok(text.includes("5 changes detected"));
 });
-test("visual-only Telegram event keeps tiny, zero and 100 percent precision", () => {
+test("visual-only Telegram event displays an international two-decimal percentage", () => {
   for (const [percent, expected] of [
-    ["0.0000000001", "0.0000000001%"],
-    ["0.0000000000", "0%"],
-    ["100.0000000000", "100%"],
+    ["0.0000000001", "0.00%"],
+    ["0.0000000000", "0.00%"],
+    ["100.0000000000", "100.00%"],
   ]) {
     const text = telegramSummary({ ...event, textChanged: false, percent });
     assert.ok(text.includes(expected));

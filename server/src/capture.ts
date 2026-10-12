@@ -18,6 +18,8 @@ export type Monitor = {
   url: string;
   kind: "browser" | "html" | "api";
   text_enabled: boolean;
+  text_direction?: "added" | "removed" | "both";
+  text_source?: "direct" | "jina";
   visual_enabled: boolean;
   selector: string;
   selector_type: "css" | "xpath";
@@ -142,7 +144,7 @@ export async function capture(
     await policy.target(m.url);
     if (m.kind !== "browser") {
       enterStage("navigation");
-      const response = await safeFetch(m.url, policy, cfg.CAPTURE_TIMEOUT_MS);
+      const response = await safeFetch(m.text_source === "jina" ? `https://r.jina.ai/${m.url}` : m.url, policy, cfg.CAPTURE_TIMEOUT_MS);
       const text =
         m.kind === "api"
           ? JSON.stringify(stableJSON(JSON.parse(response.body.toString())), null, 2)
@@ -162,6 +164,12 @@ export async function capture(
         422,
         "Private workflows require HTTPS and text-only capture",
       );
+    if (m.text_source === "jina" && m.text_enabled && !m.visual_enabled) {
+      enterStage("navigation");
+      const response = await safeFetch(`https://r.jina.ai/${m.url}`, policy, cfg.CAPTURE_TIMEOUT_MS);
+      finishTimings();
+      return { text: normalizeText(response.body.toString(), m), screenshot: null, timings };
+    }
     proxy = await browserProxy(policy);
     enterStage("browser_launch");
     browser = await chromium.launch({

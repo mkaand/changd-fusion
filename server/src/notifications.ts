@@ -64,8 +64,8 @@ export const escapeHTML = (s: string) =>
         c
       ]!,
   );
-export const formatPercent = (value: string) =>
-  value.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
+// Display precision is intentionally separate from comparison precision.
+export const formatPercent = (value: string) => Number(value).toFixed(2);
 export function visualSummary(event: EventMessage) {
   if (event.dimensionChanged) {
     const size = (s: EventMessage["beforeDimensions"]) =>

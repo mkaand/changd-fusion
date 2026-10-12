@@ -29,10 +29,6 @@ export function MonitorUrlActions({ url, message, compact = false }: { url: stri
   const target = safeHttpUrl(url);
   return <Space size={compact ? 2 : 4} className="monitor-url-actions">
     <Button type="text" size="small" icon={<CopyOutlined />} aria-label="Copy monitor URL" title="Copy monitor URL" onClick={() => void copy(url).then(() => message.success("URL copied")).catch(() => message.error("Could not copy the URL"))} />
-    <Button type="text" size="small" disabled={!target} icon={<ExportOutlined />} aria-label="Open monitored website in new tab" title="Open monitored website in new tab" onClick={() => {
-      if (!target) return message.error("Only HTTP and HTTPS URLs can be opened");
-      const opened = window.open(target, "_blank", "noopener,noreferrer");
-      if (!opened) message.error("Your browser blocked the new tab");
-    }} />
+    {target ? <a className="monitor-url-open" href={target} target="_blank" rel="noopener noreferrer" aria-label="Open monitored website in new tab" title="Open monitored website in new tab"><ExportOutlined /></a> : <Button type="text" size="small" disabled icon={<ExportOutlined />} aria-label="Open monitored website in new tab" title="Only HTTP and HTTPS URLs can be opened" />}
   </Space>;
 }

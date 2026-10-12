@@ -49,7 +49,7 @@ describe("Login", () => {
   });
   it("preserves decimal display including zero and 100 percent", () => {
     expect(percent("0.3500000000")).toBe("0.35%");
-    expect(percent("0.0000000000")).toBe("0%");
-    expect(percent("100.0000000000")).toBe("100%");
+    expect(percent("0.0000000000")).toBe("0.00%");
+    expect(percent("100.0000000000")).toBe("100.00%");
   });
 });

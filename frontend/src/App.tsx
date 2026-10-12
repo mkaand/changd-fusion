@@ -216,6 +216,10 @@ export default function FusionApp() {
       m ? { ...defaults, ...(await api("/jobs/" + m.id)) } : { ...defaults, ...userDefaults },
     );
     setOpen(true);
+    if (compactLayout) {
+      setPage("editor");
+      history.replaceState(null, "", "/jobs/editor");
+    }
   };
   const save = async () => {
     setSaving(true);
@@ -229,6 +233,7 @@ export default function FusionApp() {
         b,
       );
       setOpen(false);
+      if (compactLayout) navigate("jobs");
       await reload("mutation");
       setHistoryRefresh((r) => r + 1);
       if (selected) await detail(selected.id);
@@ -385,7 +390,13 @@ export default function FusionApp() {
               </div>
             }
           >
-            {page === "timeline" ? (
+            {page === "editor" && compactLayout && open ? (
+              <section className="mobile-monitor-editor" aria-label={editing ? "Edit monitor" : "New monitor"}>
+                <div className="mobile-editor-header"><Button type="text" onClick={() => { setOpen(false); navigate("jobs"); }}>← Back</Button><Typography.Title level={3}>{editing ? "Edit monitor" : "New monitor"}</Typography.Title></div>
+                <MonitorForm form={form} channels={channels} monitorId={editing?.id} />
+                <div className="mobile-editor-actions"><Button onClick={() => { setOpen(false); navigate("jobs"); }}>Cancel</Button><Button type="primary" loading={saving} onClick={save}>Save monitor</Button></div>
+              </section>
+            ) : page === "timeline" ? (
               <Timeline monitors={monitors} />
             ) : page === "analytics" ? (
               <Analytics monitors={monitors} />
@@ -717,7 +728,7 @@ export default function FusionApp() {
           </Suspense>
         </Content>
       </Layout>
-      <Modal
+      {!compactLayout && <Modal
         className="monitor-editor-modal"
         open={open}
         title={editing ? "Edit monitor" : "New monitor"}
@@ -727,7 +738,7 @@ export default function FusionApp() {
         destroyOnHidden
       >
         <MonitorForm form={form} channels={channels} monitorId={editing?.id} />
-      </Modal>
+      </Modal>}
     </Layout>
   );
 }
