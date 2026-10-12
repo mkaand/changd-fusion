@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { EgressPolicy, browserProxy } from "./egress.js";
 import type { Config } from "./config.js";
-import { HttpError, captureFailure, type CaptureFailureCode, type CaptureStage } from "./errors.js";
+import { CaptureFailure, HttpError, captureFailure, type CaptureFailureCode, type CaptureStage } from "./errors.js";
 import { checkDimensions, pngDimensions } from "./image.js";
 import type { Monitor } from "./capture.js";
 
@@ -12,6 +12,21 @@ type Session = { id: string; ownerId: string; expiresAt: number; browser: Browse
 const SESSION_TTL_MS = 90_000;
 const MAX_SESSIONS = 4;
 const sessions = new Map<string, Session>();
+const reservations = new Map<string, string>();
+
+function reserveSession(ownerId: string, replaceOwnerSession: boolean) {
+  if ([...reservations.values()].includes(ownerId))
+    throw new CaptureFailure("browser_launch", "resource_limit", "Preview capacity is busy. Retry shortly.");
+  const existing = replaceOwnerSession
+    ? [...sessions.values()].find((entry) => entry.ownerId === ownerId)
+    : undefined;
+  if (sessions.size + reservations.size - (existing ? 1 : 0) >= MAX_SESSIONS)
+    throw new CaptureFailure("browser_launch", "resource_limit", "Preview capacity is busy. Retry shortly.");
+  if (existing) sessions.delete(existing.id);
+  const token = randomUUID();
+  reservations.set(token, ownerId);
+  return { token, existing };
+}
 
 async function closeSession(session: Session) {
   sessions.delete(session.id);
@@ -30,6 +45,7 @@ export async function closeRegionPreviewSessions() {
 
 function previewMessage(stage: CaptureStage, code: CaptureFailureCode) {
   if (code === "timeout") return "Preview timed out. Retry, or use viewport capture instead.";
+  if (code === "resource_limit") return "Preview capacity is busy. Retry shortly.";
   if (code === "egress_denied") return "Preview destination is not permitted.";
   if (code === "selector_failed") return "The selected region is not a unique visible element.";
   if (stage === "navigation") return "Website preview could not be loaded. Check the URL and try again.";
@@ -39,7 +55,7 @@ function previewMessage(stage: CaptureStage, code: CaptureFailureCode) {
 export function regionPreviewFailure(error: unknown, stage: CaptureStage): RegionPreviewFailure {
   const safe = captureFailure(error, stage);
   const validation = error instanceof HttpError && error.status >= 400 && error.status < 500;
-  return { stage: safe.stage, failure_code: safe.code, status: safe.code === "timeout" ? 504 : validation ? error.status : 422, message: previewMessage(safe.stage, safe.code) };
+  return { stage: safe.stage, failure_code: safe.code, status: safe.code === "timeout" ? 504 : safe.code === "resource_limit" ? 429 : validation ? error.status : 422, message: previewMessage(safe.stage, safe.code) };
 }
 
 async function selectionAt(page: Page, point: { x: number; y: number }): Promise<Selection> {
@@ -67,7 +83,7 @@ async function selectionAt(page: Page, point: { x: number; y: number }): Promise
   return selection;
 }
 
-export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number; y: number }, policy = new EgressPolicy(), session?: { ownerId: string; id?: string }) {
+export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number; y: number }, policy = new EgressPolicy(), session?: { ownerId: string; id?: string; retain?: boolean }) {
   let stage: CaptureStage = "target_validation";
   await purgeExpired();
   if (session?.id) {
@@ -88,8 +104,11 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
   let proxy: Awaited<ReturnType<typeof browserProxy>> | undefined;
   let browser: Browser | undefined;
   let context: BrowserContext | undefined;
+  let reservation: ReturnType<typeof reserveSession> | undefined;
   try {
     await policy.target(m.url);
+    reservation = reserveSession(session?.ownerId ?? randomUUID(), Boolean(session?.retain));
+    if (reservation.existing) await closeSession(reservation.existing);
     proxy = await browserProxy(policy);
     stage = "browser_launch";
     browser = await chromium.launch({ headless: true, chromiumSandbox: true, executablePath: cfg.PLAYWRIGHT_EXECUTABLE_PATH, proxy: { server: proxy.url, bypass: "<-loopback>" }, timeout: remaining() });
@@ -105,15 +124,14 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
     const image = await page.screenshot({ type: "png", animations: "disabled", timeout: remaining() });
     pngDimensions(image, { width: cfg.MAX_CAPTURE_WIDTH, height: cfg.MAX_CAPTURE_HEIGHT, pixels: cfg.MAX_CAPTURE_PIXELS });
     const selection = point ? await selectionAt(page, point) : null;
-    if (!session) return { image: image.toString("base64"), width: 1280, height: 900, selection };
-    for (const existing of [...sessions.values()].filter((entry) => entry.ownerId === session.ownerId)) await closeSession(existing);
-    while (sessions.size >= MAX_SESSIONS) await closeSession(sessions.values().next().value!);
+    if (!session?.retain) return { image: image.toString("base64"), width: 1280, height: 900, selection };
     const active: Session = { id: randomUUID(), ownerId: session.ownerId, expiresAt: Date.now() + SESSION_TTL_MS, browser, context, page, proxy, image };
     sessions.set(active.id, active);
     browser = undefined; context = undefined; proxy = undefined;
     return { session_id: active.id, image: image.toString("base64"), width: 1280, height: 900, selection };
   } catch (error) { throw regionPreviewFailure(error, stage); }
   finally {
+    if (reservation) reservations.delete(reservation.token);
     try { await context?.close(); } catch {}
     try { await browser?.close(); } finally { await proxy?.close(); }
   }

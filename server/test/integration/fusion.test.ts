@@ -25,7 +25,7 @@ import type { AddressInfo } from "node:net";
 import { seedPreview } from "../../src/preview-seed.js";
 import { compareVisual } from "../../src/comparison.js";
 import { telegramSummary } from "../../src/notifications.js";
-import { closeRegionPreviewSessions } from "../../src/region-picker.js";
+import { closeRegionPreviewSessions, previewRegion } from "../../src/region-picker.js";
 const expectedMigrationCount = (await readdir(path.resolve(import.meta.dirname, "../../migrations"))).filter((file) => /^\d+_.+\.sql$/.test(file)).length;
 const dbURL = new URL(process.env.TEST_DATABASE_URL ?? "");
 assert.ok(
@@ -1041,7 +1041,9 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     const page = await browser.newPage();
     // A controlled completed preview makes the documentation screenshot
     // deterministic without contacting a production or external website.
+    const regionPreviewBodies: any[] = [];
     await page.route("**/api/v1/region-preview", async (route) => {
+      regionPreviewBodies.push(route.request().postDataJSON());
       await route.fulfill({
         contentType: "application/json",
         body: JSON.stringify({
@@ -1270,7 +1272,66 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await page.getByRole("button", { name: "Select region visually", exact: true }).click();
     const picker = page.locator('section[aria-label="Select screenshot region"]');
     await picker.waitFor();
-    await picker.getByAltText("Secure monitor preview").waitFor();
+    const preview = picker.getByAltText("Secure monitor preview");
+    await preview.waitFor();
+    await picker.getByRole("button", { name: "Zoom in" }).click();
+    assert.equal(await picker.getByLabel("Current zoom").textContent(), "125%");
+    let previewBounds = await preview.boundingBox();
+    assert.ok(previewBounds);
+    const clickX = previewBounds.x + previewBounds.width * 0.3;
+    const clickY = previewBounds.y + previewBounds.height * 0.3;
+    const requestsBeforeClick = regionPreviewBodies.length;
+    await Promise.all([
+      page.waitForResponse((candidate) => candidate.url().includes("/api/v1/region-preview") && Boolean(candidate.request().postDataJSON()?.point)),
+      page.mouse.click(clickX, clickY),
+    ]);
+    assert.equal(regionPreviewBodies.length, requestsBeforeClick + 1, "a captured mouse click resolves exactly one selection request");
+    assert.ok(Math.abs(regionPreviewBodies.at(-1).point.x - 384) <= 1, "scaled mouse X maps to the original 1280px preview");
+    assert.ok(Math.abs(regionPreviewBodies.at(-1).point.y - 270) <= 1, "scaled mouse Y maps to the original 900px preview");
+    await picker.locator(".region-preview-highlight").waitFor();
+    const highlightBounds = await picker.locator(".region-preview-highlight").boundingBox();
+    previewBounds = await preview.boundingBox();
+    assert.ok(highlightBounds && previewBounds);
+    assert.ok(Math.abs((highlightBounds.x - previewBounds.x) / previewBounds.width - 160 / 1280) < 0.01, "highlight X remains aligned after zoom");
+    assert.ok(Math.abs((highlightBounds.y - previewBounds.y) / previewBounds.height - 160 / 900) < 0.01, "highlight Y remains aligned after zoom");
+
+    const canvasBounds = await picker.locator(".region-preview-canvas").boundingBox();
+    assert.ok(canvasBounds);
+    const dragRequests = regionPreviewBodies.length;
+    await page.mouse.move(canvasBounds.x + canvasBounds.width * 0.7, canvasBounds.y + canvasBounds.height * 0.6);
+    await page.mouse.down();
+    await page.mouse.move(canvasBounds.x + canvasBounds.width * 0.35, canvasBounds.y + canvasBounds.height * 0.35, { steps: 4 });
+    await page.mouse.up();
+    assert.equal(regionPreviewBodies.length, dragRequests, "mouse panning does not select a region");
+
+    const cdp = await page.context().newCDPSession(page);
+    await cdp.send("Emulation.setTouchEmulationEnabled", { enabled: true, maxTouchPoints: 2 });
+    previewBounds = await preview.boundingBox();
+    assert.ok(previewBounds);
+    const touchX = Math.max(canvasBounds.x + 20, Math.min(canvasBounds.x + canvasBounds.width - 20, previewBounds.x + previewBounds.width * 0.55));
+    const touchY = Math.max(canvasBounds.y + 20, Math.min(canvasBounds.y + canvasBounds.height - 20, previewBounds.y + previewBounds.height * 0.45));
+    const touchRequests = regionPreviewBodies.length;
+    await Promise.all([
+      page.waitForResponse((candidate) => candidate.url().includes("/api/v1/region-preview") && Boolean(candidate.request().postDataJSON()?.point)),
+      (async () => {
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: touchX, y: touchY, id: 1, radiusX: 1, radiusY: 1, force: 1 }] });
+        await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      })(),
+    ]);
+    assert.equal(regionPreviewBodies.length, touchRequests + 1, "a real Chromium touch tap resolves exactly one selection request");
+    const zoomBeforePinch = await picker.getByLabel("Current zoom").textContent();
+    const pinchRequests = regionPreviewBodies.length;
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [
+      { x: touchX - 25, y: touchY, id: 1, radiusX: 1, radiusY: 1, force: 1 },
+      { x: touchX + 25, y: touchY, id: 2, radiusX: 1, radiusY: 1, force: 1 },
+    ] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [
+      { x: touchX - 55, y: touchY, id: 1, radiusX: 1, radiusY: 1, force: 1 },
+      { x: touchX + 55, y: touchY, id: 2, radiusX: 1, radiusY: 1, force: 1 },
+    ] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    await page.waitForFunction((previous) => document.querySelector('[aria-label="Current zoom"]')?.textContent !== previous, zoomBeforePinch);
+    assert.equal(regionPreviewBodies.length, pinchRequests, "pinch zoom does not select a region");
     await page.screenshot({ path: path.join(output, "region-picker-mobile.png") });
     await page.getByRole("button", { name: "← Back", exact: true }).click();
     await mobileEditor.waitFor();
@@ -2605,4 +2666,60 @@ test("visual region picker preview maps screenshot coordinates to a unique visib
     monitor: { url: `http://fixture.example:${port}/`, kind: "browser", visual_enabled: true, browser_steps: [] },
     point: { x: 130, y: 150 },
   }).expect(410);
+});
+
+test("region preview capacity includes initializing browsers and releases reservations after failures", async (t) => {
+  await closeRegionPreviewSessions();
+  let blockedRequests = 0;
+  let releaseBlocked!: () => void;
+  let allStarted!: () => void;
+  const blocked = new Promise<void>((resolve) => { releaseBlocked = resolve; });
+  const started = new Promise<void>((resolve) => { allStarted = resolve; });
+  const fixture = managedServer(t, async (req, res) => {
+    if (req.url === "/blocked") {
+      blockedRequests++;
+      if (blockedRequests === 4) allStarted();
+      await blocked;
+    }
+    if (req.url === "/failure") {
+      res.destroy();
+      return;
+    }
+    res.end("<!doctype html><main id='preview-target'>Preview capacity fixture</main>");
+  });
+  await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
+  const port = (fixture.address() as AddressInfo).port;
+  const policy = new EgressPolicy(async () => [{ address: "127.0.0.1", family: 4 }], () => true, new Set([port]));
+  const monitor = (pathName: string) => ({
+    id: randomUUID(),
+    url: `http://preview-capacity.example:${port}${pathName}`,
+    kind: "browser",
+    text_enabled: false,
+    visual_enabled: true,
+    browser_steps: [],
+  }) as any;
+
+  const initializing = Array.from({ length: 4 }, (_, index) =>
+    previewRegion(monitor("/blocked"), cfg, undefined, policy, { ownerId: `capacity-owner-${index}`, retain: true }),
+  );
+  await started;
+  assert.equal(blockedRequests, 4, "four admitted previews can reach navigation concurrently");
+  await assert.rejects(
+    previewRegion(monitor("/blocked"), cfg, undefined, policy, { ownerId: "capacity-owner-excess", retain: true }),
+    (error: any) => error.failure_code === "resource_limit" && error.status === 429,
+  );
+  assert.equal(blockedRequests, 4, "the rejected preview never launches Chromium or reaches the target");
+  releaseBlocked();
+  const completed = await Promise.all(initializing);
+  assert.equal(completed.length, 4);
+  assert.ok(completed.every((entry) => entry.session_id), "admitted previews retain owner-bound sessions");
+
+  await closeRegionPreviewSessions();
+  await assert.rejects(
+    previewRegion(monitor("/failure"), cfg, undefined, policy, { ownerId: "failure-owner", retain: true }),
+    (error: any) => error.stage === "navigation",
+  );
+  const recovered = await previewRegion(monitor("/success"), cfg, undefined, policy, { ownerId: "recovery-owner", retain: true });
+  assert.match(recovered.session_id!, /^[0-9a-f-]{36}$/, "a failed initialization releases its reserved slot");
+  await closeRegionPreviewSessions();
 });

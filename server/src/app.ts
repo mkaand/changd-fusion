@@ -532,9 +532,7 @@ export function createApp(
         cfg,
         point,
         policy,
-        useSession
-          ? { ownerId: res.locals.user.user_id, id: sessionId }
-          : undefined,
+        { ownerId: res.locals.user.user_id, id: useSession ? sessionId : undefined, retain: useSession },
       );
       res.json(preview);
     } catch (error) {

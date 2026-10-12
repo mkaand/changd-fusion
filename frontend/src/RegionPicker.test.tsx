@@ -57,6 +57,35 @@ it("zooms without selecting and maps a click to original preview coordinates", a
   ));
 });
 
+it("does not select while panning, after pointer cancellation, or twice while a selection is pending", async () => {
+  let resolveSelection!: (value: unknown) => void;
+  vi.mocked(api)
+    .mockResolvedValueOnce({ session_id: "00000000-0000-4000-8000-000000000099", image: "aGVsbG8=", width: 1280, height: 900, selection: null })
+    .mockImplementationOnce(() => new Promise((resolve) => { resolveSelection = resolve; }));
+  render(<RegionPicker getDraft={() => draft} onSelect={vi.fn()} onUseViewport={vi.fn()} />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Select region visually" }));
+  const image = await screen.findByAltText("Secure monitor preview");
+  const canvas = image.closest(".region-preview-canvas")!;
+  Object.defineProperty(image, "getBoundingClientRect", { value: () => ({ left: 10, top: 20, width: 640, height: 450 }) });
+  await user.click(screen.getByRole("button", { name: "Zoom in" }));
+
+  fireEvent.pointerDown(image, { pointerId: 1, pointerType: "mouse", button: 0, clientX: 300, clientY: 220 });
+  fireEvent.pointerMove(canvas, { pointerId: 1, pointerType: "mouse", clientX: 340, clientY: 260 });
+  fireEvent.pointerUp(canvas, { pointerId: 1, pointerType: "mouse", clientX: 340, clientY: 260 });
+  fireEvent.pointerDown(image, { pointerId: 2, pointerType: "touch", clientX: 300, clientY: 220 });
+  fireEvent.pointerCancel(canvas, { pointerId: 2, pointerType: "touch", clientX: 300, clientY: 220 });
+  expect(api).toHaveBeenCalledTimes(1);
+
+  fireEvent.pointerDown(image, { pointerId: 3, pointerType: "mouse", button: 0, clientX: 330, clientY: 245 });
+  fireEvent.pointerUp(canvas, { pointerId: 3, pointerType: "mouse", clientX: 330, clientY: 245 });
+  fireEvent.pointerDown(image, { pointerId: 4, pointerType: "mouse", button: 0, clientX: 330, clientY: 245 });
+  fireEvent.pointerUp(canvas, { pointerId: 4, pointerType: "mouse", clientX: 330, clientY: 245 });
+  expect(api).toHaveBeenCalledTimes(2);
+  resolveSelection({ session_id: "00000000-0000-4000-8000-000000000099", image: "aGVsbG8=", width: 1280, height: 900, selection: null });
+  await waitFor(() => expect(screen.queryByLabelText("Resolving selected region")).not.toBeInTheDocument());
+});
+
 it("keeps the form usable after a safe preview error and offers retry and viewport fallback", async () => {
   const requestId = `safe-${"request-id-".repeat(18)}`;
   const retry = new ApiError("Preview timed out. Retry, or use viewport capture instead.", {
