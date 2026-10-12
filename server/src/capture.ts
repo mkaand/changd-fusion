@@ -112,9 +112,12 @@ async function visibleText(locator: Locator, ignoreSelectors: string[]) {
 export function validateJinaReaderContent(body: Buffer) {
   const text = body.toString("utf8").replace(/\u0000/g, "").trim();
   const compact = text.replace(/\s+/g, " ").toLowerCase();
-  const challenge = /(?:verify you are human|complete (?:the )?captcha|access denied|bot verification|security check)/.test(compact);
-  const errorDocument = /^(?:error|forbidden|access denied|request failed)\b/.test(compact) || /<(?:html|title)[^>]*>.*(?:captcha|access denied|forbidden)/i.test(text);
-  if (!text || (text.length < 120 && (challenge || errorDocument)) || (challenge && errorDocument)) throw new HttpError(422, "Reader content could not be verified. Keep the existing baseline and retry.");
+  const challenge = /(?:just a moment\.{0,3}|performing security verification|verify you are human|complete (?:the )?captcha|cloudflare challenge|bot verification)/.test(compact);
+  const accessFailure = /(?:access denied|forbidden|request failed|error 10\d{2})/.test(compact);
+  const errorDocument = /^(?:error|forbidden|access denied|request failed)\b/.test(compact) || /<(?:html|title)[^>]*>.*(?:captcha|cloudflare|access denied|forbidden)/i.test(text);
+  // A normal article can mention CAPTCHA or Cloudflare. Only block compact
+  // interstitial/error documents with an independent failure signal.
+  if (!text || (text.length < 600 && (accessFailure || challenge)) || (challenge && accessFailure)) throw new HttpError(422, "Reader content could not be verified. Keep the existing baseline and retry.");
   return text;
 }
 function stableJSON(value: any): any {

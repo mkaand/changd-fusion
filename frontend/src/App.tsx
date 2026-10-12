@@ -206,6 +206,16 @@ export default function FusionApp() {
     }
   };
   useEffect(() => {
+    const restore = () => {
+      if (location.pathname === "/jobs/editor/region-picker" && open) setPage("region-picker");
+      else if (location.pathname === "/jobs/editor" && open) setPage("editor");
+      else if (location.pathname === "/jobs") setPage("jobs");
+    };
+    window.addEventListener("popstate", restore);
+    restore();
+    return () => window.removeEventListener("popstate", restore);
+  }, [open]);
+  useEffect(() => {
     if (user && /^\/jobs\/[a-f\d-]{36}$/.test(location.pathname))
       void detail(location.pathname.split("/")[2]);
   }, [user]);
@@ -219,7 +229,7 @@ export default function FusionApp() {
     setOpen(true);
     if (compactLayout) {
       setPage("editor");
-      history.replaceState(null, "", "/jobs/editor");
+      history.pushState(null, "", "/jobs/editor");
     }
   };
   const save = async () => {
@@ -394,11 +404,11 @@ export default function FusionApp() {
             {page === "editor" && compactLayout && open ? (
               <section className="mobile-monitor-editor" aria-label={editing ? "Edit monitor" : "New monitor"}>
                 <div className="mobile-editor-header"><Button type="text" onClick={() => { setOpen(false); navigate("jobs"); }}>← Back</Button><Typography.Title level={3}>{editing ? "Edit monitor" : "New monitor"}</Typography.Title></div>
-                <MonitorForm form={form} channels={channels} monitorId={editing?.id} onOpenMobileRegion={() => { setPage("region-picker"); history.replaceState(null, "", "/jobs/editor/region-picker"); }} />
+                <MonitorForm form={form} channels={channels} monitorId={editing?.id} onOpenMobileRegion={() => { setPage("region-picker"); history.pushState(null, "", "/jobs/editor/region-picker"); }} />
                 <div className="mobile-editor-actions"><Button onClick={() => { setOpen(false); navigate("jobs"); }}>Cancel</Button><Button type="primary" loading={saving} onClick={save}>Save monitor</Button></div>
               </section>
             ) : page === "region-picker" && compactLayout && open ? (
-              <RegionPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onSelect={(selector) => { form.setFieldsValue({ capture_selector_type: "css", capture_selector: selector }); setPage("editor"); history.replaceState(null, "", "/jobs/editor"); }} onUseViewport={() => { form.setFieldsValue({ capture_mode: "viewport", capture_selector: "" }); setPage("editor"); history.replaceState(null, "", "/jobs/editor"); }} onBackMobile={() => { setPage("editor"); history.replaceState(null, "", "/jobs/editor"); }} />
+              <RegionPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onSelect={(selector) => { form.setFieldsValue({ capture_selector_type: "css", capture_selector: selector }); setPage("editor"); history.pushState(null, "", "/jobs/editor"); }} onUseViewport={() => { form.setFieldsValue({ capture_mode: "viewport", capture_selector: "" }); setPage("editor"); history.pushState(null, "", "/jobs/editor"); }} onBackMobile={() => { setPage("editor"); history.pushState(null, "", "/jobs/editor"); }} />
             ) : page === "timeline" ? (
               <Timeline monitors={monitors} />
             ) : page === "analytics" ? (
