@@ -43,7 +43,7 @@ export function Timeline({ monitors }: { monitors: any[] }) {
     <label>To <Input aria-label="Timeline end date" type="date" value={to} onChange={(e) => { setTo(e.target.value); setPage(1); }} /></label>
   </Space>;
   const event = (item: any) => <>
-    <Space wrap><Tag color={tagColor(item.status)}>{item.status.replaceAll("_", " ")}</Tag>{item.text_changed && <Tag color="blue">Text changed</Tag>}{item.visual_changed && <Tag>Visual {percent(item.visual_percent)}</Tag>}{item.dimension_changed && <Tag>Dimensions changed</Tag>}</Space>
+    <Space wrap><Tag color={tagColor(item.status)}>{item.status.replaceAll("_", " ")}</Tag>{item.text_changed && <Tag color="blue">Text changed</Tag>}{item.text_added && <Tag color="green">Added</Tag>}{item.text_removed && <Tag color="volcano">Removed</Tag>}{item.visual_changed && <Tag>Visual {percent(item.visual_percent)}</Tag>}{item.dimension_changed && <Tag>Dimensions changed</Tag>}</Space>
     {item.status === "failed" && <Typography.Text type="secondary">{item.failure_stage ? `${item.failure_stage} · ` : ""}{item.failure_code ?? "capture failed"}</Typography.Text>}
   </>;
   return <section className="timeline-page" aria-label="Monitoring timeline">

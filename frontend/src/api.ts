@@ -56,4 +56,4 @@ export const loginUser = (values: { email: string; password: string }) =>
 export const percent = (value: string | null) =>
   value === null
     ? "—"
-    : value.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "") + "%";
+    : Number(value).toFixed(2) + "%";

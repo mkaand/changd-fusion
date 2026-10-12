@@ -10,9 +10,15 @@ Changd Fusion combines text extraction and screenshot comparison in one monitor,
 | --- | --- |
 | ![Changd Fusion dark dashboard](docs/images/dashboard-desktop-dark.png) | ![Changd Fusion mobile dashboard](docs/images/history-mobile.png) |
 
+| Mobile monitor Advanced Settings | Mobile visual-monitor history |
+| --- | --- |
+| ![Changd Fusion mobile monitor editor](docs/images/capture-settings-mobile.png) | ![Changd Fusion mobile capture history](docs/images/dimensions-mobile.png) |
+
 ## Features
 
 - **Unified monitoring** — browser text, visual, HTML and API monitoring with CSS/XPath extraction, masks, ignore rules, decimal-safe Pixelmatch comparison and structural dimension-change events. Browser text capture follows rendered visible content and excludes scripts, templates and hidden hydration state; raw HTML and API/JSON modes retain source semantics. Capture failures persist only safe stage/code categories and duration—never raw exceptions, URLs, headers, page content, or credentials. A legacy browser text baseline transitions silently on its next successful capture; its current screenshot is adopted too, so a one-time visual change is intentionally absorbed rather than notified.
+- **Focused text notifications** — choose Added only, Removed only, or Added & Removed per monitor. This affects delivery only: captures, baselines, History and Timeline keep the complete change record. Visual alerts are independent of the text direction rule.
+- **Optional Jina Reader source** — text-only Browser monitors may explicitly use Jina Reader. The monitored URL is sent to the third-party reader; this is shown in the editor before saving. Chromium visual capture, Browser Steps, private values, CAPTCHA bypass and authenticated browsing are never routed through Jina.
 - **Browser steps** — validated waits, clicks, scrolling, select and safe form actions run in the same sandboxed Playwright session as capture.
 - **Visual history** — before/after/diff artifacts, comparison slider, pagination and retention-aware storage.
 - **Smart notifications** — SMTP and Telegram channels, encrypted credentials, fixed-host TLS delivery, outbox retries, concise redacted summaries, mute/cooldown, duplicate suppression and durable monitor digests.
@@ -24,7 +30,9 @@ Changd Fusion combines text extraction and screenshot comparison in one monitor,
 
 ## Visual region picker
 
-For an already saved browser/visual monitor, choose **Selected element / region** and use **Select region visually**. The authenticated preview uses the same SSRF restrictions and Chromium sandbox as monitoring. Clicking a visible region proposes a unique CSS selector; it is not saved until the monitor form is saved. Private-value workflows are deliberately excluded from preview. CSS/XPath entry remains available as a fallback.
+For an already saved browser/visual monitor, choose **Selected element / region** and use **Select region visually**. On mobile this opens a dedicated application page, preserving the unsaved editor form until the user returns.
+
+![Changd Fusion mobile region picker](docs/images/region-picker-mobile.png) The authenticated preview uses the same SSRF restrictions and Chromium sandbox as monitoring. Clicking a visible region proposes a unique CSS selector; it is not saved until the monitor form is saved. Private-value workflows are deliberately excluded from preview. CSS/XPath entry remains available as a fallback.
 
 ## Docker self-hosting
 

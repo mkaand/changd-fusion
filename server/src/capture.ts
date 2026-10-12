@@ -18,6 +18,8 @@ export type Monitor = {
   url: string;
   kind: "browser" | "html" | "api";
   text_enabled: boolean;
+  text_direction?: "added" | "removed" | "both";
+  text_source?: "direct" | "jina";
   visual_enabled: boolean;
   selector: string;
   selector_type: "css" | "xpath";
@@ -107,6 +109,17 @@ async function visibleText(locator: Locator, ignoreSelectors: string[]) {
     return chunks.join("\n");
   }, ignoreSelectors);
 }
+export function validateJinaReaderContent(body: Buffer) {
+  const text = body.toString("utf8").replace(/\u0000/g, "").trim();
+  const compact = text.replace(/\s+/g, " ").toLowerCase();
+  const challenge = /(?:just a moment\.{0,3}|performing security verification|verify you are human|complete (?:the )?captcha|cloudflare challenge|bot verification)/.test(compact);
+  const accessFailure = /(?:access denied|forbidden|request failed|error 10\d{2})/.test(compact);
+  const errorDocument = /^(?:error|forbidden|access denied|request failed)\b/.test(compact) || /<(?:html|title)[^>]*>.*(?:captcha|cloudflare|access denied|forbidden)/i.test(text);
+  // A normal article can mention CAPTCHA or Cloudflare. Only block compact
+  // interstitial/error documents with an independent failure signal.
+  if (!text || (text.length < 600 && (accessFailure || challenge)) || (challenge && accessFailure)) throw new HttpError(422, "Reader content could not be verified. Keep the existing baseline and retry.");
+  return text;
+}
 function stableJSON(value: any): any {
   if (Array.isArray(value)) return value.map(stableJSON);
   if (value && typeof value === "object")
@@ -142,7 +155,7 @@ export async function capture(
     await policy.target(m.url);
     if (m.kind !== "browser") {
       enterStage("navigation");
-      const response = await safeFetch(m.url, policy, cfg.CAPTURE_TIMEOUT_MS);
+      const response = await safeFetch(m.text_source === "jina" ? `https://r.jina.ai/${m.url}` : m.url, policy, cfg.CAPTURE_TIMEOUT_MS);
       const text =
         m.kind === "api"
           ? JSON.stringify(stableJSON(JSON.parse(response.body.toString())), null, 2)
@@ -162,6 +175,12 @@ export async function capture(
         422,
         "Private workflows require HTTPS and text-only capture",
       );
+    if (m.text_source === "jina" && m.text_enabled && !m.visual_enabled) {
+      enterStage("navigation");
+      const response = await safeFetch(`https://r.jina.ai/${m.url}`, policy, cfg.CAPTURE_TIMEOUT_MS);
+      finishTimings();
+      return { text: normalizeText(validateJinaReaderContent(response.body), m), screenshot: null, timings };
+    }
     proxy = await browserProxy(policy);
     enterStage("browser_launch");
     browser = await chromium.launch({

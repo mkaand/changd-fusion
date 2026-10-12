@@ -41,6 +41,8 @@ const monitorInput = z
     url: z.string().url().max(2048),
     kind: z.enum(["browser", "html", "api"]).default("browser"),
     text_enabled: z.boolean().default(true),
+    text_direction: z.enum(["added", "removed", "both"]).default("both"),
+    text_source: z.enum(["direct", "jina"]).default("direct"),
     visual_enabled: z.boolean().default(false),
     selector: z.string().max(1000).default(""),
     selector_type: z.enum(["css", "xpath"]).default("css"),
@@ -87,6 +89,12 @@ const monitorInput = z
   )
   .refine((m) => m.text_enabled || m.visual_enabled, {
     message: "Enable at least one detection method",
+  })
+  .refine((m) => m.text_source === "direct" || (m.kind === "browser" && m.text_enabled && !m.visual_enabled), {
+    message: "Jina Reader is available only for text-only Browser monitors",
+  })
+  .refine((m) => m.text_source === "direct" || (!m.selector && m.ignore_selectors.length === 0 && m.browser_steps.length === 0), {
+    message: "Jina Reader does not support selectors, dynamic-region removal, or Browser Steps",
   })
   .refine(
     (m) => m.kind === "browser" || (m.text_enabled && !m.visual_enabled),
@@ -569,6 +577,7 @@ export function createApp(
           "visual_threshold",
           "pixel_threshold",
           "step_budget_ms",
+          "text_direction",
         ]);
         const configurationChanged = Object.entries(fields).some(
           ([k, v]) =>
@@ -817,7 +826,9 @@ export function createApp(
       pool.query(
         `SELECT e.id,e.monitor_id,m.name AS monitor_name,e.status,e.text_changed,e.visual_changed,
           e.visual_percent,e.dimension_changed,e.attention_state,e.warning_code,e.failure_stage,
-          e.failure_code,e.error,e.created_at,e.execution_ms,e.notification_state
+          e.failure_code,e.error,e.created_at,e.execution_ms,e.notification_state,
+          EXISTS(SELECT 1 FROM jsonb_array_elements(e.text_diff) p WHERE COALESCE((p->>'added')::boolean,false)) AS text_added,
+          EXISTS(SELECT 1 FROM jsonb_array_elements(e.text_diff) p WHERE COALESCE((p->>'removed')::boolean,false)) AS text_removed
          FROM fusion_events e JOIN fusion_monitors m ON m.id=e.monitor_id
          WHERE ${where} ORDER BY e.created_at DESC,e.id DESC LIMIT $6 OFFSET $7`,
         [...values, query.page_size, (query.page - 1) * query.page_size],
@@ -844,7 +855,7 @@ export function createApp(
         `SELECT count(*) total,
           count(*) FILTER (WHERE e.status='changed') changed,
           count(*) FILTER (WHERE e.status='failed') failed,
-          count(*) FILTER (WHERE e.status <> 'failed') successful
+          count(*) FILTER (WHERE e.status IN ('baseline','unchanged','changed','extraction_transition')) successful
          FROM fusion_events e JOIN fusion_monitors m ON m.id=e.monitor_id WHERE ${where}`,
         values,
       ),
@@ -858,7 +869,7 @@ export function createApp(
           count(*)::int AS total,
           count(*) FILTER (WHERE e.status='changed')::int AS changed,
           count(*) FILTER (WHERE e.status='failed')::int AS failed,
-          count(*) FILTER (WHERE e.status <> 'failed')::int AS successful
+          count(*) FILTER (WHERE e.status IN ('baseline','unchanged','changed','extraction_transition'))::int AS successful
          FROM fusion_events e JOIN fusion_monitors m ON m.id=e.monitor_id
          WHERE ${where} GROUP BY date_trunc('day',e.created_at AT TIME ZONE 'UTC') ORDER BY day ASC`,
         values,

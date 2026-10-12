@@ -17,7 +17,7 @@ import { PNG } from "pngjs";
 import { randomUUID, randomBytes, createHash } from "node:crypto";
 import { hash } from "bcryptjs";
 import jwt from "jsonwebtoken";
-import { mkdtemp, rm, readFile, mkdir } from "node:fs/promises";
+import { mkdtemp, rm, readFile, mkdir, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
@@ -25,6 +25,7 @@ import type { AddressInfo } from "node:net";
 import { seedPreview } from "../../src/preview-seed.js";
 import { compareVisual } from "../../src/comparison.js";
 import { telegramSummary } from "../../src/notifications.js";
+const expectedMigrationCount = (await readdir(path.resolve(import.meta.dirname, "../../migrations"))).filter((file) => /^\d+_.+\.sql$/.test(file)).length;
 const dbURL = new URL(process.env.TEST_DATABASE_URL ?? "");
 assert.ok(
   ["127.0.0.1", "localhost"].includes(dbURL.hostname),
@@ -110,10 +111,7 @@ test("fresh migration is repeatable and decimal columns are NUMERIC", async () =
     "SELECT data_type FROM information_schema.columns WHERE table_name='fusion_events' AND column_name='visual_percent'",
   );
   assert.equal(r.rows[0].data_type, "numeric");
-  assert.equal(
-    (await pool.query("SELECT count(*) FROM fusion_migrations")).rows[0].count,
-    "6",
-  );
+  assert.equal(Number((await pool.query("SELECT count(*) FROM fusion_migrations")).rows[0].count), expectedMigrationCount);
 });
 test("JWT, admin checks, CSRF, disabled registration and removed scheduler endpoint", async () => {
   await request(app).get("/api/v1/jobs").expect(401);
@@ -872,11 +870,7 @@ test("legacy migration preserves owner, historical references and NUMERIC decima
     assert.equal(upgraded.browser_text_extraction_version, 2);
     assert.deepEqual(upgraded.browser_steps, []);
     assert.equal(upgraded.monitor_state, "healthy");
-    assert.equal(
-      (await legacy.query("SELECT count(*) FROM fusion_migrations")).rows[0]
-        .count,
-      "6",
-    );
+    assert.equal(Number((await legacy.query("SELECT count(*) FROM fusion_migrations")).rows[0].count), expectedMigrationCount);
     assert.equal(upgraded.baseline_id, preservedCapture);
     assert.equal(upgraded.latest_capture_id, preservedCapture);
     assert.equal(upgraded.last_percent, "0.3500000000");
@@ -1231,11 +1225,11 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
       })
       .screenshot({ path: path.join(output, "dimensions-mobile.png") });
     await page.getByRole("button", { name: "Edit", exact: true }).click();
-    const mobileEditor = page.getByRole("dialog", { name: "Edit monitor" });
+    const mobileEditor = page.locator('section[aria-label="Edit monitor"]');
     await mobileEditor.waitFor();
     assert.equal(await page.getByLabel("Screenshot capture mode", { exact: true }).count(), 0, "advanced controls start collapsed");
     await mobileEditor.locator(".monitor-editor-form").waitFor();
-    await page.getByRole("button", { name: "Save monitor", exact: true }).waitFor();
+    await mobileEditor.getByRole("button", { name: "Save monitor", exact: true }).waitFor();
     const editorBounds = await mobileEditor.boundingBox();
     assert.ok(editorBounds && editorBounds.width <= 390, "mobile editor fits the Safari-sized viewport");
     await page.getByText("Advanced settings", { exact: true }).click();
@@ -1243,6 +1237,22 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await page.screenshot({
       path: path.join(output, "capture-settings-mobile.png"),
     });
+    const captureMode = page.getByLabel("Screenshot capture mode", { exact: true });
+    await captureMode.click();
+    await page.getByText("Selected element / region", { exact: true }).last().click();
+    await page.getByRole("button", { name: "Select region visually", exact: true }).waitFor();
+    const urlBeforePicker = await page.getByLabel("URL", { exact: true }).inputValue();
+    await page.getByRole("button", { name: "Select region visually", exact: true }).click();
+    const picker = page.locator('section[aria-label="Select screenshot region"]');
+    await picker.waitFor();
+    await page.screenshot({ path: path.join(output, "region-picker-mobile.png") });
+    await page.getByRole("button", { name: "← Back", exact: true }).click();
+    await mobileEditor.waitFor();
+    assert.equal(await page.getByLabel("URL", { exact: true }).inputValue(), urlBeforePicker, "Back preserves unsaved editor values");
+    await page.getByText("Advanced settings", { exact: true }).waitFor();
+    await page.getByLabel("Screenshot capture mode", { exact: true }).waitFor();
+    await page.getByRole("button", { name: "Select region visually", exact: true }).waitFor();
+    await page.getByLabel("Screenshot region selector", { exact: true }).waitFor();
     await page
       .getByRole("button", { name: "Add browser step", exact: true })
       .click();
@@ -2172,7 +2182,7 @@ test("private preview seed migrates all versions, is idempotent, preserves chang
     assert.equal(
       (await seededPool.query("SELECT count(*) FROM fusion_migrations")).rows[0]
         .count,
-      "6",
+      String(expectedMigrationCount),
     );
     assert.equal(
       (await seededPool.query("SELECT count(*) FROM users")).rows[0].count,
@@ -2500,12 +2510,16 @@ test("Codespaces Telegram requires an explicit successful owned test before auto
 });
 
 test("monitoring defaults and bulk channel assignment are owner-scoped and transactional", async () => {
+  // A dedicated app gives this authorization test an independent test-only limiter store.
+  const bulkApp = createApp(pool, cfg, new EgressPolicy(async () => [{ address: "8.8.8.8", family: 4 }]));
+  const bulkOwner = request.agent(bulkApp), bulkOther = request.agent(bulkApp);
+  for (const [agent, email] of [[bulkOwner, "owner@example.com"], [bulkOther, "other@example.com"]] as const) await agent.post("/api/v1/login").set("X-Fusion-Request", "1").send({ email, password }).expect(200);
   const defaults = { interval_seconds: 900, capture_mode: "viewport", notification_mode: "digest", notification_cooldown_seconds: 900, channel_ids: [channelId] };
-  await ownerAgent.put("/api/v1/preferences/monitoring").set("X-Fusion-Request", "1").send(defaults).expect(200);
-  assert.equal((await ownerAgent.get("/api/v1/preferences/monitoring").expect(200)).body.notification_mode, "digest");
-  await otherAgent.put("/api/v1/preferences/monitoring").set("X-Fusion-Request", "1").send({ channel_ids: [channelId] }).expect(404);
-  await ownerAgent.post("/api/v1/monitors/notification-channels/bulk").set("X-Fusion-Request", "1").send({ monitor_ids: [monitor.id], channel_id: channelId, action: "add", confirm: true }).expect(204);
-  await otherAgent.post("/api/v1/monitors/notification-channels/bulk").set("X-Fusion-Request", "1").send({ monitor_ids: [monitor.id], channel_id: channelId, action: "remove", confirm: true }).expect(404);
+  await bulkOwner.put("/api/v1/preferences/monitoring").set("X-Fusion-Request", "1").send(defaults).expect(200);
+  assert.equal((await bulkOwner.get("/api/v1/preferences/monitoring").expect(200)).body.notification_mode, "digest");
+  await bulkOther.put("/api/v1/preferences/monitoring").set("X-Fusion-Request", "1").send({ channel_ids: [channelId] }).expect(404);
+  await bulkOwner.post("/api/v1/monitors/notification-channels/bulk").set("X-Fusion-Request", "1").send({ monitor_ids: [monitor.id], channel_id: channelId, action: "add", confirm: true }).expect(204);
+  await bulkOther.post("/api/v1/monitors/notification-channels/bulk").set("X-Fusion-Request", "1").send({ monitor_ids: [monitor.id], channel_id: channelId, action: "remove", confirm: true }).expect(404);
   const association = await pool.query("SELECT 1 FROM fusion_monitor_channels WHERE monitor_id=$1 AND channel_id=$2", [monitor.id, channelId]);
   assert.equal(association.rowCount, 1);
 });

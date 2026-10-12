@@ -36,6 +36,7 @@ import { useThemeAdapter } from "./theme";
 import { AllMyThemeControls } from "./AllMyThemeControls";
 import { Login } from "./Login";
 import { MonitorForm, defaults } from "./MonitorForm";
+import { RegionPicker } from "./RegionPicker";
 import { MonitorUrlActions } from "./MonitorUrlActions";
 const History = lazy(() =>
   import("./History").then((m) => ({ default: m.History })),
@@ -108,7 +109,8 @@ export default function FusionApp() {
     [navigationOpen, setNavigationOpen] = useState(false);
   const [open, setOpen] = useState(false),
     [editing, setEditing] = useState<any>(),
-    [saving, setSaving] = useState(false);
+    [saving, setSaving] = useState(false),
+    [advancedOpen, setAdvancedOpen] = useState(false);
   const [form] = Form.useForm();
   const requestRef = useRef<AbortController | undefined>(undefined);
   const requestVersion = useRef(0);
@@ -204,11 +206,27 @@ export default function FusionApp() {
       void message.error((e as Error).message);
     }
   };
+  const returnToEditor = () => {
+    if (location.pathname === "/jobs/editor/region-picker" && history.length > 1) history.back();
+    else { setPage("editor"); history.replaceState(null, "", "/jobs/editor"); }
+  };
+  useEffect(() => {
+    const restore = () => {
+      if (location.pathname === "/jobs/editor/region-picker" && open) setPage("region-picker");
+      else if (location.pathname === "/jobs/editor" && open) setPage("editor");
+      else if (location.pathname.startsWith("/jobs/editor")) { setPage("jobs"); history.replaceState(null, "", "/jobs"); }
+      else if (location.pathname === "/jobs") setPage("jobs");
+    };
+    window.addEventListener("popstate", restore);
+    restore();
+    return () => window.removeEventListener("popstate", restore);
+  }, [open]);
   useEffect(() => {
     if (user && /^\/jobs\/[a-f\d-]{36}$/.test(location.pathname))
       void detail(location.pathname.split("/")[2]);
   }, [user]);
   const edit = async (m?: any) => {
+    setAdvancedOpen(false);
     setEditing(m);
     form.resetFields();
     const userDefaults = m ? {} : await api("/preferences/monitoring").catch(() => ({}));
@@ -216,6 +234,10 @@ export default function FusionApp() {
       m ? { ...defaults, ...(await api("/jobs/" + m.id)) } : { ...defaults, ...userDefaults },
     );
     setOpen(true);
+    if (compactLayout) {
+      setPage("editor");
+      history.pushState(null, "", "/jobs/editor");
+    }
   };
   const save = async () => {
     setSaving(true);
@@ -229,6 +251,7 @@ export default function FusionApp() {
         b,
       );
       setOpen(false);
+      if (compactLayout) navigate("jobs");
       await reload("mutation");
       setHistoryRefresh((r) => r + 1);
       if (selected) await detail(selected.id);
@@ -385,7 +408,15 @@ export default function FusionApp() {
               </div>
             }
           >
-            {page === "timeline" ? (
+            {page === "editor" && compactLayout && open ? (
+              <section className="mobile-monitor-editor" aria-label={editing ? "Edit monitor" : "New monitor"}>
+                <div className="mobile-editor-header"><Button type="text" onClick={() => { setOpen(false); navigate("jobs"); }}>← Back</Button><Typography.Title level={3}>{editing ? "Edit monitor" : "New monitor"}</Typography.Title></div>
+                <MonitorForm form={form} channels={channels} monitorId={editing?.id} advancedOpen={advancedOpen} setAdvancedOpen={setAdvancedOpen} onOpenMobileRegion={() => { setPage("region-picker"); history.pushState(null, "", "/jobs/editor/region-picker"); }} />
+                <div className="mobile-editor-actions"><Button onClick={() => { setOpen(false); navigate("jobs"); }}>Cancel</Button><Button type="primary" loading={saving} onClick={save}>Save monitor</Button></div>
+              </section>
+            ) : page === "region-picker" && compactLayout && open ? (
+              <RegionPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onSelect={(selector) => { form.setFieldsValue({ capture_selector_type: "css", capture_selector: selector }); returnToEditor(); }} onUseViewport={() => { form.setFieldsValue({ capture_mode: "viewport", capture_selector: "" }); returnToEditor(); }} onBackMobile={returnToEditor} />
+            ) : page === "timeline" ? (
               <Timeline monitors={monitors} />
             ) : page === "analytics" ? (
               <Analytics monitors={monitors} />
@@ -717,7 +748,7 @@ export default function FusionApp() {
           </Suspense>
         </Content>
       </Layout>
-      <Modal
+      {!compactLayout && <Modal
         className="monitor-editor-modal"
         open={open}
         title={editing ? "Edit monitor" : "New monitor"}
@@ -727,7 +758,7 @@ export default function FusionApp() {
         destroyOnHidden
       >
         <MonitorForm form={form} channels={channels} monitorId={editing?.id} />
-      </Modal>
+      </Modal>}
     </Layout>
   );
 }

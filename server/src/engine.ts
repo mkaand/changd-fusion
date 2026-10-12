@@ -98,6 +98,11 @@ async function queueNotification(c: any, monitor: any, eventId: string, fingerpr
   await c.query("INSERT INTO fusion_outbox(event_id,channel_id) SELECT $1,mc.channel_id FROM fusion_monitor_channels mc JOIN fusion_channels ch ON ch.id=mc.channel_id WHERE mc.monitor_id=$2 AND ch.enabled AND ch.user_id=$3 ON CONFLICT DO NOTHING", [eventId, monitor.id, monitor.user_id]);
   await c.query("UPDATE fusion_events SET notification_state='queued',notification_fingerprint=$2 WHERE id=$1", [eventId, fingerprint]);
 }
+
+export function textDirectionMatches(parts: Array<{ added?: boolean; removed?: boolean }>, direction: string | undefined) {
+  if (!direction || direction === "both") return true;
+  return direction === "added" ? parts.some((part) => part.added) : parts.some((part) => part.removed);
+}
 export async function runMonitor(
   pool: Pool,
   cfg: Config,
@@ -255,13 +260,13 @@ export async function runMonitor(
             VISIBLE_BROWSER_TEXT_EXTRACTION_VERSION,
           ],
         );
-        if (status === "changed")
-          await queueNotification(
-            c,
-            m,
-            event.rows[0].id,
-            notificationFingerprint(text.parts, visual),
-          );
+        if (status === "changed") {
+          const fingerprint = notificationFingerprint(text.parts, visual);
+          if (visual?.changed || !text.changed || textDirectionMatches(text.parts, m.text_direction))
+            await queueNotification(c, m, event.rows[0].id, fingerprint);
+          else
+            await c.query("UPDATE fusion_events SET notification_state='direction_filtered',notification_fingerprint=$2 WHERE id=$1", [event.rows[0].id, fingerprint]);
+        }
         await c.query("COMMIT");
       } catch (e) {
         await c.query("ROLLBACK");
