@@ -43,6 +43,7 @@ const monitorInput = z
     text_enabled: z.boolean().default(true),
     text_direction: z.enum(["added", "removed", "both"]).default("both"),
     text_source: z.enum(["direct", "jina"]).default("direct"),
+    extraction_mode: z.enum(["full_text", "product_price"]).default("full_text"),
     visual_enabled: z.boolean().default(false),
     selector: z.string().max(1000).default(""),
     selector_type: z.enum(["css", "xpath"]).default("css"),
@@ -96,6 +97,9 @@ const monitorInput = z
   .refine((m) => m.text_source === "direct" || (!m.selector && m.ignore_selectors.length === 0 && m.browser_steps.length === 0), {
     message: "Jina Reader does not support selectors, dynamic-region removal, or Browser Steps",
   })
+  .refine((m) => m.extraction_mode === "full_text" || m.text_source === "jina", {
+    message: "Product Price extraction requires Jina Reader",
+  })
   .refine(
     (m) => m.kind === "browser" || (m.text_enabled && !m.visual_enabled),
     { message: "HTML/API monitors require text-only detection" },
@@ -124,6 +128,7 @@ const credentials = z
   .strict();
 const regionPreviewInput = z
   .object({
+    session_id: uuid.optional(),
     monitor_id: uuid.optional(),
     monitor: z
       .object({
@@ -519,10 +524,16 @@ export function createApp(
       channel_ids: channels.rows.map((r) => r.channel_id),
     });
   });
-  const runRegionPreview = async (req: Request, res: Response, monitor: any, point?: { x: number; y: number }) => {
+  const runRegionPreview = async (req: Request, res: Response, monitor: any, point?: { x: number; y: number }, sessionId?: string, useSession = false) => {
     const started = performance.now();
     try {
-      const preview = await previewRegion(monitor, cfg, point, policy);
+      const preview = await previewRegion(
+        monitor,
+        cfg,
+        point,
+        policy,
+        { ownerId: res.locals.user.user_id, id: useSession ? sessionId : undefined, retain: useSession },
+      );
       res.json(preview);
     } catch (error) {
       const failure = error as RegionPreviewFailure;
@@ -541,7 +552,7 @@ export function createApp(
   app.post("/api/v1/region-preview", async (req, res) => {
     const body = regionPreviewInput.parse(req.body);
     if (body.monitor_id) await owner(body.monitor_id, res.locals.user.user_id);
-    await runRegionPreview(req, res, { ...body.monitor, id: body.monitor_id ?? "preview", browser_steps: body.monitor.browser_steps }, body.point);
+    await runRegionPreview(req, res, { ...body.monitor, id: body.monitor_id ?? "preview", browser_steps: body.monitor.browser_steps }, body.point, body.session_id, true);
   });
   // Retained for already released clients. New and edited forms use the draft-aware endpoint above.
   app.post("/api/v1/jobs/:id/region-preview", async (req, res) => {

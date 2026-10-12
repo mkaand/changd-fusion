@@ -11,6 +11,7 @@ import {
 } from "./errors.js";
 import { checkDimensions, pngDimensions } from "./image.js";
 import type { Config } from "./config.js";
+import { canonicalProductPrice, extractProductPrice, jinaReaderText } from "./price-extraction.js";
 export type Monitor = {
   id: string;
   user_id: string;
@@ -20,6 +21,7 @@ export type Monitor = {
   text_enabled: boolean;
   text_direction?: "added" | "removed" | "both";
   text_source?: "direct" | "jina";
+  extraction_mode?: "full_text" | "product_price";
   visual_enabled: boolean;
   selector: string;
   selector_type: "css" | "xpath";
@@ -110,7 +112,7 @@ async function visibleText(locator: Locator, ignoreSelectors: string[]) {
   }, ignoreSelectors);
 }
 export function validateJinaReaderContent(body: Buffer) {
-  const text = body.toString("utf8").replace(/\u0000/g, "").trim();
+  const text = jinaReaderText(body.toString("utf8"));
   const compact = text.replace(/\s+/g, " ").toLowerCase();
   const challenge = /(?:just a moment\.{0,3}|performing security verification|verify you are human|complete (?:the )?captcha|cloudflare challenge|bot verification)/.test(compact);
   const accessFailure = /(?:access denied|forbidden|request failed|error 10\d{2})/.test(compact);
@@ -179,7 +181,11 @@ export async function capture(
       enterStage("navigation");
       const response = await safeFetch(`https://r.jina.ai/${m.url}`, policy, cfg.CAPTURE_TIMEOUT_MS);
       finishTimings();
-      return { text: normalizeText(validateJinaReaderContent(response.body), m), screenshot: null, timings };
+      const readerText = validateJinaReaderContent(response.body);
+      const text = m.extraction_mode === "product_price"
+        ? canonicalProductPrice(extractProductPrice(readerText))
+        : normalizeText(readerText, m);
+      return { text, screenshot: null, timings };
     }
     proxy = await browserProxy(policy);
     enterStage("browser_launch");
@@ -270,7 +276,15 @@ export async function capture(
     // cannot affect their result; visual captures keep the existing wait.
     if (m.visual_enabled) {
       enterStage("font_wait");
-      await page.evaluate(() => document.fonts.ready);
+      // Third-party web fonts are optional rendering preparation. A stalled
+      // font must not consume the shared capture deadline.
+      await new Promise<void>((resolve) => {
+        const timer = setTimeout(resolve, Math.min(1500, Math.max(1, deadline - Date.now())));
+        void page.evaluate(() => document.fonts.ready).then(
+          () => { clearTimeout(timer); resolve(); },
+          () => { clearTimeout(timer); resolve(); },
+        );
+      });
     }
     enterStage("text_extraction");
     const locator = m.selector
@@ -321,13 +335,22 @@ export async function capture(
         if (!(await region.isVisible()))
           throw new HttpError(422, "Capture region is not visible");
         await region.scrollIntoViewIfNeeded();
-        const bounds = await region.boundingBox();
+        // locator.screenshot performs another potentially long actionability
+        // wait. Resolve a stable, validated box and use the bounded page
+        // screenshot path shared by the other capture modes instead.
+        const boxes = await Promise.all([
+          region.boundingBox(),
+          page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))).then(() => region.boundingBox()),
+        ]);
+        const bounds = boxes[1];
         if (!bounds) throw new HttpError(422, "Capture region is not visible");
+        if (!boxes[0] || Math.abs(boxes[0].x - bounds.x) > 1 || Math.abs(boxes[0].y - bounds.y) > 1 || Math.abs(boxes[0].width - bounds.width) > 1 || Math.abs(boxes[0].height - bounds.height) > 1)
+          throw new HttpError(422, "Capture region is still moving. Retry after the page settles.");
         checkDimensions(
           { width: Math.ceil(bounds.width), height: Math.ceil(bounds.height) },
           limits,
         );
-        screenshot = await region.screenshot(options);
+        screenshot = await page.screenshot({ ...options, clip: bounds });
       } else {
         const size =
           m.capture_mode === "full_page"

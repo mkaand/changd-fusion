@@ -5,6 +5,7 @@ import { z } from "zod";
 import { EgressPolicy } from "./egress.js";
 import { Storage } from "./storage.js";
 import { pngDimensions } from "./image.js";
+import { Decimal } from "decimal.js";
 export const smtpSchema = z
   .object({
     host: z.string().min(1).max(253),
@@ -130,6 +131,21 @@ function removeLargeJSON(value: string) {
 export function safeTextSummary(parts: Array<{ value?: unknown; added?: boolean; removed?: boolean }>) {
   const sensitive = /(authorization|bearer\s+|cookie|bot\d{5,}:|token\s*[=:])/i;
   const values = parts.filter((p) => p.added || p.removed).map((p) => ({ mark: p.added ? "Added" : "Removed", value: String(p.value ?? "") }));
+  const price = (value: string) => /^Product price: ([A-Z]{3}) (\d+(?:\.\d{2})?)$/.exec(value.trim());
+  const oldPrice = values.find((part) => part.mark === "Removed" && price(part.value));
+  const newPrice = values.find((part) => part.mark === "Added" && price(part.value));
+  if (oldPrice && newPrice) {
+    const before = price(oldPrice.value)!;
+    const after = price(newPrice.value)!;
+    if (before[1] === after[1]) {
+      const previous = new Decimal(before[2]);
+      const current = new Decimal(after[2]);
+      const difference = current.minus(previous);
+      const percentage = previous.isZero() ? null : difference.dividedBy(previous).times(100);
+      const sign = difference.isPositive() ? "+" : "";
+      return `Price: ${before[1]} ${previous.toFixed(2)} → ${after[1]} ${current.toFixed(2)} (${sign}${difference.toFixed(2)}${percentage ? `, ${sign}${percentage.toDecimalPlaces(2).toFixed(2)}%` : ""})`;
+    }
+  }
   const meaningful = values.map(({ mark, value }) => {
     const cleaned = removeLargeJSON(value)
       .replace(/[\u0000-\u001f\u007f]/g, " ")

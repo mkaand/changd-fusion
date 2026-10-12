@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import {
   deliver,
   emailHTML,
+  safeTextSummary,
   summary,
   type EventMessage,
 } from "../src/notifications.js";
@@ -28,6 +29,22 @@ test("HTML is escaped and decimal percent survives notification templates", () =
   assert.ok(emailHTML(event).includes("0.35%"));
   assert.ok(!emailHTML(event).includes("<script>"));
   assert.ok(summary(event).includes("+ Price changed"));
+});
+test("price changes include previous, current, absolute and percentage values", () => {
+  assert.equal(
+    safeTextSummary([
+      { removed: true, value: "Product price: TRY 32999.00" },
+      { added: true, value: "Product price: TRY 29999.00" },
+    ]),
+    "Price: TRY 32999.00 → TRY 29999.00 (-3000.00, -9.09%)",
+  );
+  assert.equal(
+    safeTextSummary([
+      { removed: true, value: "Product price: TRY 29999.00" },
+      { added: true, value: "Product price: TRY 32999.00" },
+    ]),
+    "Price: TRY 29999.00 → TRY 32999.00 (+3000.00, +10.00%)",
+  );
 });
 test("SMTP requires verified TLS and attaches available images", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "fusion-mail-")),
