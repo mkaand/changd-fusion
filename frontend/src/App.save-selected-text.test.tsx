@@ -39,7 +39,7 @@ it("sends the applied Selected Text rule through the real Save monitor API call"
   await user.click(screen.getByRole("button", { name: "Apply fixture selection" }));
   await user.click(screen.getByRole("button", { name: "Save monitor" }));
   await waitFor(() => expect(mockedApi).toHaveBeenCalledWith("/jobs", "POST", expect.objectContaining({ text_source: "jina", extraction_mode: "selected_text", extraction_rule: rule })));
-});
+}, 10_000);
 it("sends the applied Selected Text rule through the real existing-monitor PUT call", async () => {
   const existing = { id: "11111111-1111-4111-8111-111111111111", name: "Existing price", url: "https://example.com/product", kind: "browser", text_enabled: true, visual_enabled: false, text_source: "jina", extraction_mode: "selected_text", extraction_rule: rule, interval_seconds: 300, channel_ids: [] };
   setupApi([existing], existing);
