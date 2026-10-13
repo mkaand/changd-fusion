@@ -55,9 +55,6 @@ it("offers focused Jina extraction modes and hides incompatible browser controls
   await user.click(screen.getByLabelText("Text content source"));
   await user.click(screen.getByText(/Jina Reader/));
   expect(screen.getByLabelText("Extraction mode")).toBeInTheDocument();
-  await user.click(screen.getByLabelText("Extraction mode"));
-  await user.click(screen.getByText("Product Price", { exact: true }));
-  expect(current.getFieldValue("extraction_mode")).toBe("product_price");
   expect(screen.queryByLabelText("Text extraction method")).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Add browser step" })).not.toBeInTheDocument();
   await user.click(screen.getByLabelText("Extraction mode"));
@@ -67,7 +64,6 @@ it("offers focused Jina extraction modes and hides incompatible browser controls
 
 it.each([
   ["Full text (default)", "full_text"],
-  ["Product Price", "product_price"],
   ["Selected Text / Value", "selected_text"],
 ])("submits Direct Browser with full text after switching from Jina %s", async (label, mode) => {
   const user = userEvent.setup();

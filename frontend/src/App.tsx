@@ -131,7 +131,10 @@ export default function FusionApp() {
     try {
       setUser(await api("/users/me"));
     } catch {
-      setUser(null);
+      try {
+        await api("/session/refresh", "POST", {});
+        setUser(await api("/users/me"));
+      } catch { setUser(null); }
     } finally {
       setAuthLoading(false);
     }
@@ -300,6 +303,7 @@ export default function FusionApp() {
       </div>
     );
   if (!user) return <Login onSuccess={() => void getUser()} />;
+  const publicWorkspace = Boolean(user.public_access);
   const current = monitors.find((m) => m.id === selected?.id) ?? selected;
   const filteredMonitors = filterMonitors(monitors, query, stateFilter);
   const navigation = (
@@ -347,12 +351,12 @@ export default function FusionApp() {
           <span className="brand-name">Changd <span>Fusion</span></span>
         </a>
         <Space className="desktop-account-actions">
-          <span className="user-name">{user.firstname || "Account"}</span>
-          <Suspense>
+          <span className="user-name">{publicWorkspace ? "Public workspace" : user.firstname || "Account"}</span>
+          {!publicWorkspace && <Suspense>
             <AccountSecurity signedOut={() => setUser(null)} />
-          </Suspense>
+          </Suspense>}
           <Button icon={<LogoutOutlined />} onClick={() => void signOut()}>
-            Sign out
+            {publicWorkspace ? "Exit" : "Sign out"}
           </Button>
         </Space>
         {compactLayout && (
@@ -361,12 +365,12 @@ export default function FusionApp() {
             placement="bottomRight"
             dropdownRender={() => (
               <div className="account-menu">
-                <div className="account-menu-name">{user.firstname || "Account"}</div>
-                <Suspense>
+                <div className="account-menu-name">{publicWorkspace ? "Public workspace" : user.firstname || "Account"}</div>
+                {!publicWorkspace && <Suspense>
                   <AccountSecurity signedOut={() => setUser(null)} />
-                </Suspense>
+                </Suspense>}
                 <Button icon={<LogoutOutlined />} danger block onClick={() => void signOut()}>
-                  Sign out
+                  {publicWorkspace ? "Exit" : "Sign out"}
                 </Button>
               </div>
             )}
@@ -445,19 +449,14 @@ export default function FusionApp() {
             ) : page === "detail" && current ? (
               <>
                 <Button onClick={() => navigate("jobs")}>← Monitors</Button>
-                <Space className="page-header" wrap>
+                <header className="monitor-detail-header">
                   <Typography.Title level={2}>{current.name}</Typography.Title>
-                  <Button onClick={() => void edit(current)}>Edit</Button>
-                  <Button
-                    type="primary"
-                    onClick={() => void action(current.id, "run")}
-                  >
-                    Check now
-                  </Button>
-                  <Button onClick={() => void action(current.id, "reset")}>
-                    Reset baseline
-                  </Button>
-                </Space>
+                  <div className="monitor-detail-actions">
+                    <Button onClick={() => void edit(current)}>Edit</Button>
+                    <Button type="primary" onClick={() => void action(current.id, "run")}>Check now</Button>
+                    <Button onClick={() => void action(current.id, "reset")}>Reset baseline</Button>
+                  </div>
+                </header>
                 <Card>
                   <Space wrap className="monitor-detail-meta">
                     <Tag

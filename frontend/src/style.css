@@ -109,6 +109,9 @@ html, body, #root {
 .login .ant-typography-secondary {
   margin-top: 20px;
 }
+.monitor-detail-header { display: grid; gap: 10px; margin: 12px 0; min-width: 0; }
+.monitor-detail-header .ant-typography { margin: 0; overflow-wrap: anywhere; }
+.monitor-detail-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .center {
   min-height: 100vh;
   display: grid;

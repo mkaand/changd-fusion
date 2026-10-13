@@ -420,7 +420,7 @@ test("selected text values keep chronological baselines and existing notificatio
   assert.deepEqual(updated.extraction_rule, replacementRule);
   await selectedAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({
     name: "Invalid direct special mode", url: "https://example.com/direct-invalid", kind: "browser", text_enabled: true, visual_enabled: false,
-    text_source: "direct", extraction_mode: "product_price",
+    text_source: "direct", extraction_mode: "unsupported_mode",
   }).expect(400);
   const direct = (await selectedAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({
     name: "Direct source after Jina", url: "https://example.com/direct", kind: "browser", text_enabled: true, visual_enabled: false,
