@@ -86,6 +86,37 @@ test("redirects are revalidated and browser proxy refuses private subresources",
     await new Promise<void>((r) => server.close(() => r()));
   }
 });
+test("Jina no-cache is fixed to Reader requests and is not forwarded across redirects", async () => {
+  const received: { host: string; noCache?: string }[] = [];
+  const server = http.createServer((req, res) => {
+    received.push({ host: req.headers.host ?? "", noCache: req.headers["x-no-cache"] });
+    if (req.headers.host?.startsWith("r.jina.ai")) {
+      res.writeHead(302, { location: `http://other.test:${(server.address() as AddressInfo).port}/final` });
+      res.end();
+      return;
+    }
+    res.end("fixture");
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const port = (server.address() as AddressInfo).port;
+  const policy = new EgressPolicy(
+    async () => [{ address: "127.0.0.1", family: 4 }],
+    (ip) => ip === "127.0.0.1",
+    new Set([port, 80, 443]),
+  );
+  try {
+    await safeFetch(`http://r.jina.ai:${port}/reader`, policy, 30000, 2_000_000, { jinaNoCache: true });
+    assert.deepEqual(received, [
+      { host: `r.jina.ai:${port}`, noCache: "true" },
+      { host: `other.test:${port}`, noCache: undefined },
+    ]);
+    received.length = 0;
+    await safeFetch(`http://r.jina.ai:${port}/reader`, policy);
+    assert.equal(received[0]?.noCache, undefined);
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  }
+});
 test("credentials use authenticated encryption and tampering is rejected", () => {
   const key = randomBytes(32).toString("hex"),
     enc = encrypt({ token: "synthetic-fixture" }, key);

@@ -72,11 +72,18 @@ export class EgressPolicy {
     return { url, hostname, ...addresses[0] };
   }
 }
+export type SafeFetchOptions = {
+  // This is deliberately a fixed, provider-specific switch rather than a
+  // caller-supplied header map. It cannot be used to forward credentials or
+  // arbitrary headers to monitor targets.
+  jinaNoCache?: boolean;
+};
 export async function safeFetch(
   input: string,
   policy: EgressPolicy,
   timeout = 30000,
   maxBytes = 2_000_000,
+  options: SafeFetchOptions = {},
 ): Promise<{ body: Buffer; contentType: string }> {
   const deadline = Date.now() + timeout;
   for (let hop = 0; hop < 6; hop++) {
@@ -101,6 +108,7 @@ export async function safeFetch(
           headers: {
             "User-Agent": "Changd-Fusion/0.2",
             Accept: "application/json,text/html",
+            ...(options.jinaNoCache && target.url.hostname === "r.jina.ai" ? { "X-No-Cache": "true" } : {}),
           },
           agent: false,
         },
