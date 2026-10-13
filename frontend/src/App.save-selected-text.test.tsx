@@ -1,4 +1,4 @@
-import { render, screen, waitFor, cleanup } from "@testing-library/react";
+import { render, screen, waitFor, cleanup, fireEvent } from "@testing-library/react";
 import userEvent, { PointerEventsCheckLevel } from "@testing-library/user-event";
 import { App as AntApp } from "antd";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
@@ -29,8 +29,8 @@ it("sends the applied Selected Text rule through the real Save monitor API call"
   render(<AntApp><FusionApp /></AntApp>);
   await waitFor(() => expect(mockedApi).toHaveBeenCalledWith("/jobs", "GET", undefined, expect.anything()));
   await user.click(screen.getByText("New monitor", { exact: true }));
-  await user.type(screen.getByLabelText("Monitor name"), "Price monitor");
-  await user.type(screen.getByLabelText("URL"), "https://example.com/product");
+  fireEvent.change(screen.getByLabelText("Monitor name"), { target: { value: "Price monitor" } });
+  fireEvent.change(screen.getByLabelText("URL"), { target: { value: "https://example.com/product" } });
   await user.click(screen.getByText("Advanced settings", { exact: true }));
   await user.click(screen.getByLabelText("Text content source"));
   await user.click(screen.getByText(/Jina Reader —/, { exact: false }));
@@ -61,8 +61,8 @@ it("keeps a mobile Text Picker selection through return to the editor and the Sa
   render(<AntApp><FusionApp /></AntApp>);
   await waitFor(() => expect(mockedApi).toHaveBeenCalledWith("/jobs", "GET", undefined, expect.anything()));
   await user.click(screen.getByText("New monitor", { exact: true }));
-  await user.type(screen.getByLabelText("Monitor name"), "Mobile price monitor");
-  await user.type(screen.getByLabelText("URL"), "https://example.com/product");
+  fireEvent.change(screen.getByLabelText("Monitor name"), { target: { value: "Mobile price monitor" } });
+  fireEvent.change(screen.getByLabelText("URL"), { target: { value: "https://example.com/product" } });
   await user.click(screen.getByText("Advanced settings", { exact: true }));
   await user.click(screen.getByLabelText("Text content source"));
   await user.click(screen.getByText(/Jina Reader —/, { exact: false }));
