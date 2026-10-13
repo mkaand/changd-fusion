@@ -430,13 +430,13 @@ test("selected text values keep chronological baselines and existing notificatio
   assert.equal(direct.extraction_mode, "full_text");
   assert.equal(direct.extraction_rule.before, "Availability\n", "switching source does not erase the reusable Jina rule");
   await isolatedOther.get(`/api/v1/jobs/${selected.id}`).expect(404);
-  const take = (value: string) => runMonitor(pool, cfg, selected.id, { force: true, capture: async (stored) => ({
-    text: applySelectedTextRule(`Availability\n${value}\nDelivery`, stored.extraction_rule!), screenshot: null,
+  const take = (value: string, unrelated = "Standard delivery") => runMonitor(pool, cfg, selected.id, { force: true, capture: async (stored) => ({
+    text: applySelectedTextRule(`Availability\n${value}\nDelivery\n${unrelated}`, stored.extraction_rule!), screenshot: null,
   }) });
-  await take("In stock");
-  await take("In stock");
+  await take("32.999,00 TL");
+  await take("32.999,00 TL", "Updated delivery copy");
   const beforeChange = (await pool.query("SELECT baseline_id FROM fusion_monitors WHERE id=$1", [selected.id])).rows[0].baseline_id;
-  await take("Back ordered");
+  await take("31.999,00 TL");
   const afterChange = (await pool.query("SELECT baseline_id FROM fusion_monitors WHERE id=$1", [selected.id])).rows[0].baseline_id;
   assert.notEqual(afterChange, beforeChange);
   await runMonitor(pool, cfg, selected.id, { force: true, capture: async () => { throw new Error("synthetic Reader match failure"); } });
