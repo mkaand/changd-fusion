@@ -14,11 +14,11 @@ const cfg: any = {
 
 test("password reset uses the configured SMTP channel through an injectable mock transport", async () => {
   const delivered: Record<string, string>[] = [];
-  const encrypted = encrypt({ host: "smtp.example.test", port: 587, from: "no-reply@example.test", to: "notifications@example.test", username: "mailer", password: "mock-only-secret" }, channelKey);
+  const encrypted = encrypt({ host: "smtp.example.test", port: 587, from: "no-reply@example.com", to: "notifications@example.com", username: "mailer", password: "mock-only-secret" }, channelKey);
   const client = { query: async () => ({ rowCount: 0, rows: [] }), release: () => {} };
   const pool = {
     query: async (sql: string) => {
-      if (sql.startsWith("SELECT user_id,email FROM users")) return { rowCount: 1, rows: [{ user_id: "user-1", email: "member@example.test" }] };
+      if (sql.startsWith("SELECT user_id,email FROM users")) return { rowCount: 1, rows: [{ user_id: "user-1", email: "member@example.com" }] };
       if (sql.includes("FROM fusion_channels")) return { rowCount: 1, rows: [{ config: { encrypted } }] };
       return { rowCount: 0, rows: [] };
     },
@@ -27,9 +27,9 @@ test("password reset uses the configured SMTP channel through an injectable mock
   const app = createApp(pool as any, cfg, undefined, {
     createMailTransport: () => ({ sendMail: async (message) => { delivered.push(message); } }),
   });
-  await request(app).post("/api/v1/password-reset/request").set("X-Fusion-Request", "1").send({ email: "member@example.test" }).expect(202, { ok: true });
+  await request(app).post("/api/v1/password-reset/request").set("X-Fusion-Request", "1").send({ email: "member@example.com" }).expect(202, { ok: true });
   assert.equal(delivered.length, 1);
-  assert.equal(delivered[0].to, "member@example.test");
+  assert.equal(delivered[0].to, "member@example.com");
   assert.match(delivered[0].text, /https:\/\/fusion\.example\.test\/reset-password\?token=/);
   assert.ok(!JSON.stringify(delivered[0]).includes("mock-only-secret"));
 });

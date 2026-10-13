@@ -52,6 +52,8 @@ function scan(label, file, buffer) {
     if (
       !email.endsWith("@example.com") &&
       !email.endsWith("@example.invalid") &&
+      // RFC 2606 reserves .test for examples; it cannot deliver real mail.
+      !email.endsWith("@example.test") &&
       email !== "codex@openai.com" &&
       !file.includes("package-lock.json")
     )

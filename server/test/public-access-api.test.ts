@@ -11,12 +11,12 @@ const cfg: any = {
   HISTORY_DAYS: 90, CAPTURE_TIMEOUT_MS: 30000, CHROMIUM_CONCURRENCY: 1, MAX_CAPTURE_WIDTH: 4096,
   MAX_CAPTURE_HEIGHT: 8192, MAX_CAPTURE_PIXELS: 8_000_000, LOG_LEVEL: "silent",
 };
-const owner = { user_id: "public-owner", firstname: "Public", lastname: "Owner", email: "owner@example.test", user_type: 0 };
+const owner = { user_id: "public-owner", firstname: "Public", lastname: "Owner", email: "owner@example.com", user_type: 0 };
 
 function pool(publicEnabled: boolean) {
   const smtp = {
     id: "00000000-0000-4000-8000-000000000001", name: "SMTP", provider: "smtp", enabled: true,
-    config: { encrypted: encrypt({ host: "smtp.example.test", port: 587, from: "no-reply@example.test", username: "mailer", password: "never-return-this" }, channelKey) },
+    config: { encrypted: encrypt({ host: "smtp.example.test", port: 587, from: "no-reply@example.com", username: "mailer", password: "never-return-this" }, channelKey) },
   };
   return {
     query: async (sql: string) => {
