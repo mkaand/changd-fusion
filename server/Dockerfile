@@ -10,7 +10,7 @@ COPY src ./src
 RUN npm run build
 
 FROM node:24.19.0-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df AS runtime
-ARG CHROMIUM_VERSION=154.0.8037.92-1~deb12u1
+ARG CHROMIUM_VERSION=155.0.8059.39-1~deb12u1
 ENV NODE_ENV=production PLAYWRIGHT_EXECUTABLE_PATH=/usr/bin/chromium DATA_DIR=/data
 WORKDIR /app
 COPY --chown=node:node package.json package-lock.json ./

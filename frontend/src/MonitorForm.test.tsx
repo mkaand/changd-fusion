@@ -2,7 +2,7 @@ import { render, screen, cleanup, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Form } from "antd";
 import { it, expect, afterEach } from "vitest";
-import { MonitorForm } from "./MonitorForm";
+import { MonitorForm, isValidSelectedTextRule } from "./MonitorForm";
 let current: ReturnType<typeof Form.useForm>[0];
 function Fixture() {
   const [form] = Form.useForm();
@@ -103,4 +103,44 @@ it("restores unsaved Jina extraction settings when switching back before save", 
   await user.click(screen.getByText(/Jina Reader —/));
   expect(current.getFieldValue("extraction_mode")).toBe("selected_text");
   expect(current.getFieldValue("extraction_rule")).toEqual(rule);
+});
+
+it("includes the applied Selected Text rule in the JSON payload used to save a new monitor", async () => {
+  const user = userEvent.setup();
+  render(<Fixture />);
+  await user.click(screen.getByText("Advanced settings", { exact: true }));
+  await user.click(screen.getByLabelText("Text content source"));
+  await user.click(screen.getByText(/Jina Reader —/));
+  await user.click(screen.getByLabelText("Extraction mode"));
+  await user.click(screen.getByText("Selected Text / Value", { exact: true }));
+  const rule = { version: 1, kind: "bounded_context", before: "Price\n", after: "\nSeller", max_length: 64 } as const;
+  current.setFieldsValue({ name: "Selected value", url: "https://example.com/product", extraction_rule: rule });
+  const requestBody = JSON.parse(JSON.stringify(await current.validateFields()));
+  expect(requestBody).toMatchObject({
+    text_source: "jina",
+    extraction_mode: "selected_text",
+    extraction_rule: rule,
+  });
+});
+
+it("keeps an updated Selected Text rule in the JSON payload used to save an existing monitor", async () => {
+  const user = userEvent.setup();
+  render(<Fixture />);
+  await user.click(screen.getByText("Advanced settings", { exact: true }));
+  current.setFieldsValue({
+    name: "Existing selected value", url: "https://example.com/product", text_source: "jina", extraction_mode: "selected_text",
+    extraction_rule: { version: 1, kind: "bounded_context", before: "Old\n", after: "\nSeller", max_length: 64 },
+  });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Select text from preview" })).toBeInTheDocument());
+  const replacement = { version: 1, kind: "bounded_context", before: "Price\n", after: "\nSeller", max_length: 96 } as const;
+  current.setFieldValue("extraction_rule", replacement);
+  const requestBody = JSON.parse(JSON.stringify(await current.validateFields()));
+  expect(requestBody.extraction_rule).toEqual(replacement);
+});
+
+it("rejects missing and malformed Selected Text rules before a save request", () => {
+  expect(isValidSelectedTextRule(null)).toBe(false);
+  expect(isValidSelectedTextRule({ version: 1, kind: "bounded_context", before: "", after: "", max_length: 64 })).toBe(false);
+  expect(isValidSelectedTextRule({ version: 1, kind: "bounded_context", before: "Price", after: "", max_length: 0 })).toBe(false);
+  expect(isValidSelectedTextRule({ version: 1, kind: "bounded_context", before: "Price", after: "", max_length: 64 })).toBe(true);
 });

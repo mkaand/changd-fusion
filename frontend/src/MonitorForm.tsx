@@ -3,6 +3,8 @@ import { Collapse, DatePicker, Form, Input, InputNumber, Select, Switch, Alert }
 import { BrowserStepsEditor } from "./BrowserStepsEditor";
 import { RegionPicker } from "./RegionPicker";
 import { TextPicker } from "./TextPicker";
+const HiddenObjectField = (_: { value?: unknown }) => null;
+
 export const defaults = {
   kind: "browser", text_enabled: true, visual_enabled: false, selector_type: "css",
   visual_threshold: "0.35", capture_mode: "viewport", capture_selector: "", capture_selector_type: "css",
@@ -12,6 +14,16 @@ export const defaults = {
   text_direction: "both", text_source: "direct", extraction_mode: "full_text", extraction_rule: null,
   channel_ids: [], ignore_selectors: [], ignore_text: [], mask_selectors: [],
 };
+export function isValidSelectedTextRule(value: unknown) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const rule = value as Record<string, unknown>;
+  return Object.keys(rule).length === 5 && ["version", "kind", "before", "after", "max_length"].every((key) => key in rule) &&
+    rule.version === 1 && rule.kind === "bounded_context" &&
+    typeof rule.before === "string" && rule.before.length <= 160 &&
+    typeof rule.after === "string" && rule.after.length <= 160 &&
+    Number.isInteger(rule.max_length) && (rule.max_length as number) >= 1 &&
+    (rule.max_length as number) <= 500 && !!(rule.before || rule.after);
+}
 export function MonitorForm({ form, channels, monitorId, onOpenMobileRegion, onOpenMobileText, advancedOpen, setAdvancedOpen }: { form: any; channels: any[]; monitorId?: string; onOpenMobileRegion?: () => void; onOpenMobileText?: () => void; advancedOpen?: boolean; setAdvancedOpen?: (open: boolean) => void }) {
   const [localAdvancedOpen, setLocalAdvancedOpen] = useState(false);
   const pendingJinaExtraction = useRef<{ extraction_mode: "full_text" | "product_price" | "selected_text"; extraction_rule: unknown } | undefined>(undefined);
@@ -23,6 +35,7 @@ export function MonitorForm({ form, channels, monitorId, onOpenMobileRegion, onO
     <Form.Item name="visual_enabled" label="Visual detection" valuePropName="checked"><Switch aria-label="Visual detection" disabled={kind !== "browser"} /></Form.Item>
   </div>;
   return <Form form={form} layout="vertical" initialValues={defaults} className="monitor-editor-form">
+    <Form.Item name="extraction_rule" hidden><HiddenObjectField /></Form.Item>
     <section className="monitor-editor-basics" aria-label="Monitor basics">
       <Form.Item name="name" label="Monitor name" rules={[{ required: true }]}><Input maxLength={120} /></Form.Item>
       <Form.Item name="url" label="URL" rules={[{ required: true, type: "url" }]}><Input placeholder="https://example.com" /></Form.Item>
@@ -45,7 +58,7 @@ export function MonitorForm({ form, channels, monitorId, onOpenMobileRegion, onO
             form.setFieldsValue(pendingJinaExtraction.current);
           }
         }} /></Form.Item>
-        {textSource === "jina" && <><Form.Item name="extraction_mode" label="Extraction mode"><Select options={[{ value: "full_text", label: "Full text (default)" }, { value: "product_price", label: "Product Price" }, { value: "selected_text", label: "Selected Text / Value" }]} /></Form.Item><Alert type="info" showIcon title="Jina Reader is optional" description="Only the monitor URL is sent to Jina Reader. Remote Markdown is treated as plain text; visual capture, private values, selectors, and Browser Steps are not used." />{extractionMode === "selected_text" && <><TextPicker monitorId={monitorId} onRequestMobile={onOpenMobileText} getDraft={() => form.getFieldsValue(true)} onApply={(rule) => form.setFieldsValue({ extraction_rule: rule, extraction_mode: "selected_text" })} />{!extractionRule && <Alert type="warning" showIcon title="Choose text from the current Reader preview before saving." />}</> }</>}
+        {textSource === "jina" && <><Form.Item name="extraction_mode" label="Extraction mode"><Select options={[{ value: "full_text", label: "Full text (default)" }, { value: "product_price", label: "Product Price" }, { value: "selected_text", label: "Selected Text / Value" }]} /></Form.Item><Alert type="info" showIcon title="Jina Reader is optional" description="Only the monitor URL is sent to Jina Reader. Remote Markdown is treated as plain text; visual capture, private values, selectors, and Browser Steps are not used." />{extractionMode === "selected_text" && <><TextPicker monitorId={monitorId} onRequestMobile={onOpenMobileText} getDraft={() => form.getFieldsValue(true)} onApply={(rule) => form.setFieldsValue({ extraction_rule: rule, extraction_mode: "selected_text" })} />{!isValidSelectedTextRule(extractionRule) && <Alert type="warning" showIcon title="Select text and apply a valid extraction rule before saving." />}</> }</>}
         {textSource === "direct" && <><Form.Item name="selector_type" label="Text extraction method"><Select options={[{ value: "css", label: "CSS selector" }, { value: "xpath", label: "XPath" }]} /></Form.Item><Form.Item name="selector" label="Text selector (empty = visible page text)"><Input placeholder="#content or //main" /></Form.Item><Form.Item name="ignore_selectors" label="Remove dynamic regions"><Select mode="tags" placeholder="CSS selectors" /></Form.Item></>}
       </>}
       {text && (textSource === "direct" || extractionMode === "full_text") && <><Form.Item name="ignore_text" label="Ignore literal text"><Select mode="tags" /></Form.Item><div className="form-row"><Form.Item name="normalize_whitespace" label="Normalize whitespace" valuePropName="checked"><Switch /></Form.Item><Form.Item name="ignore_case" label="Ignore case" valuePropName="checked"><Switch /></Form.Item></div></>}
