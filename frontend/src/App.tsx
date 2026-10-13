@@ -35,7 +35,7 @@ import { monitorState, monitorStates, filterMonitors } from "./monitor-status";
 import { useThemeAdapter } from "./theme";
 import { AllMyThemeControls } from "./AllMyThemeControls";
 import { Login } from "./Login";
-import { MonitorForm, defaults } from "./MonitorForm";
+import { MonitorForm, defaults, isValidSelectedTextRule } from "./MonitorForm";
 import { RegionPicker } from "./RegionPicker";
 import { TextPicker } from "./TextPicker";
 import { MonitorUrlActions } from "./MonitorUrlActions";
@@ -247,6 +247,12 @@ export default function FusionApp() {
       const b = await form.validateFields();
       if (!b.text_enabled && !b.visual_enabled)
         throw Error("Enable at least one detection method");
+      if (
+        b.text_source === "jina" &&
+        b.extraction_mode === "selected_text" &&
+        !isValidSelectedTextRule(b.extraction_rule)
+      )
+        throw Error("Select text and apply a valid extraction rule before saving.");
       await api(
         "/jobs" + (editing ? "/" + editing.id : ""),
         editing ? "PUT" : "POST",

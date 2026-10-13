@@ -27,6 +27,7 @@ import { compareVisual } from "../../src/comparison.js";
 import { telegramSummary } from "../../src/notifications.js";
 import { closeRegionPreviewSessions, expireRegionPreviewSessions, previewRegion, REGION_PREVIEW_MAX_LIFETIME_MS } from "../../src/region-picker.js";
 import { acquireChromiumLease } from "../../src/chromium-capacity.js";
+import { applySelectedTextRule } from "../../src/selected-text.js";
 const expectedMigrationCount = (await readdir(path.resolve(import.meta.dirname, "../../migrations"))).filter((file) => /^\d+_.+\.sql$/.test(file)).length;
 const dbURL = new URL(process.env.TEST_DATABASE_URL ?? "");
 assert.ok(
@@ -400,6 +401,7 @@ test("selected text values keep chronological baselines and existing notificatio
   await selectedAgent.post("/api/v1/login").set("X-Fusion-Request", "1").send({ email: "owner@example.com", password }).expect(200);
   await isolatedOther.post("/api/v1/login").set("X-Fusion-Request", "1").send({ email: "other@example.com", password }).expect(200);
   await selectedAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({ name: "Invalid selected text", url: "https://example.com", kind: "browser", text_enabled: true, visual_enabled: false, text_source: "jina", extraction_mode: "selected_text" }).expect(400);
+  await selectedAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({ name: "Malformed selected text", url: "https://example.com/malformed", kind: "browser", text_enabled: true, visual_enabled: false, text_source: "jina", extraction_mode: "selected_text", extraction_rule: { version: 1, kind: "bounded_context", before: "", after: "", max_length: 0 } }).expect(400);
   const selectedChannel = (await selectedAgent.post("/api/v1/notifications").set("X-Fusion-Request", "1").send({ name: "Selected value channel", provider: "telegram", config: { token: "123456:" + "s".repeat(24), chat_id: "654321" } }).expect(201)).body;
   const selected = (await selectedAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({
     name: "Selected value history", url: "https://example.com/product", kind: "browser", text_enabled: true, visual_enabled: false,
@@ -408,6 +410,14 @@ test("selected text values keep chronological baselines and existing notificatio
   }).expect(201)).body;
   assert.equal(selected.extraction_mode, "selected_text");
   assert.equal(selected.extraction_rule.before, "Availability\n");
+  const persisted = (await selectedAgent.get(`/api/v1/jobs/${selected.id}`).expect(200)).body;
+  assert.deepEqual(persisted.extraction_rule, selected.extraction_rule);
+  const replacementRule = { version: 1, kind: "bounded_context", before: "Availability\n", after: "\nDelivery", max_length: 96 };
+  const updated = (await selectedAgent.put(`/api/v1/jobs/${selected.id}`).set("X-Fusion-Request", "1").send({
+    name: "Selected value history", url: "https://example.com/product", kind: "browser", text_enabled: true, visual_enabled: false,
+    text_source: "jina", extraction_mode: "selected_text", extraction_rule: replacementRule, channel_ids: [selectedChannel.id],
+  }).expect(200)).body;
+  assert.deepEqual(updated.extraction_rule, replacementRule);
   await selectedAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({
     name: "Invalid direct special mode", url: "https://example.com/direct-invalid", kind: "browser", text_enabled: true, visual_enabled: false,
     text_source: "direct", extraction_mode: "product_price",
@@ -420,7 +430,9 @@ test("selected text values keep chronological baselines and existing notificatio
   assert.equal(direct.extraction_mode, "full_text");
   assert.equal(direct.extraction_rule.before, "Availability\n", "switching source does not erase the reusable Jina rule");
   await isolatedOther.get(`/api/v1/jobs/${selected.id}`).expect(404);
-  const take = (text: string) => runMonitor(pool, cfg, selected.id, { force: true, capture: async () => ({ text, screenshot: null }) });
+  const take = (value: string) => runMonitor(pool, cfg, selected.id, { force: true, capture: async (stored) => ({
+    text: applySelectedTextRule(`Availability\n${value}\nDelivery`, stored.extraction_rule!), screenshot: null,
+  }) });
   await take("In stock");
   await take("In stock");
   const beforeChange = (await pool.query("SELECT baseline_id FROM fusion_monitors WHERE id=$1", [selected.id])).rows[0].baseline_id;
@@ -430,7 +442,7 @@ test("selected text values keep chronological baselines and existing notificatio
   await runMonitor(pool, cfg, selected.id, { force: true, capture: async () => { throw new Error("synthetic Reader match failure"); } });
   assert.equal((await pool.query("SELECT baseline_id FROM fusion_monitors WHERE id=$1", [selected.id])).rows[0].baseline_id, afterChange, "failed extraction preserves the selected-value baseline");
   const events = (await pool.query("SELECT status,text_changed FROM fusion_events WHERE monitor_id=$1 ORDER BY created_at", [selected.id])).rows;
-  assert.deepEqual(events.slice(0, 3).map((event) => event.status), ["baseline", "unchanged", "changed"]);
+  assert.deepEqual(events.filter((event) => event.status !== "reset").slice(0, 3).map((event) => event.status), ["baseline", "unchanged", "changed"]);
   assert.equal(events.find((event) => event.status === "changed")?.text_changed, true);
   assert.equal(Number((await pool.query("SELECT count(*) FROM fusion_outbox o JOIN fusion_events e ON e.id=o.event_id WHERE e.monitor_id=$1", [selected.id])).rows[0].count), 1);
   await pool.query("UPDATE fusion_outbox o SET status='sent',delivered_at=now() FROM fusion_events e WHERE o.event_id=e.id AND e.monitor_id=$1", [selected.id]);
