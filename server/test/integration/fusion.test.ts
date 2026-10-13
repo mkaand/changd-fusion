@@ -1473,6 +1473,11 @@ test("administrator authorization is database-backed; token role claims are igno
     me.user_id,
   ]);
   try {
+    await ownerAgent
+      .post("/api/v1/security/verify")
+      .set("X-Fusion-Request", "1")
+      .send({ email: "owner@example.com", password })
+      .expect(200);
     await ownerAgent.get("/api/v1/users").expect(200);
   } finally {
     await pool.query("UPDATE users SET user_type=0 WHERE user_id=$1", [
@@ -1880,6 +1885,14 @@ test("account sessions revoke cookie and bearer tokens on logout, logout-all, ex
       .set("X-Fusion-Request", "1")
       .set("Authorization", "Bearer " + token)
       .send(body);
+  const verify = async (token: string, pass = password) => {
+    const response = await request(securityApp)
+      .post("/api/v1/security/verify")
+      .set("X-Fusion-Request", "1")
+      .set("Authorization", "Bearer " + token)
+      .send({ email, password: pass });
+    return response;
+  };
   const one = await login(),
     two = await login(),
     foreign = await login(other);
@@ -1890,20 +1903,22 @@ test("account sessions revoke cookie and bearer tokens on logout, logout-all, ex
     .set("Cookie", "fusion_session=" + one)
     .expect(401);
   await me(two).expect(200);
-  await post(two, "logout-all").expect(200);
+  const logoutAllGrant = await verify(two);
+  assert.equal(logoutAllGrant.status, 200);
+  await post(two, "logout-all")
+    .set("Cookie", logoutAllGrant.headers["set-cookie"][0].split(";")[0])
+    .expect(200);
   await me(two).expect(401);
   await me(foreign).expect(200);
   const three = await login(),
     four = await login();
-  await post(three, "users/changepassword", {
-    current_password: "incorrect",
-    password: "synthetic-new-password",
-  }).expect(401);
+  assert.equal((await verify(three, "incorrect")).status, 401);
   await me(three).expect(200);
+  const passwordGrant = await verify(three);
+  assert.equal(passwordGrant.status, 200);
   await post(three, "users/changepassword", {
-    current_password: password,
     password: "synthetic-new-password",
-  }).expect(200);
+  }).set("Cookie", passwordGrant.headers["set-cookie"][0].split(";")[0]).expect(200);
   await me(three).expect(401);
   await me(four).expect(401);
   await me(foreign).expect(200);

@@ -428,6 +428,48 @@ export function createApp(
         [id, channelId],
       );
   };
+  app.get("/api/v1/preferences/monitoring", async (_req, res) => {
+    const result = await pool.query(
+      "SELECT monitoring_defaults FROM fusion_user_preferences WHERE user_id=$1",
+      [res.locals.user.user_id],
+    );
+    res.json(result.rows[0]?.monitoring_defaults ?? {});
+  });
+  app.put("/api/v1/preferences/monitoring", async (req, res) => {
+    const defaults = monitoringDefaults.parse(req.body);
+    await transaction(pool, async (c) => {
+      if (defaults.channel_ids) {
+        const channels = await c.query(
+          "SELECT id FROM fusion_channels WHERE id=ANY($1::uuid[]) AND user_id=$2",
+          [defaults.channel_ids, res.locals.user.user_id],
+        );
+        if (channels.rowCount !== new Set(defaults.channel_ids).size)
+          throw new HttpError(404, "Channel not found");
+      }
+      await c.query(
+        "INSERT INTO fusion_user_preferences(user_id,monitoring_defaults) VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET monitoring_defaults=EXCLUDED.monitoring_defaults,updated_at=now()",
+        [res.locals.user.user_id, JSON.stringify(defaults)],
+      );
+    });
+    res.json(defaults);
+  });
+  app.post("/api/v1/monitors/notification-channels/bulk", async (req, res) => {
+    const body = z.object({ monitor_ids: z.array(uuid).min(1).max(100), channel_id: uuid, action: z.enum(["add", "remove"]), confirm: z.literal(true) }).strict().parse(req.body);
+    await transaction(pool, async (c) => {
+      const channel = await c.query("SELECT id FROM fusion_channels WHERE id=$1 AND user_id=$2", [body.channel_id, res.locals.user.user_id]);
+      if (!channel.rowCount) throw new HttpError(404, "Channel not found");
+      const monitorIds = [...new Set(body.monitor_ids)];
+      const monitors = await c.query("SELECT id FROM fusion_monitors WHERE id=ANY($1::uuid[]) AND user_id=$2 FOR UPDATE", [monitorIds, res.locals.user.user_id]);
+      if (monitors.rowCount !== monitorIds.length) throw new HttpError(404, "Monitor not found");
+      if (body.action === "add") {
+        for (const monitorId of monitorIds)
+          await c.query("INSERT INTO fusion_monitor_channels(monitor_id,channel_id) VALUES($1,$2) ON CONFLICT DO NOTHING", [monitorId, body.channel_id]);
+      } else {
+        await c.query("DELETE FROM fusion_monitor_channels WHERE monitor_id=ANY($1::uuid[]) AND channel_id=$2", [monitorIds, body.channel_id]);
+      }
+    });
+    res.status(204).end();
+  });
   const lockedMutation = async (
     id: string,
     userId: string,
