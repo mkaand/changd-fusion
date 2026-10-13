@@ -3,6 +3,8 @@ import { Collapse, DatePicker, Form, Input, InputNumber, Select, Switch, Alert }
 import { BrowserStepsEditor } from "./BrowserStepsEditor";
 import { RegionPicker } from "./RegionPicker";
 import { TextPicker } from "./TextPicker";
+const HiddenObjectField = (_: { value?: unknown }) => null;
+
 export const defaults = {
   kind: "browser", text_enabled: true, visual_enabled: false, selector_type: "css",
   visual_threshold: "0.35", capture_mode: "viewport", capture_selector: "", capture_selector_type: "css",
@@ -33,7 +35,7 @@ export function MonitorForm({ form, channels, monitorId, onOpenMobileRegion, onO
     <Form.Item name="visual_enabled" label="Visual detection" valuePropName="checked"><Switch aria-label="Visual detection" disabled={kind !== "browser"} /></Form.Item>
   </div>;
   return <Form form={form} layout="vertical" initialValues={defaults} className="monitor-editor-form">
-    <Form.Item name="extraction_rule" hidden />
+    <Form.Item name="extraction_rule" hidden><HiddenObjectField /></Form.Item>
     <section className="monitor-editor-basics" aria-label="Monitor basics">
       <Form.Item name="name" label="Monitor name" rules={[{ required: true }]}><Input maxLength={120} /></Form.Item>
       <Form.Item name="url" label="URL" rules={[{ required: true, type: "url" }]}><Input placeholder="https://example.com" /></Form.Item>

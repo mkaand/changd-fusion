@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Development-only image; no application credentials or checkout copied into layers.
 FROM node:24.19.0-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df
-ARG CHROMIUM_VERSION=154.0.8037.92-1~deb12u1
+ARG CHROMIUM_VERSION=155.0.8059.39-1~deb12u1
 ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends \
     chromium=${CHROMIUM_VERSION} chromium-sandbox=${CHROMIUM_VERSION} fonts-liberation \
