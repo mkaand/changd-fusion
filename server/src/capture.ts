@@ -1,5 +1,5 @@
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright";
-import { EgressPolicy, browserProxy, safeFetch } from "./egress.js";
+import { EgressPolicy, browserProxy, safeFetch, type SafeFetchOptions } from "./egress.js";
 import { normalizeText } from "./comparison.js";
 import { locate, runSteps, type BrowserStep } from "./browser-steps.js";
 import { AttentionFailure, detectAttention } from "./attention.js";
@@ -64,6 +64,18 @@ export type Capture = {
   // map without URLs, selectors, page content, or raw provider errors.
   timings?: CaptureTimings;
 };
+
+export function shouldBypassJinaCache(m: Pick<Monitor, "text_source" | "extraction_mode">) {
+  return m.text_source === "jina" && m.extraction_mode === "selected_text";
+}
+
+export function jinaReaderFetchOptions(m: Pick<Monitor, "text_source" | "extraction_mode">): SafeFetchOptions {
+  return { jinaNoCache: shouldBypassJinaCache(m) };
+}
+
+function fetchJinaReader(m: Pick<Monitor, "url" | "text_source" | "extraction_mode">, policy: EgressPolicy, timeout: number) {
+  return safeFetch(`https://r.jina.ai/${m.url}`, policy, timeout, 2_000_000, jinaReaderFetchOptions(m));
+}
 
 async function cdpScreenshot(context: BrowserContext, page: Page, clip?: { x: number; y: number; width: number; height: number }) {
   const cdp = await context.newCDPSession(page);
@@ -193,7 +205,9 @@ export async function capture(
     await policy.target(m.url);
     if (m.kind !== "browser") {
       enterStage("navigation");
-      const response = await safeFetch(m.text_source === "jina" ? `https://r.jina.ai/${m.url}` : m.url, policy, cfg.CAPTURE_TIMEOUT_MS);
+      const response = m.text_source === "jina"
+        ? await fetchJinaReader(m, policy, cfg.CAPTURE_TIMEOUT_MS)
+        : await safeFetch(m.url, policy, cfg.CAPTURE_TIMEOUT_MS);
       const text =
         m.kind === "api"
           ? JSON.stringify(stableJSON(JSON.parse(response.body.toString())), null, 2)
@@ -215,7 +229,7 @@ export async function capture(
       );
     if (m.text_source === "jina" && m.text_enabled && !m.visual_enabled) {
       enterStage("navigation");
-      const response = await safeFetch(`https://r.jina.ai/${m.url}`, policy, cfg.CAPTURE_TIMEOUT_MS);
+      const response = await fetchJinaReader(m, policy, cfg.CAPTURE_TIMEOUT_MS);
       enterStage("text_extraction");
       const readerText = validateJinaReaderContent(response.body);
       const text = m.extraction_mode === "product_price"

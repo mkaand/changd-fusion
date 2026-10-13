@@ -5,6 +5,8 @@ import { HttpError } from "./errors.js";
 import { validateJinaReaderContent } from "./capture.js";
 import { generateSelectedTextRule, readableJinaPreview, searchJinaLines } from "./selected-text.js";
 
+export const jinaTextPreviewFetchOptions = Object.freeze({ jinaNoCache: true });
+
 type TextSession = { id: string; ownerId: string; expiresAt: number; lines: string[] };
 const TTL_MS = 90_000;
 const MAX_SESSIONS = 8;
@@ -43,7 +45,7 @@ export async function previewJinaText(input: {
   if (sessions.size + initializing >= MAX_SESSIONS) throw new HttpError(429, "Text preview capacity is busy. Retry shortly.");
   initializing++;
   try {
-    const response = await safeFetch(`https://r.jina.ai/${input.url}`, policy, cfg.CAPTURE_TIMEOUT_MS);
+    const response = await safeFetch(`https://r.jina.ai/${input.url}`, policy, cfg.CAPTURE_TIMEOUT_MS, 2_000_000, jinaTextPreviewFetchOptions);
     const readable = readableJinaPreview(validateJinaReaderContent(response.body));
     const lines = readable.lines;
     if (!lines.length) throw new HttpError(422, "Reader returned no selectable text.");
