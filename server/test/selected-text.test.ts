@@ -75,3 +75,55 @@ test("selected text rules reject missing context and excessive values", () => {
     /could not be found/,
   );
 });
+
+test("dynamic price changes keep the selected value anchored without matching the old value", () => {
+  const rule = generateSelectedTextRule(readableJinaLines("Hepsiburada\nPrice today\n32.999,00 TL\nSeller: Store"), 2, "32.999,00 TL").rule;
+  assert.equal(applySelectedTextRule("Hepsiburada\nPrice today\n33.999,00 TL\nSeller: Store", rule), "33.999,00 TL");
+});
+
+test("a changed neighbouring Reader line keeps a V2 selection anchored by independent lines", () => {
+  const rule = generateSelectedTextRule(readableJinaLines("Product\nPrice today\n32.999,00 TL\nSeller: Store"), 2, "32.999,00 TL").rule;
+  assert.equal(applySelectedTextRule("Product\nCurrent offer\n33.999,00 TL\nSeller: Store", rule), "33.999,00 TL");
+  assert.equal(applySelectedTextRule("Product\nPrice today\n33.999,00 TL\nMerchant: Store", rule), "33.999,00 TL");
+});
+
+test("stored V1 bounded-context rules remain backward compatible and fail closed", () => {
+  const legacy = { version: 1 as const, kind: "bounded_context" as const, before: "Availability\n", after: "\nDelivery", max_length: 64 };
+  assert.equal(applySelectedTextRule("Availability\nBack ordered\nDelivery", legacy), "Back ordered");
+  assert.throws(() => applySelectedTextRule("Other\nBack ordered\nDelivery", legacy), /could not be found/);
+});
+
+test("unrelated Reader line additions do not change a uniquely bounded selection", () => {
+  const rule = generateSelectedTextRule(readableJinaLines("Product\nPrice today\n32.999,00 TL\nSeller: Store"), 2, "32.999,00 TL").rule;
+  const current = "Reader announcement\nProduct\nPrice today\n33.999,00 TL\nSeller: Store\nUpdated delivery details";
+  assert.equal(applySelectedTextRule(current, rule), "33.999,00 TL");
+});
+
+test("repeated price-like values and competing contexts fail closed instead of picking a candidate", () => {
+  const rule = generateSelectedTextRule(readableJinaLines("Price\n32.999,00 TL\nDelivery"), 1, "32.999,00 TL").rule;
+  assert.throws(
+    () => applySelectedTextRule("Price\n33.999,00 TL\nDelivery\nPrice\n1.999,00 TL\nDelivery", rule),
+    /ambiguous/,
+  );
+});
+
+test("missing selected text remains an extraction failure", () => {
+  const rule = generateSelectedTextRule(readableJinaLines("Product\nAvailability\nIn stock\nDelivery"), 2, "In stock").rule;
+  assert.throws(() => applySelectedTextRule("Product\nUnavailable\nShipping delayed", rule), /could not be found/);
+});
+
+test("dynamic matching supports stock, version, Turkish characters and punctuation", () => {
+  const stock = generateSelectedTextRule(readableJinaLines("Product\nAvailability\nIn stock\nDelivery"), 2, "In stock").rule;
+  assert.equal(applySelectedTextRule("Product\nAvailability\nOut of stock\nDelivery", stock), "Out of stock");
+  const version = generateSelectedTextRule(readableJinaLines("Downloads\nCurrent version\nVersion 1.2.3\nRelease notes"), 2, "Version 1.2.3").rule;
+  assert.equal(applySelectedTextRule("Downloads\nCurrent version\nVersion 1.2.4\nRelease notes", version), "Version 1.2.4");
+  const turkish = generateSelectedTextRule(readableJinaLines("Ürün bilgisi\nStok durumu\nİndirimli: çok özel!\nKargo"), 2, "İndirimli: çok özel!").rule;
+  assert.equal(applySelectedTextRule("Ürün bilgisi\nStok durumu\nİndirimli: son ürün!\nKargo", turkish), "İndirimli: son ürün!");
+});
+
+test("preview generation and scheduled Reader extraction use the same normalized V1 semantics", () => {
+  const previewLines = readableJinaLines("Product\r\nPrice today\r\n32.999,00 TL\r\nSeller");
+  const generated = generateSelectedTextRule(previewLines, 2, "32.999,00 TL");
+  const scheduledLines = readableJinaLines("Product\nPrice today\n33.999,00 TL\nSeller");
+  assert.equal(applySelectedTextRule(scheduledLines.join("\n"), generated.rule), "33.999,00 TL");
+});
