@@ -110,5 +110,5 @@ it("keeps Account Security available in a public workspace and sends owner crede
   await user.type(screen.getByLabelText("Password"), "synthetic-fixture-password");
   await user.click(screen.getByRole("button", { name: "Verify account" }));
   await waitFor(() => expect(mockedApi).toHaveBeenCalledWith("/security/verify", "POST", { email: "owner@example.com", password: "synthetic-fixture-password" }));
-  expect(await screen.findByText("Public Access", { exact: false })).toBeInTheDocument();
+  expect(await screen.findByRole("region", { name: "Public Access setting" })).toBeInTheDocument();
 });
