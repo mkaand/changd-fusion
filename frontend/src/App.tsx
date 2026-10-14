@@ -107,7 +107,8 @@ export default function FusionApp() {
     [selected, setSelected] = useState<any>(),
     [historyRefresh, setHistoryRefresh] = useState(0),
     [collapsed, setCollapsed] = useState(false),
-    [navigationOpen, setNavigationOpen] = useState(false);
+    [navigationOpen, setNavigationOpen] = useState(false),
+    [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [open, setOpen] = useState(false),
     [editing, setEditing] = useState<any>(),
     [saving, setSaving] = useState(false),
@@ -365,13 +366,15 @@ export default function FusionApp() {
         </Space>
         {compactLayout && (
           <Dropdown
+            open={accountMenuOpen}
+            onOpenChange={setAccountMenuOpen}
             trigger={["click"]}
             placement="bottomRight"
             dropdownRender={() => (
               <div className="account-menu">
                 <div className="account-menu-name">{publicWorkspace ? "Public workspace" : user.firstname || "Account"}</div>
                 <Suspense>
-                  <AccountSecurity signedOut={() => setUser(null)} sessionEstablished={() => void getUser()} />
+                  <AccountSecurity signedOut={() => setUser(null)} sessionEstablished={() => void getUser()} onOpen={() => setAccountMenuOpen(false)} />
                 </Suspense>
                 <Button icon={<LogoutOutlined />} danger block onClick={() => void signOut()}>
                   {publicWorkspace ? "Exit" : "Sign out"}

@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { Alert, Button, Form, Input, Modal, Space, Tag, Typography } from "antd";
 import { api } from "./api";
 
-export function AccountSecurity({ signedOut, sessionEstablished }: { signedOut: () => void; sessionEstablished?: () => void }) {
+export function AccountSecurity({ signedOut, sessionEstablished, onOpen }: { signedOut: () => void; sessionEstablished?: () => void; onOpen?: () => void }) {
   const [open, setOpen] = useState(false);
   const [verified, setVerified] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -57,7 +57,7 @@ export function AccountSecurity({ signedOut, sessionEstablished }: { signedOut: 
   const enabling = pendingPublicEnabled === true;
 
   return <>
-    <Button onClick={() => { setError(""); setOpen(true); }}>Account security</Button>
+    <Button onClick={() => { setError(""); setOpen(true); onOpen?.(); }}>Account security</Button>
     <Modal rootClassName="account-security-root" className="account-security-modal" title="Account security" open={open} onCancel={() => { if (!busy) void close(); }} footer={null} destroyOnHidden mask={{ closable: !busy }} keyboard={!busy}>
       {error && <Alert type="error" title={error} showIcon />}
       {!verified ? <Form form={verifyForm} layout="vertical" onFinish={verify}>
