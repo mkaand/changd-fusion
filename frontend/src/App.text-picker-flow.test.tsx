@@ -63,6 +63,47 @@ it("uses the real mobile TextPicker and preserves the draft through apply, remou
   expect(mockedApi.mock.calls.some(([path]) => String(path).endsWith("/reset"))).toBe(false);
 }, 20_000);
 
+it("replaces an existing V1 rule with the real generated V2 rule and persists it after reopening", async () => {
+  const oldV1 = { version: 1 as const, kind: "bounded_context" as const, before: "Price\n", after: "\nSeller", max_length: 64 };
+  const existing = {
+    id: "11111111-1111-4111-8111-111111111111", name: "Existing Reader monitor",
+    url: "https://example.com/product", kind: "browser", text_enabled: true, visual_enabled: false,
+    text_source: "jina", extraction_mode: "selected_text", extraction_rule: oldV1,
+    interval_seconds: 300, channel_ids: [],
+  };
+  let persisted = existing;
+  mockedApi.mockImplementation(async (path: string, method = "GET", body?: any) => {
+    if (path === "/users/me") return { id: "user", email: "fixture@example.com" } as any;
+    if (path === "/jobs" && method === "GET") return [persisted] as any;
+    if (path === "/notifications") return [] as any;
+    if (path === `/jobs/${existing.id}` && method === "GET") return persisted as any;
+    if (path.startsWith(`/jobs/${existing.id}/history`)) return { items: [], total: 0 } as any;
+    if (path === "/text-preview" && body?.line_index !== undefined) return { session_id: "preview-session", rule: generatedRule, extracted: selectedValue, description: "Text anchored by surrounding product lines" } as any;
+    if (path === "/text-preview") return { session_id: "preview-session", items: [{ index: 0, text: "Product" }, { index: 1, text: "Current price" }, { index: 2, text: longLine }, { index: 3, text: "Seller" }, { index: 4, text: "Delivery" }], matching_line_count: 5, total_line_count: 5 } as any;
+    if (path === `/jobs/${existing.id}` && method === "PUT") { persisted = { ...persisted, ...body }; return persisted as any; }
+    throw Error(`Unexpected ${method} ${path}`);
+  });
+  const user = userEvent.setup({ pointerEventsCheck: PointerEventsCheckLevel.Never });
+  render(<AntApp><FusionApp /></AntApp>);
+  await user.click(await screen.findByRole("button", { name: "Edit" }));
+  fireEvent.change(screen.getByLabelText("Monitor name"), { target: { value: "Edited Reader monitor" } });
+  await user.click(screen.getByText("Advanced settings", { exact: true }));
+  await user.click(screen.getByRole("button", { name: "Select text from preview" }));
+  const target = (await screen.findAllByRole("listitem")).find((item) => item.textContent === longLine);
+  await user.click(target!);
+  fireEvent.change(document.querySelector(".text-picker-selection textarea")!, { target: { value: selectedValue } });
+  await user.click(screen.getByRole("button", { name: "Generate extraction rule" }));
+  await user.click(await screen.findByRole("button", { name: "Apply selection to editor" }));
+  await screen.findByLabelText("Monitor name");
+  expect(screen.queryByText("Select text and apply a valid extraction rule before saving.")).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Save monitor" }));
+  await waitFor(() => expect(mockedApi).toHaveBeenCalledWith(`/jobs/${existing.id}`, "PUT", expect.objectContaining({ name: "Edited Reader monitor", extraction_rule: generatedRule })));
+  expect(mockedApi.mock.calls.some(([path]) => String(path).endsWith("/reset"))).toBe(false);
+  await user.click(await screen.findByRole("button", { name: "Edit" }));
+  await user.click(screen.getByText("Advanced settings", { exact: true }));
+  expect(screen.queryByText("Select text and apply a valid extraction rule before saving.")).not.toBeInTheDocument();
+}, 20_000);
+
 it("returns from the real mobile TextPicker Back action without merging its click event into the editor draft", async () => {
   const existingRule = {
     version: 2 as const,

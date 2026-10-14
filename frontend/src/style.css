@@ -268,7 +268,9 @@ details {
   .dashboard-tools .ant-input-search, .status-filter { width: 100%; }
   .monitor-card-meta { grid-template-columns: 1fr; }
   .monitor-card-actions { display: grid !important; grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .monitor-card-actions .ant-btn:last-child { grid-column: span 2; }
+  .monitor-card-actions .ant-btn { min-height: 44px; }
+  .monitor-card-actions .ant-btn:nth-child(2) { grid-column: 1 / span 2; grid-row: 2; }
+  .monitor-card-actions .ant-btn:nth-child(3) { grid-column: 2; grid-row: 1; }
   .login { margin: max(32px, env(safe-area-inset-top)) 12px; padding: 0; }
   .ant-pagination { display: flex; flex-wrap: wrap; justify-content: center; }
 }
@@ -307,6 +309,10 @@ details {
 .monitor-card-meta dt { color: color-mix(in srgb, var(--fusion-text, #1d1d1b) 60%, transparent); font-size: 12px; }
 .monitor-card-meta dd { margin: 2px 0 0; overflow-wrap: anywhere; }
 .monitor-card-actions .ant-btn { min-height: 40px; }
+.jina-extraction-controls, .jina-selected-text-controls { display: grid; gap: 12px; min-width: 0; }
+.jina-extraction-mode { margin-bottom: 0 !important; }
+.jina-reader-notice { overflow-wrap: anywhere; }
+.jina-selected-text-controls > .ant-btn { justify-self: start; min-height: 44px; }
 .mobile-loading { display: grid; min-height: 180px; place-items: center; }
 .delivery-card-list { display: grid; gap: 10px; margin-top: 12px; }
 .delivery-details { margin: 10px 0; overflow-wrap: anywhere; }
