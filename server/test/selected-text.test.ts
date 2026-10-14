@@ -121,6 +121,36 @@ test("dynamic matching supports stock, version, Turkish characters and punctuati
   assert.equal(applySelectedTextRule("Ürün bilgisi\nStok durumu\nİndirimli: son ürün!\nKargo", turkish), "İndirimli: son ürün!");
 });
 
+test("generated V2 context stays schema-bounded for short, medium, and long target lines", () => {
+  for (const [before, after] of [["Label: ", " · available"], ["A".repeat(100) + " medium-before ", " medium-after " + "B".repeat(100)], ["A".repeat(210) + " unique-before ", " unique-after " + "B".repeat(210)]]) {
+    const value = "Changing value";
+    const lines = ["Product", "Current offer", before + value + after, "Seller", "Delivery"];
+    const generated = generateSelectedTextRule(lines, 2, value);
+    assert.ok(generated.rule.prefix.length <= 160);
+    assert.ok(generated.rule.suffix.length <= 160);
+    assert.equal(applySelectedTextRule(lines.join("\n"), generated.rule), value);
+  }
+});
+
+test("generated V2 context truncates either or both long sides nearest to the value", () => {
+  for (const [before, after] of [["A".repeat(210) + " unique-before ", " tail"], ["head ", " unique-after " + "B".repeat(210)], ["A".repeat(210) + " unique-before ", " unique-after " + "B".repeat(210)]]) {
+    const value = "32.999,00 TL";
+    const lines = ["Product", "Price", before + value + after, "Seller", "Delivery"];
+    const generated = generateSelectedTextRule(lines, 2, value);
+    assert.equal(generated.rule.prefix, before.slice(-160));
+    assert.equal(generated.rule.suffix, after.slice(0, 160));
+    assert.equal(generated.extracted, value);
+  }
+});
+
+test("truncated context still fails closed when it cannot identify one value", () => {
+  const repeated = "A".repeat(200);
+  assert.throws(
+    () => generateSelectedTextRule(["Product", "Price", `${repeated}first${repeated}second`, "Seller", "Delivery"], 2, "second"),
+    /uniquely anchored|stable rule|ambiguous|could not be found/,
+  );
+});
+
 test("preview generation and scheduled Reader extraction use the same normalized V1 semantics", () => {
   const previewLines = readableJinaLines("Product\r\nPrice today\r\n32.999,00 TL\r\nSeller");
   const generated = generateSelectedTextRule(previewLines, 2, "32.999,00 TL");

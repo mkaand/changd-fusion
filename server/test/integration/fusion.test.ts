@@ -27,7 +27,7 @@ import { compareVisual } from "../../src/comparison.js";
 import { telegramSummary } from "../../src/notifications.js";
 import { closeRegionPreviewSessions, expireRegionPreviewSessions, previewRegion, REGION_PREVIEW_MAX_LIFETIME_MS } from "../../src/region-picker.js";
 import { acquireChromiumLease } from "../../src/chromium-capacity.js";
-import { applySelectedTextRule } from "../../src/selected-text.js";
+import { applySelectedTextRule, generateSelectedTextRule } from "../../src/selected-text.js";
 const expectedMigrationCount = (await readdir(path.resolve(import.meta.dirname, "../../migrations"))).filter((file) => /^\d+_.+\.sql$/.test(file)).length;
 const dbURL = new URL(process.env.TEST_DATABASE_URL ?? "");
 assert.ok(
@@ -412,6 +412,20 @@ test("selected text values keep chronological baselines and existing notificatio
   assert.equal(selected.extraction_rule.before, "Availability\n");
   const persisted = (await selectedAgent.get(`/api/v1/jobs/${selected.id}`).expect(200)).body;
   assert.deepEqual(persisted.extraction_rule, selected.extraction_rule);
+  const longSelectedLine = "A".repeat(205) + "unique-prefix-" + "33.499,00 TL" + "-unique-suffix" + "B".repeat(205);
+  const generatedV2 = generateSelectedTextRule(["Product", "Current price", longSelectedLine, "Seller", "Delivery"], 2, "33.499,00 TL").rule;
+  assert.equal(generatedV2.prefix.length, 160);
+  assert.equal(generatedV2.suffix.length, 160);
+  const selectedV2 = (await selectedAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({
+    name: "Schema-bounded V2 selection", url: "https://example.com/product-v2", kind: "browser", text_enabled: true, visual_enabled: false,
+    text_source: "jina", extraction_mode: "selected_text", extraction_rule: generatedV2, paused: true,
+  }).expect(201)).body;
+  assert.deepEqual(selectedV2.extraction_rule, generatedV2, "server-generated V2 rules pass the monitor persistence schema intact");
+  const selectedV2Updated = (await selectedAgent.put(`/api/v1/jobs/${selectedV2.id}`).set("X-Fusion-Request", "1").send({
+    name: "Schema-bounded V2 selection updated", url: "https://example.com/product-v2", kind: "browser", text_enabled: true, visual_enabled: false,
+    text_source: "jina", extraction_mode: "selected_text", extraction_rule: generatedV2, paused: true,
+  }).expect(200)).body;
+  assert.deepEqual(selectedV2Updated.extraction_rule, generatedV2, "V2 rules survive existing-monitor PUT persistence intact");
   const replacementRule = { version: 1, kind: "bounded_context", before: "Availability\n", after: "\nDelivery", max_length: 96 };
   const updated = (await selectedAgent.put(`/api/v1/jobs/${selected.id}`).set("X-Fusion-Request", "1").send({
     name: "Selected value history", url: "https://example.com/product", kind: "browser", text_enabled: true, visual_enabled: false,
@@ -1095,6 +1109,57 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
       executablePath: cfg.PLAYWRIGHT_EXECUTABLE_PATH,
       timeout: 15000,
     });
+    // Exercise the real Ant Design modal at the narrowest supported viewport
+    // before opening the rate-limited dashboard fixture. This page uses only
+    // synthetic API responses; real owner verification and step-up are covered
+    // by the dedicated API integration test below.
+    const layoutPage = await browser.newPage({ viewport: { width: 320, height: 720 } });
+    await layoutPage.route("**/api/v1/**", (route) => {
+      const pathname = new URL(route.request().url()).pathname;
+      const body = pathname.endsWith("/users/me")
+        ? { user_id: "00000000-0000-4000-8000-000000000001", firstname: "Fixture", lastname: "Owner", email: "owner@example.com", user_type: 0, public_access: false }
+        : pathname.endsWith("/jobs") || pathname.endsWith("/notifications") ? []
+        : pathname.endsWith("/account/public-access") ? { public_enabled: false }
+        : { ok: true };
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+    });
+    await layoutPage.goto(origin);
+    await layoutPage.getByRole("button", { name: "Open account menu", exact: true }).click();
+    await layoutPage.getByRole("button", { name: "Account security", exact: true }).click();
+    await layoutPage.getByLabel("Email", { exact: true }).fill("owner@example.com");
+    await layoutPage.getByLabel("Password", { exact: true }).fill(password);
+    await layoutPage.getByRole("button", { name: "Verify account", exact: true }).click();
+    const publicControl = layoutPage.getByRole("region", { name: "Public Access setting" });
+    await publicControl.waitFor();
+    await publicControl.getByRole("button", { name: "Enable public access", exact: true }).click();
+    const publicDialog = layoutPage.getByRole("dialog", { name: "Enable public access?", exact: true });
+    await publicDialog.waitFor();
+    const publicBounds = await publicDialog.boundingBox();
+    assert.ok(publicBounds && publicBounds.x >= 0 && publicBounds.x + publicBounds.width <= 320, "Public Access confirmation fits a 320px viewport");
+    for (const action of ["Cancel", "Enable public access"]) {
+      const button = publicDialog.getByRole("button", { name: action, exact: true });
+      await button.waitFor();
+      const bounds = await button.boundingBox();
+      assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 320 && bounds.y + bounds.height <= 720, `${action} remains visible in the mobile confirmation`);
+    }
+    const publicOverflow = await layoutPage.evaluate(() => Array.from(document.querySelectorAll("*"))
+      .map((element) => ({
+        tag: element.tagName,
+        className: typeof element.className === "string" ? element.className : "",
+        left: element.getBoundingClientRect().left,
+        right: element.getBoundingClientRect().right,
+        width: element.getBoundingClientRect().width,
+      }))
+      .filter((element) => (element.left < -1 || element.right > window.innerWidth + 1) && element.width > 0)
+      .slice(0, 12));
+    assert.deepEqual(publicOverflow, [], `Public Access confirmation must not cause horizontal overflow: ${JSON.stringify(publicOverflow)}`);
+    await layoutPage.keyboard.press("Escape");
+    await publicDialog.waitFor({ state: "hidden" });
+    await publicControl.getByRole("button", { name: "Enable public access", exact: true }).click();
+    await publicDialog.waitFor();
+    await publicDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await publicDialog.waitFor({ state: "hidden" });
+    await layoutPage.close();
     const page = await browser.newPage();
     // A controlled completed preview makes the documentation screenshot
     // deterministic without contacting a production or external website.
