@@ -81,10 +81,16 @@ test("dynamic price changes keep the selected value anchored without matching th
   assert.equal(applySelectedTextRule("Hepsiburada\nPrice today\n33.999,00 TL\nSeller: Store", rule), "33.999,00 TL");
 });
 
-test("a changed neighbouring Reader line uses the remaining unique V1 anchor", () => {
+test("a changed neighbouring Reader line keeps a V2 selection anchored by independent lines", () => {
   const rule = generateSelectedTextRule(readableJinaLines("Product\nPrice today\n32.999,00 TL\nSeller: Store"), 2, "32.999,00 TL").rule;
   assert.equal(applySelectedTextRule("Product\nCurrent offer\n33.999,00 TL\nSeller: Store", rule), "33.999,00 TL");
   assert.equal(applySelectedTextRule("Product\nPrice today\n33.999,00 TL\nMerchant: Store", rule), "33.999,00 TL");
+});
+
+test("stored V1 bounded-context rules remain backward compatible and fail closed", () => {
+  const legacy = { version: 1 as const, kind: "bounded_context" as const, before: "Availability\n", after: "\nDelivery", max_length: 64 };
+  assert.equal(applySelectedTextRule("Availability\nBack ordered\nDelivery", legacy), "Back ordered");
+  assert.throws(() => applySelectedTextRule("Other\nBack ordered\nDelivery", legacy), /could not be found/);
 });
 
 test("unrelated Reader line additions do not change a uniquely bounded selection", () => {
