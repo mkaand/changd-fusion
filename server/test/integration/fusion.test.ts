@@ -517,23 +517,26 @@ test("selected text values keep chronological baselines and existing notificatio
 
 test("keyword presence persists for Direct Browser and Jina and emits only filtered presence transitions", async () => {
   const headers = { "X-Fusion-Request": "1" };
-  await ownerAgent.post("/api/v1/jobs").set(headers).send({
+  const keywordApp = createApp(pool, cfg, new EgressPolicy(async () => [{ address: "8.8.8.8", family: 4 }]));
+  const keywordAgent = request.agent(keywordApp);
+  await keywordAgent.post("/api/v1/login").set(headers).send({ email: "owner@example.com", password }).expect(200);
+  await keywordAgent.post("/api/v1/jobs").set(headers).send({
     name: "Missing keyword", url: "https://example.com/missing", kind: "browser", text_enabled: true, visual_enabled: false,
     text_source: "direct", extraction_mode: "keyword_presence",
   }).expect(400);
-  await ownerAgent.post("/api/v1/jobs").set(headers).send({
+  await keywordAgent.post("/api/v1/jobs").set(headers).send({
     name: "Empty keyword", url: "https://example.com/empty", kind: "browser", text_enabled: true, visual_enabled: false,
     text_source: "direct", extraction_mode: "keyword_presence", keyword: "   ",
   }).expect(400);
-  await ownerAgent.post("/api/v1/jobs").set(headers).send({
+  await keywordAgent.post("/api/v1/jobs").set(headers).send({
     name: "Oversized keyword", url: "https://example.com/long", kind: "browser", text_enabled: true, visual_enabled: false,
     text_source: "direct", extraction_mode: "keyword_presence", keyword: "x".repeat(201),
   }).expect(400);
-  await ownerAgent.post("/api/v1/jobs").set(headers).send({
+  await keywordAgent.post("/api/v1/jobs").set(headers).send({
     name: "Invalid keyword target", url: "https://example.com/api", kind: "api", text_enabled: true, visual_enabled: false,
     text_source: "direct", extraction_mode: "keyword_presence", keyword: "Kaan",
   }).expect(400);
-  const jina = (await ownerAgent.post("/api/v1/jobs").set(headers).send({
+  const jina = (await keywordAgent.post("/api/v1/jobs").set(headers).send({
     name: "Jina keyword", url: "https://example.com/jina", kind: "browser", text_enabled: true, visual_enabled: false,
     text_source: "jina", extraction_mode: "keyword_presence", keyword: "Kaan", paused: true,
   }).expect(201)).body;
@@ -541,7 +544,7 @@ test("keyword presence persists for Direct Browser and Jina and emits only filte
   assert.equal(jina.extraction_mode, "keyword_presence");
 
   const createKeywordMonitor = async (name: string, direction: "added" | "removed" | "both") =>
-    (await ownerAgent.post("/api/v1/jobs").set(headers).send({
+    (await keywordAgent.post("/api/v1/jobs").set(headers).send({
       name, url: `https://example.com/${direction}`, kind: "browser", text_enabled: true, visual_enabled: false,
       text_source: "direct", extraction_mode: "keyword_presence", keyword: "Kaan", text_direction: direction,
       channel_ids: [channelId],
@@ -576,6 +579,7 @@ test("keyword presence persists for Direct Browser and Jina and emits only filte
   await take(removed.id, "Absent");
   await take(removed.id, "Kaan present again");
   assert.deepEqual((await pool.query("SELECT notification_state FROM fusion_events WHERE monitor_id=$1 AND status='changed' ORDER BY created_at,id", [removed.id])).rows.map((event) => event.notification_state), ["queued", "direction_filtered"]);
+  await pool.query("DELETE FROM fusion_monitors WHERE id=ANY($1::uuid[])", [[jina.id, both.id, added.id, removed.id]]);
 });
 
 test("same-monitor concurrency is rejected and configuration mutations cannot race captures", async () => {
