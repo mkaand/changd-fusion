@@ -16,7 +16,7 @@ export const defaults = {
   channel_ids: [], ignore_selectors: [], ignore_text: [], mask_selectors: [],
 };
 export { isValidSelectedTextRule } from "./selected-text-rule";
-export function MonitorForm({ form, channels, monitorId, onOpenMobileRegion, onOpenMobileText, advancedOpen, setAdvancedOpen }: { form: any; channels: any[]; monitorId?: string; onOpenMobileRegion?: () => void; onOpenMobileText?: () => void; advancedOpen?: boolean; setAdvancedOpen?: (open: boolean) => void }) {
+export function MonitorForm({ form, channels, monitorId, onOpenMobileRegion, onOpenMobileText, advancedOpen, setAdvancedOpen, useDefaults = true }: { form: any; channels: any[]; monitorId?: string; onOpenMobileRegion?: () => void; onOpenMobileText?: () => void; advancedOpen?: boolean; setAdvancedOpen?: (open: boolean) => void; useDefaults?: boolean }) {
   const [localAdvancedOpen, setLocalAdvancedOpen] = useState(false);
   const pendingJinaExtraction = useRef<{ extraction_mode: "full_text" | "selected_text"; extraction_rule: unknown } | undefined>(undefined);
   const isAdvancedOpen = advancedOpen ?? localAdvancedOpen;
@@ -26,7 +26,7 @@ export function MonitorForm({ form, channels, monitorId, onOpenMobileRegion, onO
     <Form.Item name="text_enabled" label="Text detection" valuePropName="checked"><Switch aria-label="Text detection" disabled={kind !== "browser"} /></Form.Item>
     <Form.Item name="visual_enabled" label="Visual detection" valuePropName="checked"><Switch aria-label="Visual detection" disabled={kind !== "browser"} /></Form.Item>
   </div>;
-  return <Form form={form} layout="vertical" initialValues={defaults} className="monitor-editor-form">
+  return <Form form={form} layout="vertical" initialValues={useDefaults ? defaults : undefined} className="monitor-editor-form">
     <Form.Item name="extraction_rule" hidden><HiddenObjectField /></Form.Item>
     <section className="monitor-editor-basics" aria-label="Monitor basics">
       <Form.Item name="name" label="Monitor name" rules={[{ required: true }]}><Input maxLength={120} /></Form.Item>
@@ -50,7 +50,7 @@ export function MonitorForm({ form, channels, monitorId, onOpenMobileRegion, onO
             form.setFieldsValue(pendingJinaExtraction.current);
           }
         }} /></Form.Item>
-        {textSource === "jina" && <><div className="ant-form-item"><span id="extraction-mode-label">Extraction mode</span><Form.Item name="extraction_mode" noStyle><Radio.Group aria-labelledby="extraction-mode-label" optionType="button" buttonStyle="solid" options={[{ value: "full_text", label: "Full Text" }, { value: "selected_text", label: "Selected Text / Value" }]} /></Form.Item></div><Typography.Text type="secondary">Jina Reader sends the monitored URL to a third-party service.</Typography.Text>{extractionMode === "selected_text" && <><TextPicker monitorId={monitorId} onRequestMobile={onOpenMobileText} getDraft={() => form.getFieldsValue(true)} onApply={(rule) => form.setFieldsValue({ extraction_rule: rule, extraction_mode: "selected_text" })} />{!isValidSelectedTextRule(extractionRule) && <Alert type="warning" showIcon title="Select text and apply a valid extraction rule before saving." />}</> }</>}
+        {textSource === "jina" && <section className="jina-extraction-controls"><div className="jina-extraction-mode ant-form-item"><span id="extraction-mode-label">Extraction mode</span><Form.Item name="extraction_mode" noStyle><Radio.Group aria-labelledby="extraction-mode-label" optionType="button" buttonStyle="solid" options={[{ value: "full_text", label: "Full Text" }, { value: "selected_text", label: "Selected Text / Value" }]} /></Form.Item></div><Typography.Text type="secondary" className="jina-reader-notice">Jina Reader sends the monitored URL to a third-party service.</Typography.Text>{extractionMode === "selected_text" && <div className="jina-selected-text-controls"><TextPicker monitorId={monitorId} onRequestMobile={onOpenMobileText} getDraft={() => form.getFieldsValue(true)} onApply={(rule) => { form.setFieldValue("extraction_rule", rule); form.setFieldValue("extraction_mode", "selected_text"); }} />{!isValidSelectedTextRule(extractionRule) && <Alert type="warning" showIcon title="Select text and apply a valid extraction rule before saving." />}</div>}</section>}
         {textSource === "direct" && <><Form.Item name="selector_type" label="Text extraction method"><Select options={[{ value: "css", label: "CSS selector" }, { value: "xpath", label: "XPath" }]} /></Form.Item><Form.Item name="selector" label="Text selector (empty = visible page text)"><Input placeholder="#content or //main" /></Form.Item><Form.Item name="ignore_selectors" label="Remove dynamic regions"><Select mode="tags" placeholder="CSS selectors" /></Form.Item></>}
       </>}
       {text && (textSource === "direct" || extractionMode === "full_text") && <><Form.Item name="ignore_text" label="Ignore literal text"><Select mode="tags" /></Form.Item><div className="form-row"><Form.Item name="normalize_whitespace" label="Normalize whitespace" valuePropName="checked"><Switch /></Form.Item><Form.Item name="ignore_case" label="Ignore case" valuePropName="checked"><Switch /></Form.Item></div></>}

@@ -214,6 +214,11 @@ export default function FusionApp() {
       void message.error((e as Error).message);
     }
   };
+  const restoreEditorDraft = (draft: Record<string, unknown>) => {
+    form.setFieldsValue(draft);
+    if (Object.hasOwn(draft, "extraction_rule"))
+      form.setFieldValue("extraction_rule", draft.extraction_rule);
+  };
   const returnToEditor = (appliedValues?: PickerValues) => {
     const restoredDraft = editorDraftRef.current ?? form.getFieldsValue(true);
     const intentionalValues = appliedValues && Object.keys(appliedValues).every((key) => pickerValueKeys.has(key))
@@ -223,7 +228,7 @@ export default function FusionApp() {
       ? { ...restoredDraft, ...intentionalValues }
       : restoredDraft;
     editorDraftRef.current = nextDraft;
-    form.setFieldsValue(nextDraft);
+    restoreEditorDraft(nextDraft);
     setPage("editor");
     if (["/jobs/editor/region-picker", "/jobs/editor/text-picker"].includes(location.pathname) && history.length > 1) history.back();
     else history.replaceState(null, "", "/jobs/editor");
@@ -240,6 +245,10 @@ export default function FusionApp() {
     restore();
     return () => window.removeEventListener("popstate", restore);
   }, [open]);
+  useEffect(() => {
+    if (page === "editor" && open && editorDraftRef.current)
+      restoreEditorDraft(editorDraftRef.current);
+  }, [form, open, page]);
   useEffect(() => {
     if (user && /^\/jobs\/[a-f\d-]{36}$/.test(location.pathname))
       void detail(location.pathname.split("/")[2]);
@@ -440,7 +449,7 @@ export default function FusionApp() {
             {page === "editor" && compactLayout && open ? (
               <section className="mobile-monitor-editor" aria-label={editing ? "Edit monitor" : "New monitor"}>
                 <div className="mobile-editor-header"><Button type="text" onClick={() => { setOpen(false); navigate("jobs"); }}>← Back</Button><Typography.Title level={3}>{editing ? "Edit monitor" : "New monitor"}</Typography.Title></div>
-                <MonitorForm form={form} channels={channels} monitorId={editing?.id} advancedOpen={advancedOpen} setAdvancedOpen={setAdvancedOpen} onOpenMobileRegion={() => { editorDraftRef.current = form.getFieldsValue(true); setPage("region-picker"); history.pushState(null, "", "/jobs/editor/region-picker"); }} onOpenMobileText={() => { editorDraftRef.current = form.getFieldsValue(true); setPage("text-picker"); history.pushState(null, "", "/jobs/editor/text-picker"); }} />
+                <MonitorForm form={form} channels={channels} monitorId={editing?.id} advancedOpen={advancedOpen} setAdvancedOpen={setAdvancedOpen} useDefaults={false} onOpenMobileRegion={() => { editorDraftRef.current = form.getFieldsValue(true); setPage("region-picker"); history.pushState(null, "", "/jobs/editor/region-picker"); }} onOpenMobileText={() => { editorDraftRef.current = form.getFieldsValue(true); setPage("text-picker"); history.pushState(null, "", "/jobs/editor/text-picker"); }} />
                 <div className="mobile-editor-actions"><Button onClick={() => { setOpen(false); navigate("jobs"); }}>Cancel</Button><Button type="primary" loading={saving} onClick={save}>Save monitor</Button></div>
               </section>
             ) : page === "region-picker" && compactLayout && open ? (
@@ -644,11 +653,11 @@ export default function FusionApp() {
                             <div><dt>Last change</dt><dd>{m.last_change_at ? new Date(m.last_change_at).toLocaleString() : "—"}</dd></div>
                             {m.visual_enabled && <div><dt>Visual change</dt><dd>{m.last_dimension_change ? "Dimensions changed" : percent(m.last_percent)}</dd></div>}
                           </dl>
-                          <Space className="monitor-card-actions" wrap>
+                          <div className="monitor-card-actions" aria-label="Monitor actions">
                             <Button onClick={() => void detail(m.id)}>Details</Button>
                             <Button type="primary" onClick={() => void action(m.id, "run")}>Check now</Button>
                             <Button onClick={() => void edit(m)}>Edit</Button>
-                          </Space>
+                          </div>
                         </Card>
                       ))
                     )}
@@ -783,7 +792,7 @@ export default function FusionApp() {
         width={900}
         destroyOnHidden
       >
-        <MonitorForm form={form} channels={channels} monitorId={editing?.id} />
+        <MonitorForm form={form} channels={channels} monitorId={editing?.id} useDefaults={false} />
       </Modal>}
     </Layout>
   );
