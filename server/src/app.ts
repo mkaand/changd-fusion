@@ -47,11 +47,19 @@ const monitorInput = z
     text_direction: z.enum(["added", "removed", "both"]).default("both"),
     text_source: z.enum(["direct", "jina"]).default("direct"),
     extraction_mode: z.enum(["full_text", "selected_text"]).default("full_text"),
-    extraction_rule: z.object({
-      version: z.literal(1), kind: z.literal("bounded_context"),
-      before: z.string().max(160), after: z.string().max(160),
-      max_length: z.number().int().min(1).max(500),
-    }).strict().nullable().default(null),
+    extraction_rule: z.union([
+      z.object({
+        version: z.literal(1), kind: z.literal("bounded_context"),
+        before: z.string().max(160), after: z.string().max(160),
+        max_length: z.number().int().min(1).max(500),
+      }).strict(),
+      z.object({
+        version: z.literal(2), kind: z.literal("anchored_lines"),
+        anchors: z.array(z.object({ text: z.string().min(1).max(160), offset: z.union([z.literal(-2), z.literal(-1), z.literal(1), z.literal(2)]) }).strict()).min(2).max(4),
+        prefix: z.string().max(160), suffix: z.string().max(160),
+        max_length: z.number().int().min(1).max(500),
+      }).strict(),
+    ]).nullable().default(null),
     visual_enabled: z.boolean().default(false),
     selector: z.string().max(1000).default(""),
     selector_type: z.enum(["css", "xpath"]).default("css"),
