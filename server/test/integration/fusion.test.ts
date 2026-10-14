@@ -1109,6 +1109,57 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
       executablePath: cfg.PLAYWRIGHT_EXECUTABLE_PATH,
       timeout: 15000,
     });
+    // Exercise the real Ant Design modal at the narrowest supported viewport
+    // before opening the rate-limited dashboard fixture. This page uses only
+    // synthetic API responses; real owner verification and step-up are covered
+    // by the dedicated API integration test below.
+    const layoutPage = await browser.newPage({ viewport: { width: 320, height: 720 } });
+    await layoutPage.route("**/api/v1/**", (route) => {
+      const pathname = new URL(route.request().url()).pathname;
+      const body = pathname.endsWith("/users/me")
+        ? { user_id: "00000000-0000-4000-8000-000000000001", firstname: "Fixture", lastname: "Owner", email: "owner@example.com", user_type: 0, public_access: false }
+        : pathname.endsWith("/jobs") || pathname.endsWith("/notifications") ? []
+        : pathname.endsWith("/account/public-access") ? { public_enabled: false }
+        : { ok: true };
+      return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+    });
+    await layoutPage.goto(origin);
+    await layoutPage.getByRole("button", { name: "Open account menu", exact: true }).click();
+    await layoutPage.getByRole("button", { name: "Account security", exact: true }).click();
+    await layoutPage.getByLabel("Email", { exact: true }).fill("owner@example.com");
+    await layoutPage.getByLabel("Password", { exact: true }).fill(password);
+    await layoutPage.getByRole("button", { name: "Verify account", exact: true }).click();
+    const publicControl = layoutPage.getByRole("region", { name: "Public Access setting" });
+    await publicControl.waitFor();
+    await publicControl.getByRole("button", { name: "Enable public access", exact: true }).click();
+    const publicDialog = layoutPage.getByRole("dialog", { name: "Enable public access?", exact: true });
+    await publicDialog.waitFor();
+    const publicBounds = await publicDialog.boundingBox();
+    assert.ok(publicBounds && publicBounds.x >= 0 && publicBounds.x + publicBounds.width <= 320, "Public Access confirmation fits a 320px viewport");
+    for (const action of ["Cancel", "Enable public access"]) {
+      const button = publicDialog.getByRole("button", { name: action, exact: true });
+      await button.waitFor();
+      const bounds = await button.boundingBox();
+      assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 320 && bounds.y + bounds.height <= 720, `${action} remains visible in the mobile confirmation`);
+    }
+    const publicOverflow = await layoutPage.evaluate(() => Array.from(document.querySelectorAll("*"))
+      .map((element) => ({
+        tag: element.tagName,
+        className: typeof element.className === "string" ? element.className : "",
+        left: element.getBoundingClientRect().left,
+        right: element.getBoundingClientRect().right,
+        width: element.getBoundingClientRect().width,
+      }))
+      .filter((element) => (element.left < -1 || element.right > window.innerWidth + 1) && element.width > 0)
+      .slice(0, 12));
+    assert.deepEqual(publicOverflow, [], `Public Access confirmation must not cause horizontal overflow: ${JSON.stringify(publicOverflow)}`);
+    await layoutPage.keyboard.press("Escape");
+    await publicDialog.waitFor({ state: "hidden" });
+    await publicControl.getByRole("button", { name: "Enable public access", exact: true }).click();
+    await publicDialog.waitFor();
+    await publicDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await publicDialog.waitFor({ state: "hidden" });
+    await layoutPage.close();
     const page = await browser.newPage();
     // A controlled completed preview makes the documentation screenshot
     // deterministic without contacting a production or external website.
@@ -1144,54 +1195,6 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
     const themeSwitch = page.getByRole("switch", { name: /Switch to .* theme/ });
     await themeSwitch.waitFor();
-    // Exercise the real Ant Design modal at the narrowest supported viewport.
-    // The transition is cancelled so this smoke test never changes persisted
-    // Public Access state. These three UI-only calls are intercepted so the
-    // long browser smoke does not consume the shared API rate-limit budget;
-    // real owner verification and step-up are covered by the dedicated API
-    // integration test below.
-    await page.route("**/api/v1/security/verify", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) }));
-    await page.route("**/api/v1/account/public-access", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ public_enabled: false }) }));
-    await page.route("**/api/v1/security/leave", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) }));
-    await page.route("**/api/v1/users/me", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ user_id: "00000000-0000-4000-8000-000000000001", firstname: "Fixture", lastname: "Owner", email: "owner@example.com", user_type: 0, public_access: false }) }));
-    await page.setViewportSize({ width: 320, height: 720 });
-    await page.getByRole("button", { name: "Open account menu", exact: true }).click();
-    await page.getByRole("button", { name: "Account security", exact: true }).click();
-    await page.getByLabel("Email", { exact: true }).fill("owner@example.com");
-    await page.getByLabel("Password", { exact: true }).fill(password);
-    await page.getByRole("button", { name: "Verify account", exact: true }).click();
-    const publicControl = page.getByRole("region", { name: "Public Access setting" });
-    await publicControl.waitFor();
-    await publicControl.getByRole("button", { name: "Enable public access", exact: true }).click();
-    const publicDialog = page.getByRole("dialog", { name: "Enable public access?", exact: true });
-    await publicDialog.waitFor();
-    const publicBounds = await publicDialog.boundingBox();
-    assert.ok(publicBounds && publicBounds.x >= 0 && publicBounds.x + publicBounds.width <= 320, "Public Access confirmation fits a 320px viewport");
-    for (const action of ["Cancel", "Enable public access"]) {
-      const button = publicDialog.getByRole("button", { name: action, exact: true });
-      await button.waitFor();
-      const bounds = await button.boundingBox();
-      assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 320 && bounds.y + bounds.height <= 720, `${action} remains visible in the mobile confirmation`);
-    }
-    const publicOverflow = await page.evaluate(() => Array.from(document.querySelectorAll("*"))
-      .map((element) => ({
-        tag: element.tagName,
-        className: typeof element.className === "string" ? element.className : "",
-        left: element.getBoundingClientRect().left,
-        right: element.getBoundingClientRect().right,
-        width: element.getBoundingClientRect().width,
-      }))
-      .filter((element) => (element.left < -1 || element.right > window.innerWidth + 1) && element.width > 0)
-      .slice(0, 12));
-    assert.deepEqual(publicOverflow, [], `Public Access confirmation must not cause horizontal overflow: ${JSON.stringify(publicOverflow)}`);
-    await page.keyboard.press("Escape");
-    await publicDialog.waitFor({ state: "hidden" });
-    await publicControl.getByRole("button", { name: "Enable public access", exact: true }).click();
-    await publicDialog.waitFor();
-    await publicDialog.getByRole("button", { name: "Cancel", exact: true }).click();
-    await publicDialog.waitFor({ state: "hidden" });
-    await page.getByRole("dialog", { name: "Account security", exact: true }).getByRole("button", { name: "Close" }).click();
-    await page.setViewportSize({ width: 1280, height: 900 });
     const initialTheme = await page.locator("html").getAttribute("data-theme");
     await themeSwitch.click();
     assert.notEqual(await page.locator("html").getAttribute("data-theme"), initialTheme);
