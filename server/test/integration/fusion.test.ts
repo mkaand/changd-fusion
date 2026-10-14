@@ -1146,7 +1146,13 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await themeSwitch.waitFor();
     // Exercise the real Ant Design modal at the narrowest supported viewport.
     // The transition is cancelled so this smoke test never changes persisted
-    // Public Access state.
+    // Public Access state. These three UI-only calls are intercepted so the
+    // long browser smoke does not consume the shared API rate-limit budget;
+    // real owner verification and step-up are covered by the dedicated API
+    // integration test below.
+    await page.route("**/api/v1/security/verify", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) }));
+    await page.route("**/api/v1/account/public-access", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ public_enabled: false }) }));
+    await page.route("**/api/v1/security/leave", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) }));
     await page.setViewportSize({ width: 320, height: 720 });
     await page.getByRole("button", { name: "Open account menu", exact: true }).click();
     await page.getByRole("button", { name: "Account security", exact: true }).click();
