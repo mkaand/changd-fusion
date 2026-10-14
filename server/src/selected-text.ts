@@ -67,8 +67,42 @@ export function applySelectedTextRule(text: string, rule: SelectedTextRule) {
     const value = text.slice(start, end).trim();
     if (value) matches.push(value);
   }
-  if (matches.length !== 1) throw new HttpError(422, matches.length ? "Selected text is ambiguous in the current Reader output." : "Selected text could not be found in the current Reader output.");
-  return matches[0];
+  if (matches.length === 1) return matches[0];
+  if (matches.length > 1) throw new HttpError(422, "Selected text is ambiguous in the current Reader output.");
+
+  // V1 rules store the previous and next Reader lines alongside any inline
+  // text around the selection. The strict lookup above deliberately remains
+  // first, but a changed neighbouring line must not make a unique selected
+  // value disappear. Only use this fallback when a single full-line anchor
+  // identifies the immediately adjacent line. It never scores candidates or
+  // guesses across inserted content: competing candidates remain ambiguous.
+  const lines = readableJinaLines(text);
+  const beforeAnchor = rule.before.split("\n").map((line) => line.trim()).filter(Boolean).at(-1);
+  const afterAnchor = rule.after.split("\n").map((line) => line.trim()).filter(Boolean).at(0);
+  const candidates = new Map<number, string>();
+  const addCandidate = (index: number) => {
+    const value = lines[index]?.trim();
+    if (value && value.length <= rule.max_length) candidates.set(index, value);
+  };
+  const uniqueAnchor = (anchor: string) => {
+    let found = -1;
+    for (let index = 0; index < lines.length; index++) {
+      if (lines[index] !== anchor) continue;
+      if (found !== -1) return undefined;
+      found = index;
+    }
+    return found === -1 ? undefined : found;
+  };
+  if (beforeAnchor) {
+    const anchor = uniqueAnchor(beforeAnchor);
+    if (anchor !== undefined) addCandidate(anchor + 1);
+  }
+  if (afterAnchor) {
+    const anchor = uniqueAnchor(afterAnchor);
+    if (anchor !== undefined) addCandidate(anchor - 1);
+  }
+  if (candidates.size === 1) return [...candidates.values()][0];
+  throw new HttpError(422, candidates.size ? "Selected text is ambiguous in the current Reader output." : "Selected text could not be found in the current Reader output.");
 }
 
 export function generateSelectedTextRule(lines: string[], lineIndex: number, selectedValue: string) {
