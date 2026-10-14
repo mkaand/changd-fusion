@@ -14,6 +14,7 @@
     "worker:prod": "node dist/worker-main.js",
     "migrate": "tsx src/migrate.ts",
     "create-admin": "tsx src/create-admin.ts",
+    "reset-admin-password": "tsx src/reset-admin-password.ts",
     "test": "tsx --test --test-timeout=30000 test/*.test.ts",
     "test:integration": "node scripts/integration-runner.mjs"
   },

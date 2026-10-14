@@ -74,7 +74,6 @@ it("keeps a mobile Text Picker selection through return to the editor and the Sa
   await user.click(screen.getByRole("button", { name: "Save monitor" }));
   await waitFor(() => expect(mockedApi).toHaveBeenCalledWith("/jobs", "POST", expect.objectContaining({ text_source: "jina", extraction_mode: "selected_text", extraction_rule: rule })));
 });
-
 it("places the monitor title above a separate, wrapping action row", async () => {
   const monitor = { id: "22222222-2222-4222-8222-222222222222", name: "A very long monitor name that must remain readable on narrow screens", url: "https://example.com/product", kind: "browser", text_enabled: true, visual_enabled: false, enabled: true, paused: false, interval_seconds: 300, channel_ids: [], failure_count: 0 };
   setupApi([monitor], monitor);
@@ -112,15 +111,4 @@ it("keeps Account Security available in a public workspace and sends owner crede
   await user.click(screen.getByRole("button", { name: "Verify account" }));
   await waitFor(() => expect(mockedApi).toHaveBeenCalledWith("/security/verify", "POST", { email: "owner@example.com", password: "synthetic-fixture-password" }));
   expect(await screen.findByText("Public Access", { exact: false })).toBeInTheDocument();
-});
-
-it("opens a reset-password token link even while public access is active", async () => {
-  window.history.pushState({}, "", "/reset-password?token=" + "a".repeat(32));
-  setupApi();
-  mockedApi.mockImplementation(async (path: string, method = "GET") => {
-    if (path === "/users/me") return { user_id: null, public_access: true } as any;
-    throw Error(`Unexpected ${method} ${path}`);
-  });
-  render(<AntApp><FusionApp /></AntApp>);
-  expect(await screen.findByRole("button", { name: "Reset password" })).toBeInTheDocument();
 });

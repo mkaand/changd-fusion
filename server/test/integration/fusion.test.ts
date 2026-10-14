@@ -1523,48 +1523,6 @@ test("public access requires owner credentials to establish a revocable account-
   await visitor.get("/api/v1/account/public-access").expect(403);
 });
 
-test("password reset confirmation stays available with public access on or off and tokens are single-use", async () => {
-  const resetEmail = "public-reset@example.com";
-  const created = await pool.query("INSERT INTO users(email,password) VALUES($1,$2) RETURNING user_id", [resetEmail, await hash(password, 4)]);
-  const owner = (await pool.query("SELECT user_id FROM users WHERE email='owner@example.com'")).rows[0];
-  const resetApp = createApp(pool, cfg);
-  for (const publicEnabled of [false, true]) {
-    await pool.query("UPDATE fusion_access_settings SET public_enabled=$1,owner_user_id=$2 WHERE singleton=true", [publicEnabled, owner.user_id]);
-    const token = randomBytes(32).toString("base64url");
-    await pool.query("INSERT INTO fusion_password_reset_tokens(id,user_id,token_hash,expires_at) VALUES($1,$2,$3,now()+interval '20 minutes')", [randomUUID(), created.rows[0].user_id, createHash("sha256").update(token).digest("hex")]);
-    await request(resetApp)
-      .post("/api/v1/password-reset/confirm")
-      .set("X-Fusion-Request", "1")
-      .send({ token, password: `updated-${publicEnabled}-password` })
-      .expect(200, { ok: true });
-    await request(resetApp)
-      .post("/api/v1/password-reset/confirm")
-      .set("X-Fusion-Request", "1")
-      .send({ token, password: `updated-again-${publicEnabled}-password` })
-      .expect(400);
-  }
-  await pool.query("UPDATE fusion_access_settings SET public_enabled=false WHERE singleton=true");
-});
-
-test("a public notification SMTP edit cannot receive or redirect account recovery", async () => {
-  const owner = (await pool.query("SELECT user_id FROM users WHERE email='owner@example.com'")).rows[0];
-  const recoveryCfg = { ...cfg, RECOVERY_SMTP_HOST: "recovery.example.test", RECOVERY_SMTP_PORT: 587, RECOVERY_SMTP_USERNAME: "recovery-mailer", RECOVERY_SMTP_PASSWORD: "mock-only-recovery-secret", RECOVERY_SMTP_FROM: "no-reply@example.test" };
-  const delivery: { options?: any; message?: any } = {};
-  const recoveryApp = createApp(pool, recoveryCfg, undefined, { createMailTransport: (options) => { delivery.options = options; return { sendMail: async (message) => { delivery.message = message; } }; } });
-  await pool.query("UPDATE fusion_access_settings SET public_enabled=true,owner_user_id=$1 WHERE singleton=true", [owner.user_id]);
-  try {
-    const visitor = request.agent(recoveryApp);
-    const channel = (await visitor.post("/api/v1/notifications").set("X-Fusion-Request", "1").send({ name: "Public editable SMTP", provider: "smtp", enabled: true, config: { host: "attacker.example.test", port: 587, username: "attacker", password: "attacker-password", from: "attacker@example.test", to: "attacker@example.test" } }).expect(201)).body;
-    await visitor.put(`/api/v1/notifications/${channel.id}`).set("X-Fusion-Request", "1").send({ name: "Redirected SMTP", provider: "smtp", enabled: true, config: { host: "redirect.example.test", port: 587, username: "attacker", password: "attacker-password", from: "attacker@example.test", to: "redirect@example.test" } }).expect(200);
-    await request(recoveryApp).post("/api/v1/password-reset/request").set("X-Fusion-Request", "1").send({ email: "owner@example.com" }).expect(202, { ok: true });
-    assert.equal(delivery.options?.host, "recovery.example.test");
-    assert.equal(delivery.message?.to, "owner@example.com");
-    assert.ok(!delivery.message?.text.includes("redirect.example.test"));
-  } finally {
-    await pool.query("UPDATE fusion_access_settings SET public_enabled=false WHERE singleton=true");
-  }
-});
-
 test("capture modes use one browser page for text and image; limits, selector errors and timeouts preserve baseline", async (t) => {
   let slowHits = 0;
   const fixture = managedServer(t, (req, res) => {

@@ -27,16 +27,6 @@ CREATE TABLE fusion_security_grants (
 );
 CREATE INDEX fusion_security_grants_active ON fusion_security_grants(user_id, expires_at) WHERE revoked_at IS NULL;
 
-CREATE TABLE fusion_password_reset_tokens (
-  id uuid PRIMARY KEY,
-  user_id varchar NOT NULL REFERENCES users(user_id) ON DELETE CASCADE,
-  token_hash text NOT NULL UNIQUE,
-  expires_at timestamptz NOT NULL,
-  used_at timestamptz,
-  created_at timestamptz NOT NULL DEFAULT now()
-);
-CREATE INDEX fusion_password_reset_active ON fusion_password_reset_tokens(user_id, expires_at) WHERE used_at IS NULL;
-
 -- Product Price is retired. Historical captures/events remain untouched, but
 -- price-only baselines are not comparable with Full Text. Force a new baseline
 -- instead of silently treating the next document as a product-price change.

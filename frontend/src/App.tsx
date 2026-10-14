@@ -302,8 +302,7 @@ export default function FusionApp() {
         <Spin />
       </div>
     );
-  const resetPassword = typeof window !== "undefined" && window.location.pathname === "/reset-password" && !!new URLSearchParams(window.location.search).get("token");
-  if (resetPassword || !user) return <Login onSuccess={() => void getUser()} />;
+  if (!user) return <Login onSuccess={() => void getUser()} />;
   const publicWorkspace = Boolean(user.public_access);
   const current = monitors.find((m) => m.id === selected?.id) ?? selected;
   const filteredMonitors = filterMonitors(monitors, query, stateFilter);
