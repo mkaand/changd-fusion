@@ -56,6 +56,12 @@ it("history explains dimension changes without displaying a fabricated percentag
   expect(screen.getByRole("alert")).toHaveTextContent("1280×900 → 1280×2000");
   expect(screen.queryByText("Visual: 100%")).not.toBeInTheDocument();
 });
+
+it("groups monitoring history content for consistent mobile spacing", async () => {
+  vi.mocked(api).mockResolvedValue({ items: [], total: 0 } as never);
+  render(<History id="fixture" refresh={0} />);
+  expect(screen.getByRole("region", { name: "Monitoring history" })).toHaveClass("monitor-history");
+});
 it("history reports API errors and has an accessible loading state", async () => {
   vi.mocked(api).mockRejectedValue(Error("History unavailable"));
   render(<History id="fixture" refresh={0} />);

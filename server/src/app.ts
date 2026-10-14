@@ -119,6 +119,9 @@ const monitorInput = z
   .refine((m) => m.extraction_mode !== "keyword_presence" || !!m.keyword, {
     message: "Keyword Presence extraction requires a keyword",
   })
+  .refine((m) => m.extraction_mode !== "keyword_presence" || m.kind === "browser", {
+    message: "Keyword Presence extraction requires a Browser monitor",
+  })
   .refine(
     (m) => m.kind === "browser" || (m.text_enabled && !m.visual_enabled),
     { message: "HTML/API monitors require text-only detection" },

@@ -35,7 +35,7 @@ it("sends the applied Selected Text rule through the real Save monitor API call"
   await user.click(screen.getByText("Advanced settings", { exact: true }));
   await user.click(screen.getByLabelText("Text content source"));
   await user.click(screen.getByText(/Jina Reader —/, { exact: false }));
-  await user.click(await screen.findByLabelText("Extraction mode"));
+  await user.click(await screen.findByLabelText("Text monitoring mode"));
   await user.click(screen.getByText("Selected Text / Value", { exact: true }));
   await user.click(screen.getByRole("button", { name: "Apply fixture selection" }));
   await user.click(screen.getByRole("button", { name: "Save monitor" }));
@@ -67,7 +67,7 @@ it("keeps a mobile Text Picker selection through return to the editor and the Sa
   await user.click(screen.getByText("Advanced settings", { exact: true }));
   await user.click(screen.getByLabelText("Text content source"));
   await user.click(screen.getByText(/Jina Reader —/, { exact: false }));
-  await user.click(await screen.findByLabelText("Extraction mode"));
+  await user.click(await screen.findByLabelText("Text monitoring mode"));
   await user.click(screen.getByText("Selected Text / Value", { exact: true }));
   await user.click(screen.getByRole("button", { name: "Open fixture text picker" }));
   await user.click(await screen.findByRole("button", { name: "Apply fixture selection" }));
