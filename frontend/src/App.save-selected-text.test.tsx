@@ -24,7 +24,7 @@ function setupApi(monitors: any[] = [], detail?: any) { mockedApi.mockImplementa
   throw Error(`Unexpected ${method} ${path}`);
 }); }
 beforeEach(() => { Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 }); mockedApi.mockReset(); setupApi(); });
-afterEach(() => { cleanup(); vi.clearAllMocks(); });
+afterEach(() => { window.history.replaceState({}, "", "/"); cleanup(); vi.clearAllMocks(); });
 it("sends the applied Selected Text rule through the real Save monitor API call", async () => {
   const user = userEvent.setup({ pointerEventsCheck: PointerEventsCheckLevel.Never });
   render(<AntApp><FusionApp /></AntApp>);
@@ -91,4 +91,36 @@ it("places the monitor title above a separate, wrapping action row", async () =>
   expect(actions).toHaveTextContent("Edit");
   expect(actions).toHaveTextContent("Check now");
   expect(actions).toHaveTextContent("Reset baseline");
+});
+
+it("keeps Account Security available in a public workspace and sends owner credentials for step-up", async () => {
+  let authenticated = false;
+  mockedApi.mockImplementation(async (path: string, method = "GET", data?: any) => {
+    if (path === "/users/me") return authenticated ? { id: "owner", email: "owner@example.com", firstname: "Owner" } as any : { user_id: null, public_access: true } as any;
+    if (path === "/jobs") return [] as any;
+    if (path === "/notifications") return [] as any;
+    if (path === "/preferences/monitoring") return {} as any;
+    if (path === "/security/verify" && method === "POST") { authenticated = true; return { ok: true } as any; }
+    if (path === "/account/public-access") return { public_enabled: true } as any;
+    throw Error(`Unexpected ${method} ${path}`);
+  });
+  const user = userEvent.setup({ pointerEventsCheck: PointerEventsCheckLevel.Never });
+  render(<AntApp><FusionApp /></AntApp>);
+  await user.click(await screen.findByRole("button", { name: "Account security" }));
+  await user.type(screen.getByLabelText("Email"), "owner@example.com");
+  await user.type(screen.getByLabelText("Password"), "synthetic-fixture-password");
+  await user.click(screen.getByRole("button", { name: "Verify account" }));
+  await waitFor(() => expect(mockedApi).toHaveBeenCalledWith("/security/verify", "POST", { email: "owner@example.com", password: "synthetic-fixture-password" }));
+  expect(await screen.findByText("Public Access", { exact: false })).toBeInTheDocument();
+});
+
+it("opens a reset-password token link even while public access is active", async () => {
+  window.history.pushState({}, "", "/reset-password?token=" + "a".repeat(32));
+  setupApi();
+  mockedApi.mockImplementation(async (path: string, method = "GET") => {
+    if (path === "/users/me") return { user_id: null, public_access: true } as any;
+    throw Error(`Unexpected ${method} ${path}`);
+  });
+  render(<AntApp><FusionApp /></AntApp>);
+  expect(await screen.findByRole("button", { name: "Reset password" })).toBeInTheDocument();
 });

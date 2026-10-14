@@ -262,6 +262,7 @@ export function createApp(
     });
     issueAccess(res, userId, id);
     res.cookie("fusion_refresh", refresh, { ...cookieBase, maxAge: 30 * 24 * 60 * 60 * 1000 });
+    return id;
   };
   const refreshSession = async (req: Request, res: Response) => {
     const token = readCookie(req, "fusion_refresh");
@@ -364,20 +365,33 @@ export function createApp(
     const grant = await pool.query("SELECT id FROM fusion_security_grants WHERE browser_token_hash=$1 AND user_id=$2 AND revoked_at IS NULL AND expires_at>now() AND (session_id IS NULL OR session_id=$3)", [hashOpaqueToken(token), res.locals.user.user_id, res.locals.sessionId]);
     if (!grant.rowCount) return next(new HttpError(403, "Account security verification required")); next();
   };
-  app.post("/api/v1/security/verify", requireAccountSession, loginLimiter, async (req, res) => {
+  app.post("/api/v1/security/verify", loginLimiter, async (req, res) => {
     const body = z.object({ email: z.email().max(254).transform((value) => value.toLowerCase()), password: z.string().min(1).max(72) }).strict().parse(req.body);
-    if (body.email !== String(res.locals.user.email).toLowerCase()) throw new HttpError(401, "Invalid email or password");
-    const account = await pool.query("SELECT password FROM users WHERE user_id=$1 AND status=1", [res.locals.user.user_id]);
-    if (!account.rowCount || !(await compare(body.password, account.rows[0].password))) throw new HttpError(401, "Invalid email or password");
+    let userId = res.locals.user.user_id, sessionId = res.locals.sessionId;
+    if (res.locals.publicAccess) {
+      const owner = await pool.query("SELECT u.user_id,u.email,u.password FROM fusion_access_settings a JOIN users u ON u.user_id=a.owner_user_id WHERE a.singleton=true AND a.public_enabled=true AND a.owner_user_id IS NOT NULL AND u.status=1");
+      if (!owner.rowCount || body.email !== String(owner.rows[0].email).toLowerCase()) throw new HttpError(401, "Invalid email or password");
+      userId = owner.rows[0].user_id;
+      const account = owner.rows[0];
+      if (!(await compare(body.password, account.password))) throw new HttpError(401, "Invalid email or password");
+      // Public workspace access is not itself an account session. A successful
+      // owner step-up creates the same revocable rotating session as login,
+      // then binds the short-lived security grant to that session.
+      sessionId = await setSession(res, userId, account.password);
+    } else {
+      if (body.email !== String(res.locals.user.email).toLowerCase()) throw new HttpError(401, "Invalid email or password");
+      const account = await pool.query("SELECT password FROM users WHERE user_id=$1 AND status=1", [userId]);
+      if (!account.rowCount || !(await compare(body.password, account.rows[0].password))) throw new HttpError(401, "Invalid email or password");
+    }
     const token = randomBytes(32).toString("base64url");
-    await pool.query("INSERT INTO fusion_security_grants(id,user_id,session_id,browser_token_hash,expires_at) VALUES($1,$2,$3,$4,now()+interval '10 minutes')", [randomUUID(), res.locals.user.user_id, res.locals.sessionId, hashOpaqueToken(token)]);
+    await pool.query("INSERT INTO fusion_security_grants(id,user_id,session_id,browser_token_hash,expires_at) VALUES($1,$2,$3,$4,now()+interval '10 minutes')", [randomUUID(), userId, sessionId, hashOpaqueToken(token)]);
     res.cookie("fusion_security", token, { ...cookieBase, maxAge: 10 * 60 * 1000 }); res.json({ ok: true });
   });
   app.post("/api/v1/security/leave", requireAccountSession, async (req, res) => { const token = readCookie(req, "fusion_security"); if (token) await pool.query("UPDATE fusion_security_grants SET revoked_at=now() WHERE browser_token_hash=$1 AND revoked_at IS NULL", [hashOpaqueToken(token)]); res.clearCookie("fusion_security", { path: "/" }); res.json({ ok: true }); });
   app.get("/api/v1/account/public-access", requireSecurity, async (_req, res) => { const row = await pool.query("SELECT public_enabled,owner_user_id FROM fusion_access_settings WHERE singleton=true"); res.json(row.rows[0] ?? { public_enabled: false, owner_user_id: null }); });
   app.put("/api/v1/account/public-access", requireSecurity, async (req, res) => {
     const enabled = z.object({ enabled: z.boolean(), confirm: z.literal(true) }).strict().parse(req.body).enabled; const userId = res.locals.user.user_id;
-    await transaction(pool, async (c) => { const state = await c.query("SELECT owner_user_id FROM fusion_access_settings WHERE singleton=true FOR UPDATE"); const currentOwner = state.rows[0]?.owner_user_id; if (enabled && currentOwner && currentOwner !== userId) throw new HttpError(403, "Public workspace is owned by another account"); await c.query("UPDATE fusion_access_settings SET public_enabled=$1,owner_user_id=CASE WHEN $1 THEN COALESCE(owner_user_id,$2) ELSE owner_user_id END,updated_at=now() WHERE singleton=true", [enabled, userId]); });
+    await transaction(pool, async (c) => { const state = await c.query("SELECT owner_user_id FROM fusion_access_settings WHERE singleton=true FOR UPDATE"); const currentOwner = state.rows[0]?.owner_user_id; if (currentOwner && currentOwner !== userId) throw new HttpError(403, "Public workspace is owned by another account"); await c.query("UPDATE fusion_access_settings SET public_enabled=$1,owner_user_id=CASE WHEN $1 THEN COALESCE(owner_user_id,$2) ELSE owner_user_id END,updated_at=now() WHERE singleton=true", [enabled, userId]); });
     res.json({ enabled });
   });
   app.post("/api/v1/logout", async (_req, res) => { if (!res.locals.publicAccess && res.locals.sessionId) await pool.query("UPDATE fusion_sessions SET revoked_at=now() WHERE id=$1 AND user_id=$2", [res.locals.sessionId, res.locals.user.user_id]); clearAuthCookies(res); res.json({ ok: true, public_access: !!res.locals.publicAccess }); });

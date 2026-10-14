@@ -1486,6 +1486,73 @@ test("administrator authorization is database-backed; token role claims are igno
   }
 });
 
+test("public access requires owner credentials to establish a revocable account-security session", async () => {
+  const owner = (await ownerAgent.get("/api/v1/users/me").expect(200)).body;
+  await ownerAgent
+    .post("/api/v1/security/verify")
+    .set("X-Fusion-Request", "1")
+    .send({ email: "owner@example.com", password })
+    .expect(200);
+  await ownerAgent
+    .put("/api/v1/account/public-access")
+    .set("X-Fusion-Request", "1")
+    .send({ enabled: true, confirm: true })
+    .expect(200, { enabled: true });
+
+  const visitor = request.agent(app);
+  await visitor.get("/api/v1/users/me").expect(200, { user_id: null, firstname: "Public", lastname: "Access", email: null, user_type: 0, public_access: true });
+  await visitor.get("/api/v1/account/public-access").expect(403);
+  await visitor
+    .post("/api/v1/security/verify")
+    .set("X-Fusion-Request", "1")
+    .send({ email: "owner@example.com", password: "incorrect" })
+    .expect(401);
+  await visitor
+    .post("/api/v1/security/verify")
+    .set("X-Fusion-Request", "1")
+    .send({ email: "other@example.com", password })
+    .expect(401);
+
+  const stepUp = await visitor
+    .post("/api/v1/security/verify")
+    .set("X-Fusion-Request", "1")
+    .send({ email: "owner@example.com", password })
+    .expect(200);
+  assert.ok(stepUp.headers["set-cookie"].some((cookie: string) => cookie.startsWith("fusion_session=")));
+  assert.ok(stepUp.headers["set-cookie"].some((cookie: string) => cookie.startsWith("fusion_security=")));
+  await visitor
+    .put("/api/v1/account/public-access")
+    .set("X-Fusion-Request", "1")
+    .send({ enabled: false, confirm: true })
+    .expect(200, { enabled: false });
+  await request(app).get("/api/v1/jobs").expect(401);
+  await visitor.get("/api/v1/users/me").expect(200, { ...owner, public_access: false });
+  await visitor.post("/api/v1/security/leave").set("X-Fusion-Request", "1").send({}).expect(200);
+  await visitor.get("/api/v1/account/public-access").expect(403);
+});
+
+test("password reset confirmation stays available with public access on or off and tokens are single-use", async () => {
+  const resetEmail = "public-reset@example.com";
+  const created = await pool.query("INSERT INTO users(email,password) VALUES($1,$2) RETURNING user_id", [resetEmail, await hash(password, 4)]);
+  const owner = (await ownerAgent.get("/api/v1/users/me").expect(200)).body;
+  for (const publicEnabled of [false, true]) {
+    await pool.query("UPDATE fusion_access_settings SET public_enabled=$1,owner_user_id=$2 WHERE singleton=true", [publicEnabled, owner.user_id]);
+    const token = randomBytes(32).toString("base64url");
+    await pool.query("INSERT INTO fusion_password_reset_tokens(id,user_id,token_hash,expires_at) VALUES($1,$2,$3,now()+interval '20 minutes')", [randomUUID(), created.rows[0].user_id, createHash("sha256").update(token).digest("hex")]);
+    await request(app)
+      .post("/api/v1/password-reset/confirm")
+      .set("X-Fusion-Request", "1")
+      .send({ token, password: `updated-${publicEnabled}-password` })
+      .expect(200, { ok: true });
+    await request(app)
+      .post("/api/v1/password-reset/confirm")
+      .set("X-Fusion-Request", "1")
+      .send({ token, password: `updated-again-${publicEnabled}-password` })
+      .expect(400);
+  }
+  await pool.query("UPDATE fusion_access_settings SET public_enabled=false WHERE singleton=true");
+});
+
 test("capture modes use one browser page for text and image; limits, selector errors and timeouts preserve baseline", async (t) => {
   let slowHits = 0;
   const fixture = managedServer(t, (req, res) => {

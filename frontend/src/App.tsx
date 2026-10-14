@@ -302,7 +302,8 @@ export default function FusionApp() {
         <Spin />
       </div>
     );
-  if (!user) return <Login onSuccess={() => void getUser()} />;
+  const resetPassword = typeof window !== "undefined" && window.location.pathname === "/reset-password" && !!new URLSearchParams(window.location.search).get("token");
+  if (resetPassword || !user) return <Login onSuccess={() => void getUser()} />;
   const publicWorkspace = Boolean(user.public_access);
   const current = monitors.find((m) => m.id === selected?.id) ?? selected;
   const filteredMonitors = filterMonitors(monitors, query, stateFilter);
@@ -352,9 +353,9 @@ export default function FusionApp() {
         </a>
         <Space className="desktop-account-actions">
           <span className="user-name">{publicWorkspace ? "Public workspace" : user.firstname || "Account"}</span>
-          {!publicWorkspace && <Suspense>
-            <AccountSecurity signedOut={() => setUser(null)} />
-          </Suspense>}
+          <Suspense>
+            <AccountSecurity signedOut={() => setUser(null)} sessionEstablished={() => void getUser()} />
+          </Suspense>
           <Button icon={<LogoutOutlined />} onClick={() => void signOut()}>
             {publicWorkspace ? "Exit" : "Sign out"}
           </Button>
@@ -366,9 +367,9 @@ export default function FusionApp() {
             dropdownRender={() => (
               <div className="account-menu">
                 <div className="account-menu-name">{publicWorkspace ? "Public workspace" : user.firstname || "Account"}</div>
-                {!publicWorkspace && <Suspense>
-                  <AccountSecurity signedOut={() => setUser(null)} />
-                </Suspense>}
+                <Suspense>
+                  <AccountSecurity signedOut={() => setUser(null)} sessionEstablished={() => void getUser()} />
+                </Suspense>
                 <Button icon={<LogoutOutlined />} danger block onClick={() => void signOut()}>
                   {publicWorkspace ? "Exit" : "Sign out"}
                 </Button>

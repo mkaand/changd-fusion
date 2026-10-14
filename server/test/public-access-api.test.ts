@@ -30,7 +30,7 @@ function pool(publicEnabled: boolean) {
   };
 }
 
-test("public access enables standard workspace APIs but keeps account security closed", async () => {
+test("public access enables standard workspace APIs but keeps account security operations closed before step-up", async () => {
   const app = createApp(pool(true) as any, cfg);
   await request(app).get("/api/v1/jobs").expect(200, []);
   const channels = await request(app).get("/api/v1/notifications").expect(200);
@@ -40,7 +40,6 @@ test("public access enables standard workspace APIs but keeps account security c
   assert.deepEqual(vault.body.value_names, ["login"]);
   assert.equal(vault.body.encrypted, undefined);
   await request(app).get("/api/v1/account/public-access").expect(403);
-  await request(app).post("/api/v1/security/verify").set("X-Fusion-Request", "1").send({ email: owner.email, password: "not-used" }).expect(403);
 });
 
 test("public workspace APIs immediately reject anonymous callers when public access is off", async () => {
