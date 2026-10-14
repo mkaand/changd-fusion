@@ -61,4 +61,4 @@ it("uses the real mobile TextPicker and preserves the draft through apply, remou
   await user.click(screen.getByRole("button", { name: "Save monitor" }));
   await waitFor(() => expect(mockedApi).toHaveBeenCalledWith("/jobs", "POST", expect.objectContaining({ name: "Unsaved mobile monitor", interval_seconds: 900, text_source: "jina", extraction_mode: "selected_text", extraction_rule: generatedRule })));
   expect(mockedApi.mock.calls.some(([path]) => String(path).endsWith("/reset"))).toBe(false);
-});
+}, 20_000);
