@@ -8,7 +8,7 @@ vi.mock("./api", async () => ({ ...(await vi.importActual<typeof import("./api")
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 it("shows safe Reader text and applies a server-validated contextual rule", async () => {
-  const rule = { version: 1 as const, kind: "bounded_context" as const, before: "Price\n", after: "\nSeller", max_length: 64 };
+  const rule = { version: 2 as const, kind: "anchored_lines" as const, anchors: [{ text: "Product", offset: -1 as const }, { text: "Seller", offset: 1 as const }], prefix: "", suffix: "", max_length: 64 };
   vi.mocked(api).mockResolvedValueOnce({ session_id: "session", items: [{ index: 0, text: "Product" }, { index: 1, text: "32.999,00 TL" }, { index: 2, text: "Seller" }], matching_line_count: 3, total_line_count: 3 }).mockResolvedValueOnce({ session_id: "session", rule, extracted: "32.999,00 TL", description: "Text between context" });
   const apply = vi.fn();
   render(<TextPicker getDraft={() => ({ url: "https://example.com", text_source: "jina" })} onApply={apply} />);
@@ -17,9 +17,21 @@ it("shows safe Reader text and applies a server-validated contextual rule", asyn
   await user.click(await screen.findByText("32.999,00 TL"));
   await user.click(screen.getByRole("button", { name: "Generate extraction rule" }));
   expect(await screen.findByText("Text between context")).toBeInTheDocument();
-  await user.click(screen.getByRole("button", { name: "Apply selection" }));
+  expect(screen.getByText("The monitor is not saved until you return to the editor and choose Save monitor.")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Apply selection to editor" }));
   expect(apply).toHaveBeenCalledWith(rule);
   await waitFor(() => expect(api).toHaveBeenLastCalledWith("/text-preview", "POST", { session_id: "session", line_index: 1, selected_value: "32.999,00 TL" }));
+});
+
+it("rejects a malformed generated rule with actionable feedback", async () => {
+  vi.mocked(api).mockResolvedValueOnce({ session_id: "session", items: [{ index: 0, text: "Product" }, { index: 1, text: "Value" }, { index: 2, text: "Seller" }], matching_line_count: 3, total_line_count: 3 }).mockResolvedValueOnce({ session_id: "session", rule: { version: 2, kind: "anchored_lines", anchors: [{ text: "Product", offset: -1 }], prefix: "", suffix: "", max_length: 64 }, extracted: "Value" });
+  render(<TextPicker getDraft={() => ({ url: "https://example.com", text_source: "jina" })} onApply={vi.fn()} />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Select text from preview" }));
+  await user.click(await screen.findByText("Value"));
+  await user.click(screen.getByRole("button", { name: "Generate extraction rule" }));
+  expect(await screen.findByText("The generated extraction rule is invalid. Refresh the preview and try again.")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Apply selection to editor" })).not.toBeInTheDocument();
 });
 
 it("searches Turkish Reader text immediately while preserving original line indexes", async () => {

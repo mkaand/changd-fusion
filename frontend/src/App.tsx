@@ -113,6 +113,7 @@ export default function FusionApp() {
     [saving, setSaving] = useState(false),
     [advancedOpen, setAdvancedOpen] = useState(false);
   const [form] = Form.useForm();
+  const editorDraftRef = useRef<Record<string, unknown> | undefined>(undefined);
   const requestRef = useRef<AbortController | undefined>(undefined);
   const requestVersion = useRef(0);
   const loadedRef = useRef(false);
@@ -211,8 +212,10 @@ export default function FusionApp() {
     }
   };
   const returnToEditor = () => {
+    if (editorDraftRef.current) form.setFieldsValue(editorDraftRef.current);
+    setPage("editor");
     if (["/jobs/editor/region-picker", "/jobs/editor/text-picker"].includes(location.pathname) && history.length > 1) history.back();
-    else { setPage("editor"); history.replaceState(null, "", "/jobs/editor"); }
+    else history.replaceState(null, "", "/jobs/editor");
   };
   useEffect(() => {
     const restore = () => {
@@ -238,6 +241,7 @@ export default function FusionApp() {
     form.setFieldsValue(
       m ? { ...defaults, ...(await api("/jobs/" + m.id)) } : { ...defaults, ...userDefaults },
     );
+    editorDraftRef.current = form.getFieldsValue(true);
     setOpen(true);
     if (compactLayout) {
       setPage("editor");
@@ -423,13 +427,13 @@ export default function FusionApp() {
             {page === "editor" && compactLayout && open ? (
               <section className="mobile-monitor-editor" aria-label={editing ? "Edit monitor" : "New monitor"}>
                 <div className="mobile-editor-header"><Button type="text" onClick={() => { setOpen(false); navigate("jobs"); }}>← Back</Button><Typography.Title level={3}>{editing ? "Edit monitor" : "New monitor"}</Typography.Title></div>
-                <MonitorForm form={form} channels={channels} monitorId={editing?.id} advancedOpen={advancedOpen} setAdvancedOpen={setAdvancedOpen} onOpenMobileRegion={() => { setPage("region-picker"); history.pushState(null, "", "/jobs/editor/region-picker"); }} onOpenMobileText={() => { setPage("text-picker"); history.pushState(null, "", "/jobs/editor/text-picker"); }} />
+                <MonitorForm form={form} channels={channels} monitorId={editing?.id} advancedOpen={advancedOpen} setAdvancedOpen={setAdvancedOpen} onOpenMobileRegion={() => { editorDraftRef.current = form.getFieldsValue(true); setPage("region-picker"); history.pushState(null, "", "/jobs/editor/region-picker"); }} onOpenMobileText={() => { editorDraftRef.current = form.getFieldsValue(true); setPage("text-picker"); history.pushState(null, "", "/jobs/editor/text-picker"); }} />
                 <div className="mobile-editor-actions"><Button onClick={() => { setOpen(false); navigate("jobs"); }}>Cancel</Button><Button type="primary" loading={saving} onClick={save}>Save monitor</Button></div>
               </section>
             ) : page === "region-picker" && compactLayout && open ? (
               <RegionPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onSelect={(selector) => { form.setFieldsValue({ capture_selector_type: "css", capture_selector: selector }); returnToEditor(); }} onUseViewport={() => { form.setFieldsValue({ capture_mode: "viewport", capture_selector: "" }); returnToEditor(); }} onBackMobile={returnToEditor} />
             ) : page === "text-picker" && compactLayout && open ? (
-              <TextPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onApply={(rule) => { form.setFieldsValue({ extraction_mode: "selected_text", extraction_rule: rule }); returnToEditor(); }} onBackMobile={returnToEditor} />
+              <TextPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onApply={(rule) => { editorDraftRef.current = { ...(editorDraftRef.current ?? form.getFieldsValue(true)), extraction_mode: "selected_text", extraction_rule: rule }; form.setFieldsValue(editorDraftRef.current); void message.success("Selection applied to the editor. Save the monitor to persist it."); returnToEditor(); }} onBackMobile={returnToEditor} />
             ) : page === "timeline" ? (
               <Timeline monitors={monitors} />
             ) : page === "analytics" ? (

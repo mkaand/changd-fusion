@@ -51,7 +51,7 @@ const monitorInput = z
         version: z.literal(1), kind: z.literal("bounded_context"),
         before: z.string().max(160), after: z.string().max(160),
         max_length: z.number().int().min(1).max(500),
-      }).strict(),
+      }).strict().refine((rule) => !!(rule.before || rule.after), { message: "Selected text rule requires stable context" }),
       z.object({
         version: z.literal(2), kind: z.literal("anchored_lines"),
         anchors: z.array(z.object({ text: z.string().min(1).max(160), offset: z.union([z.literal(-2), z.literal(-1), z.literal(1), z.literal(2)]) }).strict()).min(2).max(4),

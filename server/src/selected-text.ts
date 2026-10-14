@@ -98,13 +98,13 @@ function selectedValueFromLine(line: string, rule: SelectedTextRuleV2) {
 }
 
 function applyV2(text: string, rule: SelectedTextRuleV2) {
-  if (rule.kind !== "anchored_lines" || rule.max_length < 1 || rule.max_length > MAX_VALUE || !Array.isArray(rule.anchors) || rule.anchors.length < 2 || rule.anchors.length > 4)
+  if (rule.kind !== "anchored_lines" || rule.max_length < 1 || rule.max_length > MAX_VALUE || typeof rule.prefix !== "string" || rule.prefix.length > MAX_ANCHOR || typeof rule.suffix !== "string" || rule.suffix.length > MAX_ANCHOR || !Array.isArray(rule.anchors) || rule.anchors.length < 2 || rule.anchors.length > 4)
     throw new HttpError(422, "Selected text rule is invalid.");
   const lines = readableJinaLines(text);
   const evidence = new Map<number, number>();
   let ambiguousAnchor = false;
   for (const anchor of rule.anchors) {
-    if (!anchor || typeof anchor.text !== "string" || !anchor.text || !Number.isInteger(anchor.offset) || !anchor.offset || Math.abs(anchor.offset) > 2)
+    if (!anchor || typeof anchor.text !== "string" || !anchor.text || anchor.text.length > MAX_ANCHOR || !Number.isInteger(anchor.offset) || !anchor.offset || Math.abs(anchor.offset) > 2)
       throw new HttpError(422, "Selected text rule is invalid.");
     let found = -1;
     for (let index = 0; index < lines.length; index++) {
@@ -143,8 +143,11 @@ export function generateSelectedTextRule(lines: string[], lineIndex: number, sel
     version: 2,
     kind: "anchored_lines",
     anchors,
-    prefix: line.slice(0, at),
-    suffix: line.slice(at + value.length),
+    // Keep the context closest to the changing value. This preserves exact
+    // extraction semantics while guaranteeing that generated rules satisfy the
+    // API and editor's bounded schema even when Reader lines are very long.
+    prefix: line.slice(Math.max(0, at - MAX_ANCHOR), at),
+    suffix: line.slice(at + value.length, at + value.length + MAX_ANCHOR),
     max_length: Math.min(MAX_VALUE, Math.max(value.length * 4, 64)),
   };
   const source = lines.join("\n");
