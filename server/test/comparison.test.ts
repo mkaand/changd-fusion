@@ -4,6 +4,8 @@ import { PNG } from "pngjs";
 import {
   compareVisual,
   compareText,
+  compareKeywordPresence,
+  containsKeyword,
   normalizeText,
   exceedsThreshold,
 } from "../src/comparison.js";
@@ -58,6 +60,36 @@ test("literal ignore rules, normalization and highlighted text differences", () 
   assert.equal(result.changed, true);
   assert.ok(result.parts.some((p) => p.added));
   assert.ok(result.parts.some((p) => p.removed));
+});
+
+test("keyword presence uses literal Unicode-aware case-insensitive whole words and phrases", () => {
+  assert.equal(containsKeyword("Kaan is here", "kaan"), true);
+  assert.equal(containsKeyword("Merhaba İSTANBUL", "istanbul"), true);
+  assert.equal(containsKeyword("Yeni ürün stokta değil", "ürün stokta"), true);
+  assert.equal(containsKeyword("Kaanlı bir sözcük", "Kaan"), false);
+  assert.equal(containsKeyword("prefix-v1.2.3 suffix", "v1.2.3"), true);
+  assert.equal(containsKeyword("literal a+b value", "a+b"), true);
+  assert.equal(containsKeyword("literal aaab value", "a+b"), false);
+  assert.equal(containsKeyword("anything", "   "), false);
+});
+
+test("keyword presence emits only explicit presence transitions", () => {
+  assert.deepEqual(compareKeywordPresence("No matching value", "Kaan arrived", "Kaan"), {
+    changed: true,
+    parts: [{ value: "Kaan", added: true, removed: false }],
+  });
+  assert.deepEqual(compareKeywordPresence("Kaan arrived", "No matching value", "Kaan"), {
+    changed: true,
+    parts: [{ value: "Kaan", added: false, removed: true }],
+  });
+  assert.deepEqual(compareKeywordPresence("Kaan old text", "Kaan unrelated page update", "Kaan"), {
+    changed: false,
+    parts: [],
+  });
+  assert.deepEqual(compareKeywordPresence("Absent old text", "Absent unrelated page update", "Kaan"), {
+    changed: false,
+    parts: [],
+  });
 });
 
 test("PNG header limits reject hostile dimensions before decoding or allocation", async () => {
