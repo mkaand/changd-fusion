@@ -279,23 +279,22 @@ export function createApp(
     res.cookie("fusion_refresh", replacement, { ...cookieBase, maxAge: 30 * 24 * 60 * 60 * 1000 });
   };
   const passwordResetLimiter = rateLimit({ windowMs: 60 * 60 * 1000, limit: 5, standardHeaders: "draft-8", legacyHeaders: false });
+  const recoverySmtp = cfg.RECOVERY_SMTP_HOST && cfg.RECOVERY_SMTP_PORT && cfg.RECOVERY_SMTP_FROM
+    ? { host: cfg.RECOVERY_SMTP_HOST, port: cfg.RECOVERY_SMTP_PORT, from: cfg.RECOVERY_SMTP_FROM, username: cfg.RECOVERY_SMTP_USERNAME, password: cfg.RECOVERY_SMTP_PASSWORD }
+    : undefined;
   const sendPasswordReset = async (user: { user_id: string; email: string }, token: string) => {
     const resetUrl = new URL("/reset-password", cfg.PUBLIC_URL); resetUrl.searchParams.set("token", token);
     if (options.sendPasswordResetEmail) return options.sendPasswordResetEmail({ to: user.email, url: resetUrl.toString(), userId: user.user_id });
-    const channel = await pool.query("SELECT config FROM fusion_channels WHERE user_id=$1 AND provider='smtp' AND enabled=true ORDER BY created_at ASC LIMIT 1", [user.user_id]);
-    if (!channel.rowCount) { log.warn({ code: "password_reset_smtp_unconfigured", userId: user.user_id }, "Password reset requested without an enabled SMTP channel"); return; }
-    let smtp: z.infer<typeof smtpSchema>;
-    try { smtp = smtpSchema.parse(decrypt(channel.rows[0].config.encrypted, cfg.CHANNEL_KEY)); }
-    catch { log.warn({ code: "password_reset_smtp_invalid", userId: user.user_id }, "Password reset SMTP channel is invalid"); return; }
-    const transportOptions = { host: smtp.host, port: smtp.port, secure: smtp.port === 465, requireTLS: smtp.port === 587, tls: { servername: smtp.host, minVersion: "TLSv1.2" as const }, auth: smtp.username ? { user: smtp.username, pass: smtp.password } : undefined };
+    if (!recoverySmtp) return;
+    const transportOptions = { host: recoverySmtp.host, port: recoverySmtp.port, secure: recoverySmtp.port === 465, requireTLS: recoverySmtp.port === 587, tls: { servername: recoverySmtp.host, minVersion: "TLSv1.2" as const }, auth: recoverySmtp.username ? { user: recoverySmtp.username, pass: recoverySmtp.password } : undefined };
     const transport = options.createMailTransport ? options.createMailTransport(transportOptions) : nodemailer.createTransport(transportOptions);
-    await transport.sendMail({ from: smtp.from, to: user.email, subject: "Changd Fusion password reset", text: `Use this one-time link to reset your password: ${resetUrl.toString()}` });
+    await transport.sendMail({ from: recoverySmtp.from, to: user.email, subject: "Changd Fusion password reset", text: `Use this one-time link to reset your password: ${resetUrl.toString()}` });
   };
   const passwordInput = z.string().min(12).max(72).refine((value) => Buffer.byteLength(value, "utf8") <= 72);
   app.post("/api/v1/password-reset/request", passwordResetLimiter, async (req, res) => {
     const email = z.object({ email: z.email().max(254).transform((value) => value.toLowerCase()) }).strict().parse(req.body).email;
     const account = await pool.query("SELECT user_id,email FROM users WHERE lower(email)=$1 AND status=1", [email]);
-    if (account.rowCount) {
+    if (account.rowCount && recoverySmtp) {
       const user = account.rows[0], token = randomBytes(32).toString("base64url");
       await transaction(pool, async (c) => {
         await c.query("UPDATE fusion_password_reset_tokens SET used_at=now() WHERE user_id=$1 AND used_at IS NULL", [user.user_id]);
@@ -303,7 +302,7 @@ export function createApp(
       });
       try { await sendPasswordReset(user, token); }
       catch { log.warn({ code: "password_reset_delivery_failed", userId: user.user_id }, "Password reset email delivery failed"); /* Generic response prevents account disclosure. */ }
-    }
+    } else if (account.rowCount) log.warn({ code: "password_reset_smtp_unconfigured", userId: account.rows[0].user_id }, "Password reset requested without configured recovery SMTP");
     res.status(202).json({ ok: true });
   });
   app.post("/api/v1/password-reset/confirm", passwordResetLimiter, async (req, res) => {
