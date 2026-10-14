@@ -14,6 +14,17 @@ ALTER TABLE fusion_monitors
 ALTER TABLE fusion_monitors
   ADD CONSTRAINT fusion_monitors_keyword_check
   CHECK (
-    (keyword IS NULL OR char_length(btrim(keyword)) BETWEEN 1 AND 200)
+    (keyword IS NULL OR (char_length(keyword) <= 200 AND char_length(btrim(keyword)) >= 1))
     AND (extraction_mode <> 'keyword_presence' OR keyword IS NOT NULL)
   );
+
+-- Direction-filtered changes remain part of history but intentionally do not
+-- create an outbox delivery. The engine already records this explicit state;
+-- include it in the database constraint so filtering cannot roll back a
+-- successful capture transaction.
+ALTER TABLE fusion_events
+  DROP CONSTRAINT fusion_events_notification_state_check;
+
+ALTER TABLE fusion_events
+  ADD CONSTRAINT fusion_events_notification_state_check
+  CHECK (notification_state IN ('not_requested','queued','muted','cooldown','duplicate_suppressed','disabled','digest_pending','direction_filtered'));
