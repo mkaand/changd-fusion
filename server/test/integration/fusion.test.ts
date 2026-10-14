@@ -27,7 +27,7 @@ import { compareVisual } from "../../src/comparison.js";
 import { telegramSummary } from "../../src/notifications.js";
 import { closeRegionPreviewSessions, expireRegionPreviewSessions, previewRegion, REGION_PREVIEW_MAX_LIFETIME_MS } from "../../src/region-picker.js";
 import { acquireChromiumLease } from "../../src/chromium-capacity.js";
-import { applySelectedTextRule } from "../../src/selected-text.js";
+import { applySelectedTextRule, generateSelectedTextRule } from "../../src/selected-text.js";
 const expectedMigrationCount = (await readdir(path.resolve(import.meta.dirname, "../../migrations"))).filter((file) => /^\d+_.+\.sql$/.test(file)).length;
 const dbURL = new URL(process.env.TEST_DATABASE_URL ?? "");
 assert.ok(
@@ -412,6 +412,20 @@ test("selected text values keep chronological baselines and existing notificatio
   assert.equal(selected.extraction_rule.before, "Availability\n");
   const persisted = (await selectedAgent.get(`/api/v1/jobs/${selected.id}`).expect(200)).body;
   assert.deepEqual(persisted.extraction_rule, selected.extraction_rule);
+  const longSelectedLine = "A".repeat(220) + "33.499,00 TL" + "B".repeat(220);
+  const generatedV2 = generateSelectedTextRule(["Product", "Current price", longSelectedLine, "Seller", "Delivery"], 2, "33.499,00 TL").rule;
+  assert.equal(generatedV2.prefix.length, 160);
+  assert.equal(generatedV2.suffix.length, 160);
+  const selectedV2 = (await selectedAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({
+    name: "Schema-bounded V2 selection", url: "https://example.com/product-v2", kind: "browser", text_enabled: true, visual_enabled: false,
+    text_source: "jina", extraction_mode: "selected_text", extraction_rule: generatedV2, paused: true,
+  }).expect(201)).body;
+  assert.deepEqual(selectedV2.extraction_rule, generatedV2, "server-generated V2 rules pass the monitor persistence schema intact");
+  const selectedV2Updated = (await selectedAgent.put(`/api/v1/jobs/${selectedV2.id}`).set("X-Fusion-Request", "1").send({
+    name: "Schema-bounded V2 selection updated", url: "https://example.com/product-v2", kind: "browser", text_enabled: true, visual_enabled: false,
+    text_source: "jina", extraction_mode: "selected_text", extraction_rule: generatedV2, paused: true,
+  }).expect(200)).body;
+  assert.deepEqual(selectedV2Updated.extraction_rule, generatedV2, "V2 rules survive existing-monitor PUT persistence intact");
   const replacementRule = { version: 1, kind: "bounded_context", before: "Availability\n", after: "\nDelivery", max_length: 96 };
   const updated = (await selectedAgent.put(`/api/v1/jobs/${selected.id}`).set("X-Fusion-Request", "1").send({
     name: "Selected value history", url: "https://example.com/product", kind: "browser", text_enabled: true, visual_enabled: false,
@@ -1130,6 +1144,36 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await page.getByRole("button", { name: "Sign in", exact: true }).click();
     const themeSwitch = page.getByRole("switch", { name: /Switch to .* theme/ });
     await themeSwitch.waitFor();
+    // Exercise the real Ant Design modal at the narrowest supported viewport.
+    // The transition is cancelled so this smoke test never changes persisted
+    // Public Access state.
+    await page.setViewportSize({ width: 320, height: 720 });
+    await page.getByRole("button", { name: "Account security", exact: true }).click();
+    await page.getByLabel("Email", { exact: true }).fill("owner@example.com");
+    await page.getByLabel("Password", { exact: true }).fill(password);
+    await page.getByRole("button", { name: "Verify account", exact: true }).click();
+    const publicControl = page.getByRole("region", { name: "Public Access setting" });
+    await publicControl.waitFor();
+    await publicControl.getByRole("button", { name: "Enable public access", exact: true }).click();
+    const publicDialog = page.getByRole("dialog", { name: "Enable public access?", exact: true });
+    await publicDialog.waitFor();
+    const publicBounds = await publicDialog.boundingBox();
+    assert.ok(publicBounds && publicBounds.x >= 0 && publicBounds.x + publicBounds.width <= 320, "Public Access confirmation fits a 320px viewport");
+    for (const action of ["Cancel", "Enable public access"]) {
+      const button = publicDialog.getByRole("button", { name: action, exact: true });
+      await button.waitFor();
+      const bounds = await button.boundingBox();
+      assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 320 && bounds.y + bounds.height <= 720, `${action} remains visible in the mobile confirmation`);
+    }
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), "Public Access confirmation must not cause horizontal overflow");
+    await page.keyboard.press("Escape");
+    await publicDialog.waitFor({ state: "hidden" });
+    await publicControl.getByRole("button", { name: "Enable public access", exact: true }).click();
+    await publicDialog.waitFor();
+    await publicDialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    await publicDialog.waitFor({ state: "hidden" });
+    await page.getByRole("dialog", { name: "Account security", exact: true }).getByRole("button", { name: "Close" }).click();
+    await page.setViewportSize({ width: 1280, height: 900 });
     const initialTheme = await page.locator("html").getAttribute("data-theme");
     await themeSwitch.click();
     assert.notEqual(await page.locator("html").getAttribute("data-theme"), initialTheme);
