@@ -58,7 +58,7 @@ export function AccountSecurity({ signedOut, sessionEstablished }: { signedOut: 
 
   return <>
     <Button onClick={() => { setError(""); setOpen(true); }}>Account security</Button>
-    <Modal className="account-security-modal" title="Account security" open={open} onCancel={() => { if (!busy) void close(); }} footer={null} destroyOnHidden mask={{ closable: !busy }} keyboard={!busy}>
+    <Modal rootClassName="account-security-root" className="account-security-modal" title="Account security" open={open} onCancel={() => { if (!busy) void close(); }} footer={null} destroyOnHidden mask={{ closable: !busy }} keyboard={!busy}>
       {error && <Alert type="error" title={error} showIcon />}
       {!verified ? <Form form={verifyForm} layout="vertical" onFinish={verify}>
         <Typography.Paragraph>Verify your email and password to continue.</Typography.Paragraph>

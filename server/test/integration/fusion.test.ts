@@ -1166,7 +1166,17 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
       const bounds = await button.boundingBox();
       assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= 320 && bounds.y + bounds.height <= 720, `${action} remains visible in the mobile confirmation`);
     }
-    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), "Public Access confirmation must not cause horizontal overflow");
+    const publicOverflow = await page.evaluate(() => Array.from(document.querySelectorAll("*"))
+      .map((element) => ({
+        tag: element.tagName,
+        className: typeof element.className === "string" ? element.className : "",
+        left: element.getBoundingClientRect().left,
+        right: element.getBoundingClientRect().right,
+        width: element.getBoundingClientRect().width,
+      }))
+      .filter((element) => (element.left < -1 || element.right > window.innerWidth + 1) && element.width > 0)
+      .slice(0, 12));
+    assert.deepEqual(publicOverflow, [], `Public Access confirmation must not cause horizontal overflow: ${JSON.stringify(publicOverflow)}`);
     await page.keyboard.press("Escape");
     await publicDialog.waitFor({ state: "hidden" });
     await publicControl.getByRole("button", { name: "Enable public access", exact: true }).click();
