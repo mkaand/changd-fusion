@@ -23,7 +23,8 @@ export type Monitor = {
   text_enabled: boolean;
   text_direction?: "added" | "removed" | "both";
   text_source?: "direct" | "jina";
-  extraction_mode?: "full_text" | "selected_text";
+  extraction_mode?: "full_text" | "selected_text" | "keyword_presence";
+  keyword?: string | null;
   extraction_rule?: SelectedTextRule | null;
   visual_enabled: boolean;
   selector: string;
