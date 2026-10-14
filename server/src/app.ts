@@ -17,7 +17,7 @@ import { smtpSchema, telegramSchema, telegramValidate, telegramSummary, type Tel
 import { Storage } from "./storage.js";
 import { stepsSchema } from "./browser-steps.js";
 import { vaultSchema, sealValues } from "./vault.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { previewRegion, releaseRegionPreviewSession, type PreviewStage, type RegionPreviewFailure } from "./region-picker.js";
 import { previewJinaText } from "./text-picker.js";
 import pino from "pino";
@@ -45,7 +45,7 @@ const monitorInput = z
     text_enabled: z.boolean().default(true),
     text_direction: z.enum(["added", "removed", "both"]).default("both"),
     text_source: z.enum(["direct", "jina"]).default("direct"),
-    extraction_mode: z.enum(["full_text", "product_price", "selected_text"]).default("full_text"),
+    extraction_mode: z.enum(["full_text", "selected_text"]).default("full_text"),
     extraction_rule: z.union([
       z.object({
         version: z.literal(1), kind: z.literal("bounded_context"),
@@ -238,209 +238,135 @@ export function createApp(
     standardHeaders: "draft-8",
     legacyHeaders: false,
   });
-  const setSession = async (
-    res: Response,
-    userId: string,
-    expectedPassword?: string,
-  ) => {
-    const sessionId = randomUUID();
-    await transaction(pool, async (c) => {
-      const user = await c.query(
-        "SELECT password FROM users WHERE user_id=$1 AND status=1 FOR UPDATE",
-        [userId],
-      );
-      if (
-        !user.rowCount ||
-        (expectedPassword && user.rows[0].password !== expectedPassword)
-      )
-        throw new HttpError(401, "Authentication required");
-      await c.query(
-        "INSERT INTO fusion_sessions(id,user_id,expires_at) VALUES($1,$2,now()+interval '2 hours')",
-        [sessionId, userId],
-      );
-    });
-    const token = jwt.sign({ sub: userId, jti: sessionId }, cfg.JWT_SECRET, {
-      algorithm: "HS256",
-      expiresIn: "2h",
-      issuer: "changd-fusion",
-      audience: "changd-fusion-ui",
-    });
-    res.cookie("fusion_session", token, {
-      httpOnly: true,
-      sameSite: "strict",
-      secure: cfg.NODE_ENV === "production",
-      path: "/",
-      maxAge: 7200000,
-    });
+  const hashOpaqueToken = (token: string) => createHash("sha256").update(token).digest("hex");
+  const readCookie = (req: Request, name: string) => req.get("Cookie")?.split(";").map((part) => part.trim()).find((part) => part.startsWith(`${name}=`))?.slice(name.length + 1);
+  const cookieBase = { httpOnly: true, sameSite: "strict" as const, secure: cfg.NODE_ENV === "production", path: "/" };
+  const clearAuthCookies = (res: Response) => {
+    res.clearCookie("fusion_session", { path: "/" });
+    res.clearCookie("fusion_refresh", { path: "/" });
+    res.clearCookie("fusion_security", { path: "/" });
   };
+  const issueAccess = (res: Response, userId: string, sessionId: string) => {
+    const access = jwt.sign({ sub: userId, jti: sessionId }, cfg.JWT_SECRET, { algorithm: "HS256", expiresIn: "15m", issuer: "changd-fusion", audience: "changd-fusion-ui" });
+    res.cookie("fusion_session", access, { ...cookieBase, maxAge: 15 * 60 * 1000 });
+  };
+  const setSession = async (res: Response, userId: string, expectedPassword?: string) => {
+    const id = randomUUID(), refresh = randomBytes(32).toString("base64url");
+    await transaction(pool, async (c) => {
+      const user = await c.query("SELECT password FROM users WHERE user_id=$1 AND status=1 FOR UPDATE", [userId]);
+      if (!user.rowCount || (expectedPassword && user.rows[0].password !== expectedPassword)) throw new HttpError(401, "Authentication required");
+      await c.query("INSERT INTO fusion_sessions(id,user_id,expires_at,refresh_token_hash,refresh_expires_at) VALUES($1,$2,now()+interval '15 minutes',$3,now()+interval '30 days')", [id, userId, hashOpaqueToken(refresh)]);
+    });
+    issueAccess(res, userId, id);
+    res.cookie("fusion_refresh", refresh, { ...cookieBase, maxAge: 30 * 24 * 60 * 60 * 1000 });
+    return id;
+  };
+  const refreshSession = async (req: Request, res: Response) => {
+    const token = readCookie(req, "fusion_refresh");
+    if (!token) throw new HttpError(401, "Authentication required");
+    const replacement = randomBytes(32).toString("base64url");
+    const session = await transaction(pool, async (c) => {
+      const result = await c.query("SELECT s.id,s.user_id FROM fusion_sessions s JOIN users u ON u.user_id=s.user_id WHERE s.refresh_token_hash=$1 AND s.revoked_at IS NULL AND s.refresh_expires_at>now() AND u.status=1 FOR UPDATE", [hashOpaqueToken(token)]);
+      if (!result.rowCount) throw new HttpError(401, "Authentication required");
+      const row = result.rows[0];
+      await c.query("UPDATE fusion_sessions SET expires_at=now()+interval '15 minutes',refresh_expires_at=now()+interval '30 days',refresh_token_hash=$2 WHERE id=$1", [row.id, hashOpaqueToken(replacement)]);
+      return row;
+    });
+    issueAccess(res, session.user_id, session.id);
+    res.cookie("fusion_refresh", replacement, { ...cookieBase, maxAge: 30 * 24 * 60 * 60 * 1000 });
+  };
+  const passwordInput = z.string().min(12).max(72).refine((value) => Buffer.byteLength(value, "utf8") <= 72);
   app.post("/api/v1/login", loginLimiter, async (req, res) => {
-    // Existing passwords can be shorter than the new creation minimum.
-    const body = credentials
-      .extend({ password: z.string().min(1).max(72) })
-      .parse(req.body);
-    const r = await pool.query(
-      "SELECT user_id,password,status FROM users WHERE lower(email)=$1",
-      [body.email],
-    );
-    const user = r.rows[0];
-    if (
-      !user ||
-      user.status !== 1 ||
-      !(await compare(body.password, user.password))
-    )
-      throw new HttpError(401, "Invalid email or password");
-    await pool.query("UPDATE users SET last_login=now() WHERE user_id=$1", [
-      user.user_id,
-    ]);
-    await setSession(res, user.user_id, user.password);
-    res.json({ ok: true });
+    const body = credentials.extend({ password: z.string().min(1).max(72) }).parse(req.body);
+    const result = await pool.query("SELECT user_id,password,status FROM users WHERE lower(email)=$1", [body.email]); const user = result.rows[0];
+    if (!user || user.status !== 1 || !(await compare(body.password, user.password))) throw new HttpError(401, "Invalid email or password");
+    await pool.query("UPDATE users SET last_login=now() WHERE user_id=$1", [user.user_id]); await setSession(res, user.user_id, user.password); res.json({ ok: true });
   });
   app.post("/api/v1/register", loginLimiter, async (req, res) => {
-    if (cfg.REGISTRATION_ENABLED !== "true")
-      throw new HttpError(403, "Public registration is disabled");
-    const body = credentials.parse(req.body);
-    const r = await pool.query(
-      "INSERT INTO users(email,password,firstname,lastname,user_type) VALUES($1,$2,$3,$4,0) ON CONFLICT DO NOTHING RETURNING user_id",
-      [body.email, await hash(body.password, 12), "", ""],
-    );
-    if (!r.rowCount) throw new HttpError(409, "Unable to register account");
-    await setSession(res, r.rows[0].user_id);
-    res.status(201).json({ ok: true });
+    if (cfg.REGISTRATION_ENABLED !== "true") throw new HttpError(403, "Public registration is disabled");
+    const body = credentials.parse(req.body); const result = await pool.query("INSERT INTO users(email,password,firstname,lastname,user_type) VALUES($1,$2,$3,$4,0) ON CONFLICT DO NOTHING RETURNING user_id", [body.email, await hash(body.password, 12), "", ""]);
+    if (!result.rowCount) throw new HttpError(409, "Unable to register account"); await setSession(res, result.rows[0].user_id); res.status(201).json({ ok: true });
   });
+  app.post("/api/v1/session/refresh", async (req, res) => { try { await refreshSession(req, res); res.json({ ok: true }); } catch { clearAuthCookies(res); throw new HttpError(401, "Authentication required"); } });
   app.use("/api/v1", async (req, res, next) => {
-    const cookie = req
-      .get("Cookie")
-      ?.split(";")
-      .map((s) => s.trim())
-      .find((s) => s.startsWith("fusion_session="))
-      ?.slice("fusion_session=".length);
-    const token =
-      req.get("Authorization")?.match(/^Bearer (.+)$/)?.[1] ?? cookie;
+    const token = req.get("Authorization")?.match(/^Bearer (.+)$/)?.[1] ?? readCookie(req, "fusion_session");
     try {
-      if (!token) throw Error();
-      const decoded = jwt.verify(token, cfg.JWT_SECRET, {
-        algorithms: ["HS256"],
-        issuer: "changd-fusion",
-        audience: "changd-fusion-ui",
-      });
-      if (
-        typeof decoded === "string" ||
-        typeof decoded.sub !== "string" ||
-        !uuid.safeParse(decoded.jti).success ||
-        typeof decoded.exp !== "number"
-      )
-        throw Error();
-      const result = await pool.query(
-        "SELECT u.user_id,u.firstname,u.lastname,u.email,u.user_type FROM users u JOIN fusion_sessions s ON s.user_id=u.user_id WHERE u.user_id=$1 AND u.status=1 AND s.id=$2 AND s.revoked_at IS NULL AND s.expires_at>now()",
-        [decoded.sub, decoded.jti],
-      );
+      if (!token) throw Error(); const decoded = jwt.verify(token, cfg.JWT_SECRET, { algorithms: ["HS256"], issuer: "changd-fusion", audience: "changd-fusion-ui" });
+      if (typeof decoded === "string" || typeof decoded.sub !== "string" || !uuid.safeParse(decoded.jti).success) throw Error();
+      const result = await pool.query("SELECT u.user_id,u.firstname,u.lastname,u.email,u.user_type FROM users u JOIN fusion_sessions s ON s.user_id=u.user_id WHERE u.user_id=$1 AND u.status=1 AND s.id=$2 AND s.revoked_at IS NULL AND s.expires_at>now()", [decoded.sub, decoded.jti]);
       if (!result.rowCount) throw Error();
-      res.locals.user = result.rows[0];
-      res.locals.sessionId = decoded.jti;
-      next();
+      // A valid, active request keeps the revocable refresh session alive for
+      // another 30 days. The refresh credential itself is still rotated only
+      // by /session/refresh, so this is a sliding expiry rather than a
+      // perpetual bearer token.
+      await pool.query("UPDATE fusion_sessions SET refresh_expires_at=now()+interval '30 days' WHERE id=$1 AND revoked_at IS NULL", [decoded.jti]);
+      res.locals.user = result.rows[0]; res.locals.sessionId = decoded.jti; res.locals.publicAccess = false; return next();
     } catch {
-      next(new HttpError(401, "Authentication required"));
+      try {
+        const result = await pool.query("SELECT u.user_id,u.firstname,u.lastname,u.email,u.user_type FROM fusion_access_settings a JOIN users u ON u.user_id=a.owner_user_id WHERE a.singleton=true AND a.public_enabled=true AND a.owner_user_id IS NOT NULL AND u.status=1");
+        if (!result.rowCount) throw Error(); res.locals.user = result.rows[0]; res.locals.sessionId = null; res.locals.publicAccess = true; return next();
+      } catch { return next(new HttpError(401, "Authentication required")); }
     }
   });
-  app.post("/api/v1/logout", async (_req, res) => {
-    await pool.query(
-      "UPDATE fusion_sessions SET revoked_at=now() WHERE id=$1 AND user_id=$2",
-      [res.locals.sessionId, res.locals.user.user_id],
-    );
-    res.clearCookie("fusion_session", { path: "/" });
-    res.json({ ok: true });
-  });
-  app.post("/api/v1/logout-all", async (_req, res) => {
-    await transaction(pool, async (c) => {
-      await c.query("SELECT user_id FROM users WHERE user_id=$1 FOR UPDATE", [
-        res.locals.user.user_id,
-      ]);
-      await c.query(
-        "UPDATE fusion_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",
-        [res.locals.user.user_id],
-      );
-    });
-    res.clearCookie("fusion_session", { path: "/" });
-    res.json({ ok: true });
-  });
-  app.get("/api/v1/users/me", (_req, res) => res.json(res.locals.user));
-  app.get("/api/v1/system/diagnostics", async (_req, res) => {
-    const userId = res.locals.user.user_id;
-    const [monitors, deliveries, states] = await Promise.all([
-      pool.query("SELECT count(*) total,count(*) FILTER (WHERE enabled AND NOT paused) active,count(*) FILTER (WHERE monitor_state IN ('persistent_failure','authentication_required','challenge_detected')) attention FROM fusion_monitors WHERE user_id=$1", [userId]),
-      pool.query("SELECT count(*) total,count(*) FILTER (WHERE status='failed') failed,count(*) FILTER (WHERE status IN ('pending','sending')) pending,max(delivered_at) last_delivered_at FROM fusion_outbox o JOIN fusion_channels c ON c.id=o.channel_id WHERE c.user_id=$1", [userId]),
-      pool.query("SELECT monitor_state,count(*) count FROM fusion_monitors WHERE user_id=$1 GROUP BY monitor_state", [userId]),
-    ]);
-    res.json({ api: "ok", monitoring: monitors.rows[0], deliveries: deliveries.rows[0], states: states.rows, retention_days: cfg.HISTORY_DAYS });
-  });
-  app.get("/api/v1/preferences/monitoring", async (_req, res) => {
-    const r = await pool.query("SELECT monitoring_defaults FROM fusion_user_preferences WHERE user_id=$1", [res.locals.user.user_id]);
-    res.json(r.rows[0]?.monitoring_defaults ?? {});
-  });
-  app.put("/api/v1/preferences/monitoring", async (req, res) => {
-    const value = monitoringDefaults.parse(req.body);
-    if (value.channel_ids?.length) {
-      const own = await pool.query("SELECT id FROM fusion_channels WHERE user_id=$1 AND id=ANY($2::uuid[])", [res.locals.user.user_id, value.channel_ids]);
-      if (own.rowCount !== value.channel_ids.length) throw new HttpError(404, "Notification channel not found");
+  // Public access is a workspace capability, not an account session.  Only
+  // account-security operations are intentionally excluded from it.
+  const requireAccountSession = (_req: Request, res: Response, next: NextFunction) => {
+    if (res.locals.publicAccess)
+      return next(new HttpError(403, "Account security is unavailable in public access"));
+    next();
+  };
+  const requireSecurity = async (req: Request, res: Response, next: NextFunction) => {
+    if (res.locals.publicAccess)
+      return next(new HttpError(403, "Account security is unavailable in public access"));
+    const token = readCookie(req, "fusion_security"); if (!token) return next(new HttpError(403, "Account security verification required"));
+    const grant = await pool.query("SELECT id FROM fusion_security_grants WHERE browser_token_hash=$1 AND user_id=$2 AND revoked_at IS NULL AND expires_at>now() AND (session_id IS NULL OR session_id=$3)", [hashOpaqueToken(token), res.locals.user.user_id, res.locals.sessionId]);
+    if (!grant.rowCount) return next(new HttpError(403, "Account security verification required")); next();
+  };
+  app.post("/api/v1/security/verify", loginLimiter, async (req, res) => {
+    const body = z.object({ email: z.email().max(254).transform((value) => value.toLowerCase()), password: z.string().min(1).max(72) }).strict().parse(req.body);
+    let userId = res.locals.user.user_id, sessionId = res.locals.sessionId;
+    if (res.locals.publicAccess) {
+      const owner = await pool.query("SELECT u.user_id,u.email,u.password FROM fusion_access_settings a JOIN users u ON u.user_id=a.owner_user_id WHERE a.singleton=true AND a.public_enabled=true AND a.owner_user_id IS NOT NULL AND u.status=1");
+      if (!owner.rowCount || body.email !== String(owner.rows[0].email).toLowerCase()) throw new HttpError(401, "Invalid email or password");
+      userId = owner.rows[0].user_id;
+      const account = owner.rows[0];
+      if (!(await compare(body.password, account.password))) throw new HttpError(401, "Invalid email or password");
+      // Public workspace access is not itself an account session. A successful
+      // owner step-up creates the same revocable rotating session as login,
+      // then binds the short-lived security grant to that session.
+      sessionId = await setSession(res, userId, account.password);
+    } else {
+      if (body.email !== String(res.locals.user.email).toLowerCase()) throw new HttpError(401, "Invalid email or password");
+      const account = await pool.query("SELECT password FROM users WHERE user_id=$1 AND status=1", [userId]);
+      if (!account.rowCount || !(await compare(body.password, account.rows[0].password))) throw new HttpError(401, "Invalid email or password");
     }
-    await pool.query("INSERT INTO fusion_user_preferences(user_id,monitoring_defaults) VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET monitoring_defaults=EXCLUDED.monitoring_defaults,updated_at=now()", [res.locals.user.user_id, JSON.stringify(value)]);
-    res.json(value);
+    const token = randomBytes(32).toString("base64url");
+    await pool.query("INSERT INTO fusion_security_grants(id,user_id,session_id,browser_token_hash,expires_at) VALUES($1,$2,$3,$4,now()+interval '10 minutes')", [randomUUID(), userId, sessionId, hashOpaqueToken(token)]);
+    res.cookie("fusion_security", token, { ...cookieBase, maxAge: 10 * 60 * 1000 }); res.json({ ok: true });
   });
-  app.post("/api/v1/monitors/notification-channels/bulk", async (req, res) => {
-    const body = z.object({ monitor_ids: z.array(uuid).min(1).max(100), channel_id: uuid, action: z.enum(["add", "remove", "replace"]), confirm: z.literal(true) }).strict().parse(req.body);
-    await transaction(pool, async (c) => {
-      const monitors = await c.query("SELECT id FROM fusion_monitors WHERE user_id=$1 AND id=ANY($2::uuid[]) FOR UPDATE", [res.locals.user.user_id, body.monitor_ids]);
-      if (monitors.rowCount !== body.monitor_ids.length) throw new HttpError(404, "Monitor not found");
-      const channel = await c.query("SELECT id FROM fusion_channels WHERE id=$1 AND user_id=$2", [body.channel_id, res.locals.user.user_id]);
-      if (!channel.rowCount) throw new HttpError(404, "Notification channel not found");
-      if (body.action === "replace") await c.query("DELETE FROM fusion_monitor_channels WHERE monitor_id=ANY($1::uuid[])", [body.monitor_ids]);
-      if (body.action === "remove") await c.query("DELETE FROM fusion_monitor_channels WHERE monitor_id=ANY($1::uuid[]) AND channel_id=$2", [body.monitor_ids, body.channel_id]);
-      else await c.query("INSERT INTO fusion_monitor_channels(monitor_id,channel_id) SELECT unnest($1::uuid[]),$2 ON CONFLICT DO NOTHING", [body.monitor_ids, body.channel_id]);
-    });
-    res.status(204).end();
+  app.post("/api/v1/security/leave", requireAccountSession, async (req, res) => { const token = readCookie(req, "fusion_security"); if (token) await pool.query("UPDATE fusion_security_grants SET revoked_at=now() WHERE browser_token_hash=$1 AND revoked_at IS NULL", [hashOpaqueToken(token)]); res.clearCookie("fusion_security", { path: "/" }); res.json({ ok: true }); });
+  app.get("/api/v1/account/public-access", requireSecurity, async (_req, res) => { const row = await pool.query("SELECT public_enabled,owner_user_id FROM fusion_access_settings WHERE singleton=true"); res.json(row.rows[0] ?? { public_enabled: false, owner_user_id: null }); });
+  app.put("/api/v1/account/public-access", requireSecurity, async (req, res) => {
+    const enabled = z.object({ enabled: z.boolean(), confirm: z.literal(true) }).strict().parse(req.body).enabled; const userId = res.locals.user.user_id;
+    await transaction(pool, async (c) => { const state = await c.query("SELECT owner_user_id FROM fusion_access_settings WHERE singleton=true FOR UPDATE"); const currentOwner = state.rows[0]?.owner_user_id; if (currentOwner && currentOwner !== userId) throw new HttpError(403, "Public workspace is owned by another account"); await c.query("UPDATE fusion_access_settings SET public_enabled=$1,owner_user_id=CASE WHEN $1 THEN COALESCE(owner_user_id,$2) ELSE owner_user_id END,updated_at=now() WHERE singleton=true", [enabled, userId]); });
+    res.json({ enabled });
   });
-  app.get("/api/v1/users", async (_req, res) => {
-    if (res.locals.user.user_type !== 2)
-      throw new HttpError(403, "Administrator required");
-    res.json(
-      (
-        await pool.query(
-          "SELECT user_id,email,firstname,lastname,status FROM users ORDER BY date_created",
-        )
-      ).rows,
-    );
+  app.post("/api/v1/logout", async (_req, res) => { if (!res.locals.publicAccess && res.locals.sessionId) await pool.query("UPDATE fusion_sessions SET revoked_at=now() WHERE id=$1 AND user_id=$2", [res.locals.sessionId, res.locals.user.user_id]); clearAuthCookies(res); res.json({ ok: true, public_access: !!res.locals.publicAccess }); });
+  app.post("/api/v1/logout-all", requireSecurity, async (_req, res) => { await transaction(pool, async (c) => { await c.query("UPDATE fusion_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL", [res.locals.user.user_id]); await c.query("UPDATE fusion_security_grants SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL", [res.locals.user.user_id]); }); clearAuthCookies(res); res.json({ ok: true }); });
+  app.get("/api/v1/users/me", (_req, res) => res.locals.publicAccess ? res.json({ user_id: null, firstname: "Public", lastname: "Access", email: null, user_type: 0, public_access: true }) : res.json({ ...res.locals.user, public_access: false }));
+  app.get("/api/v1/users", requireSecurity, async (_req, res) => {
+    if (res.locals.publicAccess || res.locals.user.user_type !== 2) throw new HttpError(403, "Administrator required");
+    res.json((await pool.query("SELECT user_id,email,firstname,lastname,status FROM users ORDER BY date_created")).rows);
   });
-  app.post("/api/v1/users/changepassword", async (req, res) => {
-    const b = z
-      .object({
-        current_password: z.string().max(72),
-        password: z
-          .string()
-          .min(12)
-          .max(72)
-          .refine((value) => Buffer.byteLength(value, "utf8") <= 72),
-      })
-      .strict()
-      .parse(req.body);
+  app.post("/api/v1/users/changepassword", requireSecurity, async (req, res) => {
+    const body = z.object({ password: passwordInput }).strict().parse(req.body);
     const id = res.locals.user.user_id;
     await transaction(pool, async (c) => {
-      const r = await c.query(
-        "SELECT password FROM users WHERE user_id=$1 FOR UPDATE",
-        [id],
-      );
-      if (!(await compare(b.current_password, r.rows[0].password)))
-        throw new HttpError(401, "Invalid password");
-      await c.query("UPDATE users SET password=$2 WHERE user_id=$1", [
-        id,
-        await hash(b.password, 12),
-      ]);
-      await c.query(
-        "UPDATE fusion_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL",
-        [id],
-      );
+      await c.query("UPDATE users SET password=$2 WHERE user_id=$1", [id, await hash(body.password, 12)]);
+      await c.query("UPDATE fusion_sessions SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL", [id]);
+      await c.query("UPDATE fusion_security_grants SET revoked_at=now() WHERE user_id=$1 AND revoked_at IS NULL", [id]);
     });
-    res.clearCookie("fusion_session", { path: "/" });
-    res.json({ ok: true });
+    clearAuthCookies(res); res.json({ ok: true });
   });
   const owner = async (id: string, userId: string) => {
     uuid.parse(id);
@@ -481,6 +407,48 @@ export function createApp(
         [id, channelId],
       );
   };
+  app.get("/api/v1/preferences/monitoring", async (_req, res) => {
+    const result = await pool.query(
+      "SELECT monitoring_defaults FROM fusion_user_preferences WHERE user_id=$1",
+      [res.locals.user.user_id],
+    );
+    res.json(result.rows[0]?.monitoring_defaults ?? {});
+  });
+  app.put("/api/v1/preferences/monitoring", async (req, res) => {
+    const defaults = monitoringDefaults.parse(req.body);
+    await transaction(pool, async (c) => {
+      if (defaults.channel_ids) {
+        const channels = await c.query(
+          "SELECT id FROM fusion_channels WHERE id=ANY($1::uuid[]) AND user_id=$2",
+          [defaults.channel_ids, res.locals.user.user_id],
+        );
+        if (channels.rowCount !== new Set(defaults.channel_ids).size)
+          throw new HttpError(404, "Channel not found");
+      }
+      await c.query(
+        "INSERT INTO fusion_user_preferences(user_id,monitoring_defaults) VALUES($1,$2) ON CONFLICT(user_id) DO UPDATE SET monitoring_defaults=EXCLUDED.monitoring_defaults,updated_at=now()",
+        [res.locals.user.user_id, JSON.stringify(defaults)],
+      );
+    });
+    res.json(defaults);
+  });
+  app.post("/api/v1/monitors/notification-channels/bulk", async (req, res) => {
+    const body = z.object({ monitor_ids: z.array(uuid).min(1).max(100), channel_id: uuid, action: z.enum(["add", "remove"]), confirm: z.literal(true) }).strict().parse(req.body);
+    await transaction(pool, async (c) => {
+      const channel = await c.query("SELECT id FROM fusion_channels WHERE id=$1 AND user_id=$2", [body.channel_id, res.locals.user.user_id]);
+      if (!channel.rowCount) throw new HttpError(404, "Channel not found");
+      const monitorIds = [...new Set(body.monitor_ids)];
+      const monitors = await c.query("SELECT id FROM fusion_monitors WHERE id=ANY($1::uuid[]) AND user_id=$2 FOR UPDATE", [monitorIds, res.locals.user.user_id]);
+      if (monitors.rowCount !== monitorIds.length) throw new HttpError(404, "Monitor not found");
+      if (body.action === "add") {
+        for (const monitorId of monitorIds)
+          await c.query("INSERT INTO fusion_monitor_channels(monitor_id,channel_id) VALUES($1,$2) ON CONFLICT DO NOTHING", [monitorId, body.channel_id]);
+      } else {
+        await c.query("DELETE FROM fusion_monitor_channels WHERE monitor_id=ANY($1::uuid[]) AND channel_id=$2", [monitorIds, body.channel_id]);
+      }
+    });
+    res.status(204).end();
+  });
   const lockedMutation = async (
     id: string,
     userId: string,
@@ -532,12 +500,7 @@ export function createApp(
           )
         ).rows[0];
       }
-      await replaceChannels(
-        c,
-        r.rows[0].id,
-        res.locals.user.user_id,
-        channel_ids,
-      );
+      await replaceChannels(c, r.rows[0].id, res.locals.user.user_id, channel_ids);
       return r.rows[0];
     });
     res.status(201).json(result);

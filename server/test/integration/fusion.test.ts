@@ -420,7 +420,7 @@ test("selected text values keep chronological baselines and existing notificatio
   assert.deepEqual(updated.extraction_rule, replacementRule);
   await selectedAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({
     name: "Invalid direct special mode", url: "https://example.com/direct-invalid", kind: "browser", text_enabled: true, visual_enabled: false,
-    text_source: "direct", extraction_mode: "product_price",
+    text_source: "direct", extraction_mode: "unsupported_mode",
   }).expect(400);
   const direct = (await selectedAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({
     name: "Direct source after Jina", url: "https://example.com/direct", kind: "browser", text_enabled: true, visual_enabled: false,
@@ -1473,12 +1473,54 @@ test("administrator authorization is database-backed; token role claims are igno
     me.user_id,
   ]);
   try {
+    await ownerAgent
+      .post("/api/v1/security/verify")
+      .set("X-Fusion-Request", "1")
+      .send({ email: "owner@example.com", password })
+      .expect(200);
     await ownerAgent.get("/api/v1/users").expect(200);
   } finally {
     await pool.query("UPDATE users SET user_type=0 WHERE user_id=$1", [
       me.user_id,
     ]);
   }
+});
+
+test("public access requires owner credentials to establish a revocable account-security session", async () => {
+  const owner = (await pool.query("SELECT user_id,firstname,lastname,email,user_type FROM users WHERE email='owner@example.com'")).rows[0];
+  await pool.query("UPDATE fusion_access_settings SET public_enabled=true,owner_user_id=$1 WHERE singleton=true", [owner.user_id]);
+
+  const publicApp = createApp(pool, cfg);
+  const visitor = request.agent(publicApp);
+  await visitor.get("/api/v1/users/me").expect(200, { user_id: null, firstname: "Public", lastname: "Access", email: null, user_type: 0, public_access: true });
+  await visitor.get("/api/v1/account/public-access").expect(403);
+  await visitor
+    .post("/api/v1/security/verify")
+    .set("X-Fusion-Request", "1")
+    .send({ email: "owner@example.com", password: "incorrect" })
+    .expect(401);
+  await visitor
+    .post("/api/v1/security/verify")
+    .set("X-Fusion-Request", "1")
+    .send({ email: "other@example.com", password })
+    .expect(401);
+
+  const stepUp = await visitor
+    .post("/api/v1/security/verify")
+    .set("X-Fusion-Request", "1")
+    .send({ email: "owner@example.com", password })
+    .expect(200);
+  assert.ok(stepUp.headers["set-cookie"].some((cookie: string) => cookie.startsWith("fusion_session=")));
+  assert.ok(stepUp.headers["set-cookie"].some((cookie: string) => cookie.startsWith("fusion_security=")));
+  await visitor
+    .put("/api/v1/account/public-access")
+    .set("X-Fusion-Request", "1")
+    .send({ enabled: false, confirm: true })
+    .expect(200, { enabled: false });
+  await request(publicApp).get("/api/v1/jobs").expect(401);
+  await visitor.get("/api/v1/users/me").expect(200, { ...owner, public_access: false });
+  await visitor.post("/api/v1/security/leave").set("X-Fusion-Request", "1").send({}).expect(200);
+  await visitor.get("/api/v1/account/public-access").expect(403);
 });
 
 test("capture modes use one browser page for text and image; limits, selector errors and timeouts preserve baseline", async (t) => {
@@ -1880,6 +1922,14 @@ test("account sessions revoke cookie and bearer tokens on logout, logout-all, ex
       .set("X-Fusion-Request", "1")
       .set("Authorization", "Bearer " + token)
       .send(body);
+  const verify = async (token: string, pass = password) => {
+    const response = await request(securityApp)
+      .post("/api/v1/security/verify")
+      .set("X-Fusion-Request", "1")
+      .set("Authorization", "Bearer " + token)
+      .send({ email, password: pass });
+    return response;
+  };
   const one = await login(),
     two = await login(),
     foreign = await login(other);
@@ -1890,20 +1940,22 @@ test("account sessions revoke cookie and bearer tokens on logout, logout-all, ex
     .set("Cookie", "fusion_session=" + one)
     .expect(401);
   await me(two).expect(200);
-  await post(two, "logout-all").expect(200);
+  const logoutAllGrant = await verify(two);
+  assert.equal(logoutAllGrant.status, 200);
+  await post(two, "logout-all")
+    .set("Cookie", logoutAllGrant.headers["set-cookie"][0].split(";")[0])
+    .expect(200);
   await me(two).expect(401);
   await me(foreign).expect(200);
   const three = await login(),
     four = await login();
-  await post(three, "users/changepassword", {
-    current_password: "incorrect",
-    password: "synthetic-new-password",
-  }).expect(401);
+  assert.equal((await verify(three, "incorrect")).status, 401);
   await me(three).expect(200);
+  const passwordGrant = await verify(three);
+  assert.equal(passwordGrant.status, 200);
   await post(three, "users/changepassword", {
-    current_password: password,
     password: "synthetic-new-password",
-  }).expect(200);
+  }).set("Cookie", passwordGrant.headers["set-cookie"][0].split(";")[0]).expect(200);
   await me(three).expect(401);
   await me(four).expect(401);
   await me(foreign).expect(200);

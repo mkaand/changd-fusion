@@ -16,11 +16,24 @@ export class ApiError extends Error {
     });
   }
 }
+let refreshInFlight: Promise<void> | undefined;
+
+async function refreshAccessSession() {
+  const response = await fetch("/api/v1/session/refresh", {
+    method: "POST",
+    credentials: "same-origin",
+    headers: { "Content-Type": "application/json", "X-Fusion-Request": "1" },
+    body: "{}",
+  });
+  if (!response.ok) throw Error("Authentication required");
+}
+
 export async function api<T = any>(
   path: string,
   method = "GET",
   data?: unknown,
   options?: { signal?: AbortSignal; timeoutMs?: number },
+  retriedAfterRefresh = false,
 ): Promise<T> {
   const timeout = AbortSignal.timeout(options?.timeoutMs ?? 15000);
   const response = await fetch("/api/v1" + path, {
@@ -45,8 +58,17 @@ export async function api<T = any>(
       { request_id: requestId, status: response.status },
     );
   }
-  if (response.status === 401 && result.error === "Authentication required")
+  if (response.status === 401 && result.error === "Authentication required" && path !== "/session/refresh" && !retriedAfterRefresh) {
+    try {
+      refreshInFlight ??= refreshAccessSession().finally(() => { refreshInFlight = undefined; });
+      await refreshInFlight;
+      return api(path, method, data, options, true);
+    } catch {
+      window.dispatchEvent(new Event("fusion-session-expired"));
+    }
+  } else if (response.status === 401 && result.error === "Authentication required") {
     window.dispatchEvent(new Event("fusion-session-expired"));
+  }
   if (!response.ok)
     throw new ApiError(result.error ?? "Request failed", { ...result, request_id: result.request_id ?? requestId, status: response.status });
   return result;
