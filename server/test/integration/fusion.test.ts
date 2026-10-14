@@ -412,7 +412,7 @@ test("selected text values keep chronological baselines and existing notificatio
   assert.equal(selected.extraction_rule.before, "Availability\n");
   const persisted = (await selectedAgent.get(`/api/v1/jobs/${selected.id}`).expect(200)).body;
   assert.deepEqual(persisted.extraction_rule, selected.extraction_rule);
-  const longSelectedLine = "A".repeat(220) + "33.499,00 TL" + "B".repeat(220);
+  const longSelectedLine = "A".repeat(205) + "unique-prefix-" + "33.499,00 TL" + "-unique-suffix" + "B".repeat(205);
   const generatedV2 = generateSelectedTextRule(["Product", "Current price", longSelectedLine, "Seller", "Delivery"], 2, "33.499,00 TL").rule;
   assert.equal(generatedV2.prefix.length, 160);
   assert.equal(generatedV2.suffix.length, 160);
@@ -1148,6 +1148,7 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     // The transition is cancelled so this smoke test never changes persisted
     // Public Access state.
     await page.setViewportSize({ width: 320, height: 720 });
+    await page.getByRole("button", { name: "Open account menu", exact: true }).click();
     await page.getByRole("button", { name: "Account security", exact: true }).click();
     await page.getByLabel("Email", { exact: true }).fill("owner@example.com");
     await page.getByLabel("Password", { exact: true }).fill(password);

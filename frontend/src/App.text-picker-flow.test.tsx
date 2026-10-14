@@ -8,13 +8,15 @@ import { api } from "./api";
 vi.mock("./api", async () => ({ ...(await vi.importActual<typeof import("./api")>("./api")), api: vi.fn() }));
 const mockedApi = vi.mocked(api);
 const selectedValue = "33.499,00 TL";
-const longLine = "A".repeat(220) + selectedValue + "B".repeat(220);
+const longPrefix = "A".repeat(205) + "unique-prefix-";
+const longSuffix = "-unique-suffix" + "B".repeat(205);
+const longLine = longPrefix + selectedValue + longSuffix;
 const generatedRule = {
   version: 2 as const,
   kind: "anchored_lines" as const,
   anchors: [{ text: "Product", offset: -2 as const }, { text: "Current price", offset: -1 as const }, { text: "Seller", offset: 1 as const }, { text: "Delivery", offset: 2 as const }],
-  prefix: "A".repeat(160),
-  suffix: "B".repeat(160),
+  prefix: longPrefix.slice(-160),
+  suffix: longSuffix.slice(0, 160),
   max_length: 64,
 };
 
