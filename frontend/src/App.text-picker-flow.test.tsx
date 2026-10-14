@@ -62,3 +62,41 @@ it("uses the real mobile TextPicker and preserves the draft through apply, remou
   await waitFor(() => expect(mockedApi).toHaveBeenCalledWith("/jobs", "POST", expect.objectContaining({ name: "Unsaved mobile monitor", interval_seconds: 900, text_source: "jina", extraction_mode: "selected_text", extraction_rule: generatedRule })));
   expect(mockedApi.mock.calls.some(([path]) => String(path).endsWith("/reset"))).toBe(false);
 }, 20_000);
+
+it("returns from the real mobile TextPicker Back action without merging its click event into the editor draft", async () => {
+  const existingRule = {
+    version: 2 as const,
+    kind: "anchored_lines" as const,
+    anchors: [{ text: "Product", offset: -2 as const }, { text: "Price", offset: -1 as const }, { text: "Seller", offset: 1 as const }],
+    prefix: "", suffix: "", max_length: 64,
+  };
+  const existing = {
+    id: "11111111-1111-4111-8111-111111111111", name: "Existing Reader monitor",
+    url: "https://example.com/product", kind: "browser", text_enabled: true, visual_enabled: false,
+    text_source: "jina", extraction_mode: "selected_text", extraction_rule: existingRule,
+    interval_seconds: 300, channel_ids: [],
+  };
+  mockedApi.mockImplementation(async (path: string, method = "GET", body?: any) => {
+    if (path === "/users/me") return { id: "user", email: "fixture@example.com" } as any;
+    if (path === "/jobs" && method === "GET") return [existing] as any;
+    if (path === "/notifications") return [] as any;
+    if (path === `/jobs/${existing.id}` && method === "GET") return existing as any;
+    if (path.startsWith(`/jobs/${existing.id}/history`)) return { items: [], total: 0 } as any;
+    if (path === "/text-preview") return { session_id: "preview-session", items: [{ index: 0, text: "Product" }, { index: 1, text: "Price" }, { index: 2, text: "33.499,00 TL" }, { index: 3, text: "Seller" }], matching_line_count: 4, total_line_count: 4 } as any;
+    if (path === `/jobs/${existing.id}` && method === "PUT") return existing as any;
+    throw Error(`Unexpected ${method} ${path} ${JSON.stringify(body)}`);
+  });
+  const user = userEvent.setup({ pointerEventsCheck: PointerEventsCheckLevel.Never });
+  render(<AntApp><FusionApp /></AntApp>);
+  await user.click(await screen.findByRole("button", { name: "Edit" }));
+  fireEvent.change(screen.getByLabelText("Monitor name"), { target: { value: "Unsaved Reader monitor" } });
+  await user.click(screen.getByText("Advanced settings", { exact: true }));
+  await user.click(screen.getByRole("button", { name: "Select text from preview" }));
+  await user.click(await screen.findByRole("button", { name: "← Back" }));
+  expect(await screen.findByLabelText("Monitor name")).toHaveValue("Unsaved Reader monitor");
+  await user.click(screen.getByRole("button", { name: "Save monitor" }));
+  await waitFor(() => expect(mockedApi).toHaveBeenCalledWith(`/jobs/${existing.id}`, "PUT", expect.objectContaining({ name: "Unsaved Reader monitor", extraction_rule: existingRule })));
+  const payload = mockedApi.mock.calls.find(([path, method]) => path === `/jobs/${existing.id}` && method === "PUT")?.[2] as Record<string, unknown>;
+  expect(payload).not.toHaveProperty("nativeEvent");
+  expect(payload).not.toHaveProperty("isDefaultPrevented");
+}, 20_000);
