@@ -1333,6 +1333,21 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
         .getByRole("button", { name: "Check now", exact: true })
         .isVisible(),
     );
+    for (const width of [320, 390, 430]) {
+      await page.setViewportSize({ width, height: 844 });
+      const actions = page.locator(".monitor-card-actions").first();
+      await actions.waitFor();
+      const details = actions.getByRole("button", { name: "Details", exact: true });
+      const checkNow = actions.getByRole("button", { name: "Check now", exact: true });
+      const edit = actions.getByRole("button", { name: "Edit", exact: true });
+      const [detailsBounds, checkBounds, editBounds] = await Promise.all([details.boundingBox(), checkNow.boundingBox(), edit.boundingBox()]);
+      assert.ok(detailsBounds && checkBounds && editBounds, "mobile monitor actions have measurable bounds");
+      assert.ok(Math.abs(detailsBounds.y - editBounds.y) < 2, `Details and Edit share the first row at ${width}px`);
+      assert.ok(checkBounds.y >= detailsBounds.y + detailsBounds.height, `Check now is below the first row at ${width}px`);
+      assert.ok(checkBounds.width >= detailsBounds.width + editBounds.width - 4, `Check now spans both columns at ${width}px`);
+      assert.ok(checkBounds.x >= 0 && checkBounds.x + checkBounds.width <= width, `monitor actions fit ${width}px without overflow`);
+      assert.ok(detailsBounds.height >= 44 && editBounds.height >= 44 && checkBounds.height >= 44, `monitor actions keep 44px targets at ${width}px`);
+    }
     assert.ok(
       await page.evaluate(
         () => document.documentElement.scrollWidth <= window.innerWidth,

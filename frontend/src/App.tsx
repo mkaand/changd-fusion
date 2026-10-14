@@ -653,11 +653,11 @@ export default function FusionApp() {
                             <div><dt>Last change</dt><dd>{m.last_change_at ? new Date(m.last_change_at).toLocaleString() : "—"}</dd></div>
                             {m.visual_enabled && <div><dt>Visual change</dt><dd>{m.last_dimension_change ? "Dimensions changed" : percent(m.last_percent)}</dd></div>}
                           </dl>
-                          <Space className="monitor-card-actions" wrap>
+                          <div className="monitor-card-actions" aria-label="Monitor actions">
                             <Button onClick={() => void detail(m.id)}>Details</Button>
                             <Button type="primary" onClick={() => void action(m.id, "run")}>Check now</Button>
                             <Button onClick={() => void edit(m)}>Edit</Button>
-                          </Space>
+                          </div>
                         </Card>
                       ))
                     )}
