@@ -308,7 +308,7 @@ details {
 .monitor-card-meta div { min-width: 0; }
 .monitor-card-meta dt { color: color-mix(in srgb, var(--fusion-text, #1d1d1b) 60%, transparent); font-size: 12px; }
 .monitor-card-meta dd { margin: 2px 0 0; overflow-wrap: anywhere; }
-.monitor-card-actions .ant-btn { min-height: 40px; }
+.monitor-card-actions .ant-btn { min-height: 44px; }
 .jina-extraction-controls, .jina-selected-text-controls { display: grid; gap: 12px; min-width: 0; }
 .jina-extraction-mode { margin-bottom: 0 !important; }
 .jina-reader-notice { overflow-wrap: anywhere; }
