@@ -1333,10 +1333,18 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
         .getByRole("button", { name: "Check now", exact: true })
         .isVisible(),
     );
+    assert.ok(
+      await page.evaluate(
+        () => document.documentElement.scrollWidth <= window.innerWidth,
+      ),
+      "Mobile page must not overflow horizontally",
+    );
+    await page.getByRole("button", { name: "← Monitors", exact: true }).click();
+    await page.locator(".monitor-card").first().waitFor();
+    assert.equal(await page.locator(".ant-table").count(), 0);
     for (const width of [320, 390, 430]) {
       await page.setViewportSize({ width, height: 844 });
       const actions = page.locator(".monitor-card-actions").first();
-      await actions.waitFor();
       const details = actions.getByRole("button", { name: "Details", exact: true });
       const checkNow = actions.getByRole("button", { name: "Check now", exact: true });
       const edit = actions.getByRole("button", { name: "Edit", exact: true });
@@ -1348,15 +1356,6 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
       assert.ok(checkBounds.x >= 0 && checkBounds.x + checkBounds.width <= width, `monitor actions fit ${width}px without overflow`);
       assert.ok(detailsBounds.height >= 44 && editBounds.height >= 44 && checkBounds.height >= 44, `monitor actions keep 44px targets at ${width}px`);
     }
-    assert.ok(
-      await page.evaluate(
-        () => document.documentElement.scrollWidth <= window.innerWidth,
-      ),
-      "Mobile page must not overflow horizontally",
-    );
-    await page.getByRole("button", { name: "← Monitors", exact: true }).click();
-    await page.locator(".monitor-card").first().waitFor();
-    assert.equal(await page.locator(".ant-table").count(), 0);
     for (const width of [320, 375, 390, 430, 768]) {
       await page.setViewportSize({ width, height: 844 });
       await page.getByRole("button", { name: "Open navigation" }).waitFor();
