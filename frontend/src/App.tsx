@@ -450,8 +450,8 @@ export default function FusionApp() {
               <>
                 <Button onClick={() => navigate("jobs")}>← Monitors</Button>
                 <header className="monitor-detail-header">
-                  <Typography.Title level={2}>{current.name}</Typography.Title>
-                  <div className="monitor-detail-actions">
+                  <div className="monitor-detail-title-row"><Typography.Title level={2}>{current.name}</Typography.Title></div>
+                  <div className="monitor-detail-actions" aria-label="Monitor actions">
                     <Button onClick={() => void edit(current)}>Edit</Button>
                     <Button type="primary" onClick={() => void action(current.id, "run")}>Check now</Button>
                     <Button onClick={() => void action(current.id, "reset")}>Reset baseline</Button>

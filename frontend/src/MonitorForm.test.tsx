@@ -55,6 +55,7 @@ it("offers focused Jina extraction modes and hides incompatible browser controls
   await user.click(screen.getByLabelText("Text content source"));
   await user.click(screen.getByText(/Jina Reader/));
   expect(screen.getByLabelText("Extraction mode")).toBeInTheDocument();
+  expect(screen.queryByText("Product Price", { exact: true })).not.toBeInTheDocument();
   expect(screen.queryByLabelText("Text extraction method")).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Add browser step" })).not.toBeInTheDocument();
   await user.click(screen.getByLabelText("Extraction mode"));
@@ -139,4 +140,23 @@ it("rejects missing and malformed Selected Text rules before a save request", ()
   expect(isValidSelectedTextRule({ version: 1, kind: "bounded_context", before: "", after: "", max_length: 64 })).toBe(false);
   expect(isValidSelectedTextRule({ version: 1, kind: "bounded_context", before: "Price", after: "", max_length: 0 })).toBe(false);
   expect(isValidSelectedTextRule({ version: 1, kind: "bounded_context", before: "Price", after: "", max_length: 64 })).toBe(true);
+});
+
+it("accepts V2 anchored rules and rejects malformed V2 rule payloads", () => {
+  const v2 = { version: 2, kind: "anchored_lines", anchors: [{ text: "Product", offset: -2 }, { text: "Price", offset: -1 }, { text: "Seller", offset: 1 }], prefix: "", suffix: "", max_length: 64 };
+  expect(isValidSelectedTextRule(v2)).toBe(true);
+  expect(isValidSelectedTextRule({ ...v2, anchors: [{ text: "Product", offset: 0 }, { text: "Price", offset: -1 }] })).toBe(false);
+  expect(isValidSelectedTextRule({ ...v2, anchors: [{ text: "Product", offset: -2 }] })).toBe(false);
+  expect(isValidSelectedTextRule({ ...v2, prefix: "x".repeat(161) })).toBe(false);
+  expect(isValidSelectedTextRule({ ...v2, unexpected: true })).toBe(false);
+});
+
+it("keeps a V1 monitor editable and carries an applied V2 rule into the save payload", async () => {
+  const user = userEvent.setup();
+  render(<Fixture />);
+  await user.click(screen.getByText("Advanced settings", { exact: true }));
+  current.setFieldsValue({ name: "Existing selected value", url: "https://example.com/product", text_source: "jina", extraction_mode: "selected_text", extraction_rule: { version: 1, kind: "bounded_context", before: "Price", after: "Seller", max_length: 64 } });
+  const v2 = { version: 2, kind: "anchored_lines", anchors: [{ text: "Product", offset: -2 }, { text: "Price", offset: -1 }, { text: "Seller", offset: 1 }], prefix: "", suffix: "", max_length: 64 };
+  current.setFieldValue("extraction_rule", v2);
+  expect(JSON.parse(JSON.stringify(await current.validateFields())).extraction_rule).toEqual(v2);
 });
