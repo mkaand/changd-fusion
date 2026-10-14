@@ -1153,6 +1153,7 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await page.route("**/api/v1/security/verify", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) }));
     await page.route("**/api/v1/account/public-access", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ public_enabled: false }) }));
     await page.route("**/api/v1/security/leave", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ ok: true }) }));
+    await page.route("**/api/v1/users/me", (route) => route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ user_id: "00000000-0000-4000-8000-000000000001", firstname: "Fixture", lastname: "Owner", email: "owner@example.com", user_type: 0, public_access: false }) }));
     await page.setViewportSize({ width: 320, height: 720 });
     await page.getByRole("button", { name: "Open account menu", exact: true }).click();
     await page.getByRole("button", { name: "Account security", exact: true }).click();
