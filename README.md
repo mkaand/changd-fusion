@@ -17,8 +17,8 @@ Changd Fusion combines text extraction and screenshot comparison in one monitor,
 ## Features
 
 - **Unified monitoring** — browser text, visual, HTML and API monitoring with CSS/XPath extraction, masks, ignore rules, decimal-safe Pixelmatch comparison and structural dimension-change events. Browser text capture follows rendered visible content and excludes scripts, templates and hidden hydration state; raw HTML and API/JSON modes retain source semantics. Capture failures persist only safe stage/code categories and duration—never raw exceptions, URLs, headers, page content, or credentials. A legacy browser text baseline transitions silently on its next successful capture; its current screenshot is adopted too, so a one-time visual change is intentionally absorbed rather than notified.
-- **Focused text notifications** — choose Added only, Removed only, or Added & Removed per monitor. This affects delivery only: captures, baselines, History and Timeline keep the complete change record. Visual alerts are independent of the text direction rule.
-- **Optional Jina Reader source** — text-only Browser monitors may explicitly use Jina Reader. The monitored URL is sent to the third-party reader; this is shown in the editor before saving. Full Text and Product Price remain available, while Selected Text / Value lets the user inspect safe plain text and generate a bounded contextual rule for an arbitrary changing value. Ambiguous, missing, challenge, or invalid reader content fails safely and keeps the previous baseline. Chromium visual capture, Browser Steps, private values, CAPTCHA bypass and authenticated browsing are never routed through Jina.
+- **Focused text notifications** — one shared **Notification direction** radio group applies to every text-monitoring mode: Added only, Removed only, or Added & Removed (the default). Existing monitor values remain compatible. The setting filters delivery only: captures, baselines, History and Timeline keep the complete change record. Visual alerts are independent of the text direction rule.
+- **Optional Jina Reader source** — text-only Browser monitors may explicitly use Jina Reader. The monitored URL is sent to the third-party reader; this is shown in the editor before saving. Jina supports Full Text Changes, Selected Text / Value and Keyword Presence. Ambiguous, missing, challenge, or invalid reader content fails safely and keeps the previous baseline. Chromium visual capture, Browser Steps, private values, CAPTCHA bypass and authenticated browsing are never routed through Jina.
 - **Browser steps** — validated waits, clicks, scrolling, select and safe form actions run in the same sandboxed Playwright session as capture.
 - **Visual history** — before/after/diff artifacts, comparison slider, pagination and retention-aware storage.
 - **Smart notifications** — SMTP and Telegram channels, encrypted credentials, fixed-host TLS delivery, outbox retries, concise redacted summaries, mute/cooldown, duplicate suppression and durable monitor digests.
@@ -27,6 +27,14 @@ Changd Fusion combines text extraction and screenshot comparison in one monitor,
 - **Security** — owner checks, server-side session revocation, HttpOnly cookies, CSRF/origin validation, SSRF/DNS rebinding restrictions, sandboxed Chromium and bounded capture resources.
 
 ![Notification settings](docs/images/settings-notifications.png)
+
+## Text monitoring modes
+
+**Full Text Changes** compares the complete extracted text and reports added and removed content. Direct Browser monitors can optionally narrow that text with a CSS or XPath selector. **Selected Text / Value** is available with Jina Reader and uses the Text Picker to create a contextual V1/V2 rule for one changing value; a rule must resolve unambiguously or extraction fails closed. **Keyword Presence** works with both Direct Browser and Jina Reader and watches for a literal, Unicode-aware, case-insensitive whole word or phrase without using a visual picker or user-supplied regular expression.
+
+Keyword Presence records explicit state transitions: absent → present is **Added**, present → absent is **Removed**, and an unchanged presence state produces no text-change event even if other page text changes. The first successful capture establishes the baseline without notifying, and a capture failure preserves the last known state rather than being treated as a removal.
+
+The editor shows the shared **Notification direction** radio group exactly once for text monitoring. In Full Text Changes and Selected Text / Value it filters the existing text-diff direction. In Keyword Presence it filters the presence transition: **Added only** sends absent → present, **Removed only** sends present → absent, and **Added & Removed** sends either transition.
 
 ## Visual region picker
 

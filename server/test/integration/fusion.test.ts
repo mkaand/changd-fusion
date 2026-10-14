@@ -1541,11 +1541,12 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await page.getByLabel("Keyword", { exact: true }).waitFor();
     assert.equal(await page.getByRole("button", { name: "Select text from preview", exact: true }).count(), 0, "Keyword Presence does not show the Text Picker action");
     assert.equal(await page.getByLabel("Notification direction", { exact: true }).count(), 1, "Keyword Presence reuses the shared notification direction control");
-    await page.getByText("Full Text Changes", { exact: true }).click();
     await page.setViewportSize({ width: 390, height: 844 });
+    await textControls.scrollIntoViewIfNeeded();
     await page.screenshot({
       path: path.join(output, "capture-settings-mobile.png"),
     });
+    await page.getByText("Full Text Changes", { exact: true }).click();
     const captureMode = page.getByLabel("Screenshot capture mode", { exact: true });
     await captureMode.click();
     await page.getByText("Selected element / region", { exact: true }).last().click();
