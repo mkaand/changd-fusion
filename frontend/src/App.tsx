@@ -212,8 +212,13 @@ export default function FusionApp() {
       void message.error((e as Error).message);
     }
   };
-  const returnToEditor = () => {
-    if (editorDraftRef.current) form.setFieldsValue(editorDraftRef.current);
+  const returnToEditor = (appliedValues?: Record<string, unknown>) => {
+    const restoredDraft = editorDraftRef.current ?? form.getFieldsValue(true);
+    const nextDraft = appliedValues
+      ? { ...restoredDraft, ...appliedValues }
+      : restoredDraft;
+    editorDraftRef.current = nextDraft;
+    form.setFieldsValue(nextDraft);
     setPage("editor");
     if (["/jobs/editor/region-picker", "/jobs/editor/text-picker"].includes(location.pathname) && history.length > 1) history.back();
     else history.replaceState(null, "", "/jobs/editor");
@@ -434,9 +439,9 @@ export default function FusionApp() {
                 <div className="mobile-editor-actions"><Button onClick={() => { setOpen(false); navigate("jobs"); }}>Cancel</Button><Button type="primary" loading={saving} onClick={save}>Save monitor</Button></div>
               </section>
             ) : page === "region-picker" && compactLayout && open ? (
-              <RegionPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onSelect={(selector) => { form.setFieldsValue({ capture_selector_type: "css", capture_selector: selector }); returnToEditor(); }} onUseViewport={() => { form.setFieldsValue({ capture_mode: "viewport", capture_selector: "" }); returnToEditor(); }} onBackMobile={returnToEditor} />
+              <RegionPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onSelect={(selector) => returnToEditor({ capture_selector_type: "css", capture_selector: selector })} onUseViewport={() => returnToEditor({ capture_mode: "viewport", capture_selector: "" })} onBackMobile={returnToEditor} />
             ) : page === "text-picker" && compactLayout && open ? (
-              <TextPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onApply={(rule) => { editorDraftRef.current = { ...(editorDraftRef.current ?? form.getFieldsValue(true)), extraction_mode: "selected_text", extraction_rule: rule }; form.setFieldsValue(editorDraftRef.current); void message.success("Selection applied to the editor. Save the monitor to persist it."); returnToEditor(); }} onBackMobile={returnToEditor} />
+              <TextPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onApply={(rule) => { returnToEditor({ extraction_mode: "selected_text", extraction_rule: rule }); void message.success("Selection applied to the editor. Save the monitor to persist it."); }} onBackMobile={returnToEditor} />
             ) : page === "timeline" ? (
               <Timeline monitors={monitors} />
             ) : page === "analytics" ? (
