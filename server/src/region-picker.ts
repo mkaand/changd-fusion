@@ -1,11 +1,12 @@
 import { randomUUID } from "node:crypto";
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
+import { type Browser, type BrowserContext, type Page } from "playwright";
 import { EgressPolicy, browserProxy } from "./egress.js";
 import type { Config } from "./config.js";
 import { CaptureFailure, HttpError, captureFailure, type CaptureFailureCode, type CaptureStage } from "./errors.js";
 import { checkDimensions, pngDimensions } from "./image.js";
 import type { Monitor } from "./capture.js";
 import type { ChromiumLease } from "./chromium-capacity.js";
+import { captureViewportPng, launchCaptureBrowser } from "./browser-engine.js";
 
 type RegionPreviewCode = CaptureFailureCode | "session_expired" | "stale_preview" | "ambiguous_selection";
 export type RegionPreviewFailure = { stage: CaptureStage; failure_code: RegionPreviewCode; status: number; message: string };
@@ -107,14 +108,6 @@ export async function snapshotLayout(page: Page) {
     }
     root.__changdPreviewRects = rects;
   });
-}
-
-async function capturePreviewScreenshot(context: BrowserContext, page: Page) {
-  const cdp = await context.newCDPSession(page);
-  try {
-    const captured = await cdp.send("Page.captureScreenshot", { format: "png", fromSurface: true, captureBeyondViewport: false });
-    return Buffer.from(captured.data, "base64");
-  } finally { await cdp.detach().catch(() => {}); }
 }
 
 async function boundedPreviewOperation<T>(input: {
@@ -230,7 +223,7 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
         session.progress?.("rendering_preparation");
         await boundedPreviewOperation({ operation: () => (session.operations?.snapshot ?? snapshotLayout)(active.page), remaining: activeRemaining, cancel: () => closeSession(active), stage: "screenshot", signal: session.signal });
         session.progress?.("screenshot");
-        active.image = await boundedPreviewOperation({ operation: () => (session.operations?.screenshot ?? capturePreviewScreenshot)(active.context, active.page), remaining: activeRemaining, cancel: () => closeSession(active), stage: "screenshot", signal: session.signal });
+        active.image = await boundedPreviewOperation({ operation: () => session.operations?.screenshot ? session.operations.screenshot(active.context, active.page) : captureViewportPng(cfg.CAPTURE_ENGINE, active.context, active.page, activeRemaining()), remaining: activeRemaining, cancel: () => closeSession(active), stage: "screenshot", signal: session.signal });
         pngDimensions(active.image, { width: cfg.MAX_CAPTURE_WIDTH, height: cfg.MAX_CAPTURE_HEIGHT, pixels: cfg.MAX_CAPTURE_PIXELS });
       }
       const picked = point ? await boundedPreviewOperation({ operation: () => selectionAt(active.page, point), remaining: activeRemaining, cancel: () => closeSession(active), stage: "text_extraction", signal: session.signal }) : null;
@@ -274,7 +267,7 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
     proxy = await browserProxy(policy);
     enter("browser_launch");
     stage = "browser_launch";
-    browser = await chromium.launch({ headless: true, chromiumSandbox: true, executablePath: cfg.PLAYWRIGHT_EXECUTABLE_PATH, proxy: { server: proxy.url, bypass: "<-loopback>" }, timeout: remaining() });
+    browser = await launchCaptureBrowser(cfg, proxy.url, remaining());
     stage = "browser_context";
     enter("browser_context");
     context = await browser.newContext({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1, locale: "en-US", timezoneId: "UTC", serviceWorkers: "block", ignoreHTTPSErrors: false });
@@ -297,7 +290,7 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
     stage = "screenshot";
     await boundedPreviewOperation({ operation: () => (session?.operations?.snapshot ?? snapshotLayout)(page), remaining, cancel: cancelBrowser, stage, signal: session?.signal });
     enter("screenshot");
-    const image = await boundedPreviewOperation({ operation: () => (session?.operations?.screenshot ?? capturePreviewScreenshot)(context!, page), remaining, cancel: cancelBrowser, stage, signal: session?.signal });
+    const image = await boundedPreviewOperation({ operation: () => session?.operations?.screenshot ? session.operations.screenshot(context!, page) : captureViewportPng(cfg.CAPTURE_ENGINE, context!, page, remaining()), remaining, cancel: cancelBrowser, stage, signal: session?.signal });
     pngDimensions(image, { width: cfg.MAX_CAPTURE_WIDTH, height: cfg.MAX_CAPTURE_HEIGHT, pixels: cfg.MAX_CAPTURE_PIXELS });
     const picked = point ? await selectionAt(page, point) : null;
     enter("serialization");

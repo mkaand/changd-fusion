@@ -18,6 +18,7 @@ const schema = z.object({
     .min(1000)
     .max(120000)
     .default(30000),
+  CAPTURE_ENGINE: z.enum(["chromium", "webkit"]).default("chromium"),
   CHROMIUM_CONCURRENCY: z.coerce.number().int().min(1).max(3).default(1),
   MAX_CAPTURE_WIDTH: z.coerce.number().int().min(1280).max(4096).default(4096),
   MAX_CAPTURE_HEIGHT: z.coerce.number().int().min(900).max(8192).default(8192),
@@ -28,6 +29,7 @@ const schema = z.object({
     .max(16_000_000)
     .default(8_000_000),
   PLAYWRIGHT_EXECUTABLE_PATH: z.string().optional(),
+  WEBKIT_EXECUTABLE_PATH: z.string().optional(),
   LOG_LEVEL: z.string().default("info"),
 });
 export type Config = z.infer<typeof schema>;

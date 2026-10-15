@@ -2,14 +2,13 @@
 
 ## Scope
 
-This is a pre-integration audit for an experimental Playwright WebKit capture
-engine. No engine selector, browser download, Docker image change, schema
-change, or runtime fallback is included while the baseline-transition blocker
-below remains unresolved.
+This document covers the experimental Playwright WebKit runtime prototype. The
+prototype has an environment-only engine selector and deliberately excludes
+database/baseline transition logic. It is not production activation guidance.
 
 Changd Fusion currently pins Playwright at `1.64.0`. The checked-in runtime
-only provisions system Chromium; a reproducible WebKit browser bundle and its
-Linux dependencies have not been added.
+provisions system Chromium and installs the matching Playwright WebKit revision
+plus its Linux dependencies in the experimental image.
 
 ## Current capture contract
 
@@ -20,20 +19,25 @@ and creates every screenshot from that same page. It validates element
 visibility/stability, CSS/XPath selection, masks, PNG dimensions, deadlines,
 and cleanup before returning the existing capture result contract.
 
+The prototype selects the implementation with
+`CAPTURE_ENGINE=chromium|webkit`; an absent value remains `chromium`. This is a
+process-level experimental switch. It adds no monitor field, frontend control,
+or database migration, and it never falls back between engines silently.
+
 ## WebKit API compatibility review
 
 | Capability | Audit result | Notes |
 | --- | --- | --- |
-| Playwright launch proxy | Supported by type/API surface | Playwright's generic launch options accept an HTTP/SOCKS proxy. A future implementation must prove WebKit routes navigation, redirects, subresources, and WebSockets through Changd's proxy in an isolated integration test. |
+| Playwright launch proxy | Implemented, runtime validation required | Both engines receive the same per-capture pinned-IP proxy. CI fixtures cover navigation, redirects, subresources, WebSockets, and rebinding. |
 | TLS validation | Supported by intended context settings | A WebKit context can retain `ignoreHTTPSErrors: false`; it must never be changed. |
-| JavaScript, CSS, Browser Steps | Expected compatible | They use Playwright `Page`/`Locator` APIs. Must be tested with WebKit rather than assumed. |
-| CSS and XPath selection | Expected compatible | Existing `locate()` and `xpath=` locator paths are portable Playwright APIs; element/actionability behavior can differ and needs fixture coverage. |
+| JavaScript, CSS, Browser Steps | Implemented | Both engines use the existing Playwright `Page`/`Locator` workflow and the same rendered page. |
+| CSS and XPath selection | Implemented | Existing `locate()` and `xpath=` locator paths remain unchanged. |
 | Viewport/full-page/element screenshots | Available | Use `page.screenshot()` / locator-based or clip-based native APIs. Chromium CDP `Page.captureScreenshot` is Chromium-only and cannot be reused. |
-| Screenshot masks | Expected compatible | Playwright screenshot masks are public screenshot options; WebKit support must be verified in the pinned browser build. |
-| Same-session text and image | Available by design | A future adapter can retain one WebKit page for both operations. |
+| Screenshot masks | Implemented | Both engines use Playwright's native mask path when masks are configured. |
+| Same-session text and image | Implemented | One engine-specific browser/page performs both operations. |
 | Chromium CDP fast path | Unsupported | The existing CDP viewport/clip implementation cannot run under WebKit. |
 | Chromium sandbox switch | Unsupported | `chromiumSandbox` is Chromium-specific. WebKit must not cause a weaker container, seccomp, UID, PID, CPU, or memory policy. Its actual Linux process/security behavior needs a pinned-image integration test. |
-| Region Picker | Not yet verified | It currently uses Chromium/CDP and needs an explicit WebKit-capable implementation or an intentionally separate, correctly labeled preview path. |
+| Region Picker | Implemented | The preview uses the selected engine and native WebKit screenshots while retaining its owner-bound session. |
 
 ## Egress/security gate
 
@@ -52,10 +56,11 @@ following with synthetic endpoints:
 - cancellation closes the WebKit process tree without orphan processes;
 - the current rootless Docker limits and security policy remain intact.
 
-No such WebKit runtime is currently provisioned, so these items are unverified,
-not passed.
+The GitHub workflow installs the pinned WebKit revision and executes the full
+PostgreSQL/browser integration suite once per engine. These items remain
+unverified until that workflow completes successfully.
 
-## Blocking baseline-transition requirement
+## Deferred baseline-transition requirement
 
 The requested transition must distinguish a Chromium visual baseline from a
 WebKit visual baseline persistently for every monitor. The current schema only
@@ -82,8 +87,10 @@ legacy rows). The successful capture transaction would atomically:
 3. leave the marker and baseline untouched on failures/partial captures;
 4. perform the same controlled transition when returning to Chromium.
 
-This is an additive migration, but it is still a migration. It was not
-authorized for this task, so implementation stops here.
+This is an additive migration, but it is outside the current runtime prototype.
+The prototype never changes or guesses baseline ownership. A future production
+trial must perform the explicitly accepted one-time visual baseline reset under
+a separately reviewed procedure.
 
 ## Future production trial design (not executed)
 

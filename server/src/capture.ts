@@ -1,4 +1,4 @@
-import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright";
+import { type Browser, type Locator, type Page } from "playwright";
 import { EgressPolicy, browserProxy, safeFetch, type SafeFetchOptions } from "./egress.js";
 import { normalizeText } from "./comparison.js";
 import { locate, runSteps, type BrowserStep } from "./browser-steps.js";
@@ -14,6 +14,7 @@ import { checkDimensions, pngDimensions } from "./image.js";
 import type { Config } from "./config.js";
 import { jinaReaderText } from "./jina-reader.js";
 import { applySelectedTextRule, readableJinaLines, type SelectedTextRule } from "./selected-text.js";
+import { captureClipPng, captureViewportPng, launchCaptureBrowser } from "./browser-engine.js";
 export type Monitor = {
   id: string;
   user_id: string;
@@ -76,19 +77,6 @@ export function jinaReaderFetchOptions(m: Pick<Monitor, "text_source" | "extract
 
 function fetchJinaReader(m: Pick<Monitor, "url" | "text_source" | "extraction_mode">, policy: EgressPolicy, timeout: number) {
   return safeFetch(`https://r.jina.ai/${m.url}`, policy, timeout, 2_000_000, jinaReaderFetchOptions(m));
-}
-
-async function cdpScreenshot(context: BrowserContext, page: Page, clip?: { x: number; y: number; width: number; height: number }) {
-  const cdp = await context.newCDPSession(page);
-  try {
-    const captured = await cdp.send("Page.captureScreenshot", {
-      format: "png",
-      fromSurface: true,
-      captureBeyondViewport: Boolean(clip),
-      ...(clip ? { clip: { ...clip, scale: 1 } } : {}),
-    });
-    return Buffer.from(captured.data, "base64");
-  } finally { await cdp.detach().catch(() => {}); }
 }
 
 const boxIsClose = (a: { x: number; y: number; width: number; height: number }, b: { x: number; y: number; width: number; height: number }) =>
@@ -242,13 +230,7 @@ export async function capture(
     enterStage("proxy_initialization");
     proxy = await browserProxy(policy);
     enterStage("browser_launch");
-    browser = await chromium.launch({
-      headless: true,
-      timeout: Math.max(1, deadline - Date.now()),
-      chromiumSandbox: true,
-      executablePath: cfg.PLAYWRIGHT_EXECUTABLE_PATH,
-      proxy: { server: proxy.url, bypass: "<-loopback>" },
-    });
+    browser = await launchCaptureBrowser(cfg, proxy.url, Math.max(1, deadline - Date.now()));
     enterStage("browser_context");
     const context = await browser.newContext({
       viewport: { width: 1280, height: 900 },
@@ -408,7 +390,7 @@ export async function capture(
         if (m.mask_selectors.length) screenshot = await page.screenshot({ ...options, clip: bounds });
         else {
           const scroll = await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
-          screenshot = await cdpScreenshot(context, page, { x: bounds.x + scroll.x, y: bounds.y + scroll.y, width: bounds.width, height: bounds.height });
+          screenshot = await captureClipPng(cfg.CAPTURE_ENGINE, context, page, { x: bounds.x + scroll.x, y: bounds.y + scroll.y, width: bounds.width, height: bounds.height }, Math.max(1, deadline - Date.now()));
         }
       } else {
         const size =
@@ -429,7 +411,7 @@ export async function capture(
         checkDimensions(size, limits);
         enterStage("screenshot_rasterization");
         screenshot = m.capture_mode === "viewport" && !m.mask_selectors.length
-          ? await cdpScreenshot(context, page)
+          ? await captureViewportPng(cfg.CAPTURE_ENGINE, context, page, Math.max(1, deadline - Date.now()))
           : await page.screenshot({ ...options, fullPage: m.capture_mode === "full_page" });
       }
       enterStage("image_validation");
