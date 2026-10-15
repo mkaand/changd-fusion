@@ -1,0 +1,73 @@
+name: Servo Benchmark
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/servo-fetch-visual-engine
+    paths:
+      - .github/workflows/servo-benchmark.yml
+      - server/Dockerfile
+      - server/package.json
+      - server/package-lock.json
+      - server/scripts/servo-benchmark-chromium.mjs
+      - server/scripts/servo-benchmark-fixture.mjs
+      - server/scripts/servo-benchmark-wrapper.sh
+      - server/scripts/servo-benchmark.mjs
+      - docs/servo-fetch-feasibility.md
+
+permissions:
+  contents: read
+
+concurrency:
+  group: servo-benchmark-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  benchmark:
+    name: Chromium vs Servo
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24.19.0
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install benchmark dependencies
+        working-directory: server
+        run: npm ci
+
+      - name: Build pinned Chromium image
+        run: docker build --tag changd-fusion-api:servo-benchmark server
+
+      - name: Pull and verify pinned Servo image
+        env:
+          SERVO_IMAGE: ghcr.io/konippi/servo-fetch@sha256:cd026015488a45bb1647c61d75bf94731e78b1428ffc091c725e23409ec6ec7a
+        run: |
+          docker pull "$SERVO_IMAGE"
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.version" }}' "$SERVO_IMAGE")" = "0.15.1"
+          test "$(docker image inspect --format '{{ index .Config.Labels "org.opencontainers.image.revision" }}' "$SERVO_IMAGE")" = "fa90cf0b6f76def0b7d5e9baeb13b9aceeb232b4"
+
+      - name: Run isolated benchmark
+        working-directory: server
+        env:
+          BENCHMARK_OUTPUT_DIR: ${{ runner.temp }}/servo-benchmark-results
+          SERVO_IMAGE: ghcr.io/konippi/servo-fetch@sha256:cd026015488a45bb1647c61d75bf94731e78b1428ffc091c725e23409ec6ec7a
+          CHROMIUM_IMAGE: changd-fusion-api:servo-benchmark
+          BENCHMARK_RUNS: "7"
+        run: npm run benchmark:servo
+
+      - name: Upload benchmark data and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: servo-cloud-benchmark-v1
+          path: ${{ runner.temp }}/servo-benchmark-results
+          if-no-files-found: error
+          retention-days: 30

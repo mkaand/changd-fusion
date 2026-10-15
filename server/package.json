@@ -15,6 +15,7 @@
     "migrate": "tsx src/migrate.ts",
     "create-admin": "tsx src/create-admin.ts",
     "reset-admin-password": "tsx src/reset-admin-password.ts",
+    "benchmark:servo": "node scripts/servo-benchmark.mjs",
     "test": "tsx --test --test-timeout=30000 test/*.test.ts",
     "test:integration": "node scripts/integration-runner.mjs"
   },

@@ -1,121 +1,173 @@
-# Servo Fetch feasibility audit
+# Servo Fetch feasibility and benchmark
 
-## Scope
+## Scope and decision boundary
 
-This document records the pre-integration audit for an experimental Servo
-capture engine. It is intentionally not an integration guide: no Servo binary,
-image, dependency, environment variable, or fallback has been added to Changd
-Fusion while the security blocker below remains unresolved.
+This branch contains a standalone, reproducible benchmark for Servo Fetch. It
+does **not** add Servo to the Changd Fusion worker, change monitor data, or
+certify Servo for production network access. The benchmark answers the narrower
+question of whether Servo's rendering performance and output quality justify
+engineering a Changd-specific adapter.
 
-The review used upstream `konippi/servo-fetch` commit
-`914241df0c2deed3b1bcb10d4d637a9a2049883d` (workspace version `0.15.1`),
-licensed `MIT OR Apache-2.0`.
+The runtime is Servo Fetch `0.15.1` from release commit
+`fa90cf0b6f76def0b7d5e9baeb13b9aceeb232b4` (`MIT OR Apache-2.0`). The benchmark
+pins the official amd64 image by manifest digest:
 
-## Current Changd Fusion contract
+```text
+ghcr.io/konippi/servo-fetch@sha256:cd026015488a45bb1647c61d75bf94731e78b1428ffc091c725e23409ec6ec7a
+```
 
-Browser capture validates each target through `EgressPolicy` and routes
-Chromium through a per-capture local proxy. The proxy validates DNS for every
-connection, connects to the validated address rather than performing a second
-hostname lookup, and mediates redirects, subresources, and WebSockets. The
-same Playwright page is then used for text extraction and screenshots. It also
-supports browser steps, XPath/CSS lookup, clipping, masking, stable element
-geometry, fixed `1280 x 900` viewport rendering, cancellation, and cleanup.
+The earlier upstream audit also inspected commit
+`914241df0c2deed3b1bcb10d4d637a9a2049883d`. The executable benchmark uses the
+released artifact, not an unversioned checkout or a floating image tag. CI
+checks the image version and source revision labels before execution.
 
-## Upstream surface audit
+## Reproducible benchmark
 
-| Capability | Status | Evidence / consequence |
+The manually triggerable `Servo Benchmark` workflow builds the repository's
+pinned Chromium image, pulls the pinned Servo image, and runs:
+
+```bash
+cd server
+npm ci
+BENCHMARK_OUTPUT_DIR=/tmp/servo-benchmark-results npm run benchmark:servo
+```
+
+The harness creates an internal-only Docker bridge and a synthetic fixture
+server. The bridge has no external route. Proxy variables are cleared inside
+all benchmark containers. Containers receive no production secrets, database,
+Docker socket, persistent browser profile, notification configuration, or host
+network. The fixture-only `--allow-private-addresses` flag is passed to Servo
+solely because the target is on this isolated internal bridge; it must never be
+copied into a production adapter.
+
+Both engines use single-capture concurrency and the same limits: 2 CPUs, 1 GiB
+memory, 256 PIDs, 256 MiB shared memory, a read-only root filesystem, an
+ephemeral `/tmp`, and the project's Chromium seccomp profile. Chromium runs as
+the image's non-root `node` user with its setuid sandbox; Servo runs as its
+official image's non-root `servo` user with all capabilities dropped and
+`no-new-privileges` enabled.
+
+Normal fixtures cover static HTML/CSS, JavaScript-rendered content, a large DOM
+and CSS grid, SVG images and installed fonts, a long full-page layout, a delayed
+DOM update, and delayed resources. Separate diagnostics cover a broken HTTP
+response and a forced timeout. Each normal fixture has one cold run, one
+unmeasured warm-up, and at least seven measured fresh-process runs per engine.
+Cold and warm results remain separate.
+
+The artifacts contain:
+
+- `benchmark-results.json`: machine-readable environment, provenance, per-run
+  timing, CPU, memory, dimensions, PNG validity, cleanup, and comparison data;
+- `benchmark-summary.md`: per-fixture and aggregate human-readable results;
+- `screenshots/*.png`: one deterministic representative image per engine and
+  normal fixture;
+- `SHA256SUMS`: hashes for the JSON, Markdown, and screenshots.
+
+Capture-process wall time is the primary engine measurement. Fresh-container
+end-to-end time is also recorded separately because container rootfs startup
+and cleanup are runner/storage-driver effects rather than browser capture time.
+Chromium additionally reports launch, navigation, settle, and screenshot stage
+times. Servo's CLI exposes only total runtime, so unavailable stage values are
+left null rather than estimated.
+
+## Current runtime findings
+
+The synthetic runtime tests establish the following without relying on README
+claims:
+
+- Servo starts repeatedly as a non-root process and generates valid PNG files.
+- JavaScript executes and delayed DOM updates are visible after the configured
+  settle interval.
+- CSS grid, images, installed fonts, viewport captures, and long full-page
+  captures render at the expected `1280 x 800` viewport width.
+- Full-page height matches the deterministic content in the benchmark fixture.
+- Explicit timeouts fail and leave no child process behind in the container.
+- A deliberately broken HTTP response is **not** rejected by Servo Fetch
+  `0.15.1`; it exits successfully with an engine-generated error-page PNG.
+  Chromium rejects the same fixture. A Changd adapter must treat this as a
+  compatibility defect, not a successful capture.
+
+Exact measurements and pixel-difference percentages belong to the workflow
+artifact because they depend on the CI runner. A local smoke run is only a
+harness check and is not evidence of Amsterdam VPS performance.
+
+## Existing Changd Fusion capture contract
+
+Changd validates each browser target through `EgressPolicy` and routes Chromium
+through a per-capture local proxy. That proxy resolves and validates every
+connection, pins the connection to an authorized address, and mediates
+redirects, subresources, and WebSockets. The same Playwright page is used for
+text extraction and screenshots. Existing monitors may also depend on browser
+steps, CSS/XPath regions, clipping, masks, stable element geometry, a fixed
+`1280 x 900` viewport, cancellation, and bounded cleanup.
+
+The benchmark deliberately does not claim to satisfy this application
+contract.
+
+## Servo feature and extensibility matrix
+
+| Capability | Classification | Evidence and adapter consequence |
 | --- | --- | --- |
-| JavaScript and CSS rendering | Available | Servo is embedded with SpiderMonkey and CSS layout. Rendering accuracy has not been benchmarked against Changd fixtures. |
-| PNG viewport screenshot | Available, incompatible contract | `screenshot(url, { fullPage })` returns PNG, but its public Node API does not expose viewport dimensions, device scale, or a session handle. Upstream defaults to `1280 x 800`, not Changd's `1280 x 900`. |
-| Full-page PNG | Available, incompatible limits | Upstream resizes its viewport and internally caps dimensions at 16384. It cannot accept Changd's configured dimensions/pixel limits before capture. |
-| CSS region screenshot | Unsupported | Screenshot accepts URL and `fullPage` only. CSS selection is available for text extraction, not screenshot clipping. |
-| XPath region screenshot | Unsupported | No XPath lookup or screenshot clipping API is exposed. |
-| Dynamic-region masks | Unsupported | No screenshot mask API is exposed. |
-| Browser Steps | Unsupported | The API offers one optional JavaScript expression, not Changd's click/fill/wait/scroll workflow or private-value safeguards. |
-| Stable viewport/device scale | Unsupported | No public viewport or device-scale configuration. |
-| Same-session text plus screenshot | Unsupported | The upstream CLI documents fresh workers for page tools. Its Node `screenshot()` call is independent from `fetch()` / `evaluate()`. Combined monitors could observe different page states. |
-| Timeout and cancellation | Partially available | Timeout and `AbortSignal` are exposed, but worker termination/cleanup still needs an integration-specific, independently tested process boundary. |
-| Container prerequisites | Partial | Upstream documents Linux EGL/font dependencies and `xvfb-run`; this has not been reconciled with Changd's rootless seccomp profile. |
+| JavaScript and CSS rendering | **A: upstream** | Proved by the JavaScript, dynamic, static, and heavy-layout fixtures. |
+| Viewport PNG | **A: upstream** | Proved through the released CLI. The upstream viewport is fixed at `1280 x 800`, not Changd's `1280 x 900`. |
+| Full-page PNG | **A: upstream** | Proved by the long fixture. Upstream internally caps dimensions at 16384. |
+| Same-render text and screenshot | **B: thin Rust adapter** | A `FetchOptions::screenshot` result contains PNG, rendered HTML, and `inner_text` from the same `Page`, but the released CLI returns only PNG. |
+| CSS text extraction | **A: upstream** | `Page` supports CSS-scoped article/Markdown extraction. It does not expose a CSS element screenshot. |
+| CSS element screenshot | **C: upstream change needed** | The public screenshot interface accepts URL/full-page only. Correct same-render element bounds are not exposed. |
+| XPath element screenshot | **C: upstream change needed** | No public XPath lookup plus same-render screenshot clipping contract exists. |
+| DOM-bound element cropping | **C: upstream change needed** | PNG cropping itself is straightforward, but a trusted bounding rectangle from the exact captured page is unavailable. Coordinates from a second fetch are unsafe. |
+| Screenshot masking | **C: upstream change needed** | Post-processing is possible only after same-render mask geometry is exposed. Current public APIs do not provide it. |
+| Browser Steps | **C: substantial upstream/adapter work** | One evaluation expression is not equivalent to Changd's ordered click/fill/wait/scroll flow or private-value restrictions. Fetch modes cannot combine arbitrary steps and screenshot capture. |
+| Stable configurable viewport/device scale | **C: upstream change needed** | Release API exposes neither viewport dimensions nor device scale. |
+| Strict failure status | **C: upstream change or robust status API** | The invalid-response fixture produces a successful error-page screenshot, and the returned page contract does not expose a response status sufficient for fail-closed handling. |
+| Secure outbound proxy integration | **C: upstream change needed** | No supported hook forces navigation, redirects, subresources, and WebSockets through Changd's pinned-IP proxy. |
+| Production SSRF equivalence | **D: blocked with current release** | Initial-host policy is not connection-time DNS pinning and cannot replace Changd's proxy. |
 
-## Security blocker: egress equivalence
+`A` means the released upstream interface already supports the capability. `B`
+means a small adapter can use an existing supported library contract. `C` means
+the current public interface is insufficient and upstream or a carefully
+maintained fork would have to expose additional same-session behavior. `D`
+means production enablement is unsafe or unknown until the stated blocker is
+resolved.
 
-Upstream's `NetworkPolicy::STRICT` rejects literal/private addresses and a
-small hostname denylist before fetch. It does not resolve a hostname, validate
-every resolved address, and pin the connection to that validated address. The
-public screenshot API also has no proxy option. Consequently a public hostname
-that resolves or rebinds to a private address after validation can bypass the
-property enforced by Changd Fusion's `EgressPolicy` / `browserProxy` design.
+## Security boundary
 
-The upstream policy therefore cannot be treated as equivalent for:
+Servo Fetch strict mode rejects literal/private addresses and selected
+hostnames, but it does not implement Changd's resolve-validate-pin property for
+every connection. Its screenshot API has no supported proxy/transport hook.
+Therefore the current release is not equivalent for DNS rebinding, redirects,
+subresources, WebSockets, or the existing pinned-IP browser proxy.
 
-- DNS rebinding prevention;
-- redirect and subresource connection-time validation;
-- WebSocket mediation;
-- enforcement through Changd's pinned-IP proxy.
-
-Running Servo in the normal worker network would weaken SSRF protection. Using
-the documented `allow-private-addresses` switch would weaken it further and is
-not acceptable. A fallback to Chromium while reporting a Servo capture would
-also be incorrect.
+The isolated benchmark provides no route from Servo to production or private
+services and is safe for synthetic performance measurement. It is not a reason
+to run Servo in the normal worker network. A future adapter must first gain an
+upstream-supported transport hook or an independently reviewed external egress
+boundary with equivalent connection-time enforcement. It must also reject
+unsupported monitor capabilities rather than silently falling back while
+labeling a capture as Servo.
 
 ## Existing-monitor compatibility
 
-The following existing configurations cannot be truthfully supported by the
-current upstream public interface: element captures using CSS or XPath,
-masked visual captures, Browser Steps, private-value workflows, and combined
-text + visual captures requiring one consistent session. Jina Reader-only,
-HTML, and API/JSON workflows should retain their existing paths and must not
-be redirected to Servo.
+Viewport-only and full-page visual captures are promising at the rendering
+layer. A Rust adapter could also return text and an image from the same Servo
+page. However, existing CSS/XPath region captures, masks, Browser Steps,
+configurable viewport assumptions, private-value steps, strict navigation
+failure detection, and production egress controls are not currently compatible.
 
-Because these are stored monitor configurations rather than opt-in new
-settings, enabling `CAPTURE_ENGINE=servo` globally would make existing monitors
-lose required behavior. That violates the no-reconfiguration requirement.
+For that reason this branch contains no `CAPTURE_ENGINE=servo` application
+switch. Jina Reader, HTML, API/JSON, scheduling, notifications, history,
+baselines, and stored monitor configurations are unchanged.
 
-## Baseline and benchmark status
+## Recommendation gate
 
-No Servo baseline transition, visual rebaseline, benchmark, or process launch
-was performed. A benchmark before security equivalence would be misleading:
-the result would use an egress model that cannot be deployed safely.
+Further adapter work is justified only if the full CI benchmark shows a
+material latency and/or resource advantage while its representative screenshots
+remain complete. Even a strong performance result authorizes only a small
+upstream prototype for proxy enforcement, strict navigation status, viewport
+configuration, and same-session region geometry. It does not authorize a
+production trial.
 
-If the blocker is resolved, a future adapter must adopt the first complete,
-validated Servo visual capture as the visual baseline without creating a
-notification; retain text baselines and all historical records; and rebaseline
-again when explicitly returning to Chromium. This requires a separately
-reviewed transition marker or equivalent state design before implementation.
-
-## Required path before reconsideration
-
-One of the following must exist before an adapter can be implemented:
-
-1. An upstream-supported proxy/transport hook that routes *all* Servo traffic
-   (navigation, redirects, subresources, and WebSockets) through Changd's
-   pinned-IP policy; or
-2. A separately reviewed network isolation design that enforces the same
-   connection-time public-address policy outside Servo, without host networking,
-   Docker socket access, or a permissive private-address escape hatch.
-
-After that, the implementation must still add explicit feature negotiation:
-unsupported monitor capabilities must fail closed with a structured,
-user-visible compatibility result rather than silently fall back or degrade.
-It must then be tested with synthetic fixtures for the existing capture
-contract, cancellation cleanup, rendering dimensions, and engine transition.
-
-## Future production trial proposal (not executed)
-
-1. Build an isolated staging deployment from this branch only after the egress
-   blocker and required feature support are implemented and independently
-   tested.
-2. Restore a sanitized copy of monitor configuration into staging, disable all
-   notification delivery, and run one scheduler only.
-3. Benchmark Chromium and Servo against synthetic and approved staging targets;
-   record latency, p95, peak RSS, CPU, PNG dimensions, visual difference,
-   timeout rate, and cleanup results.
-4. Require an explicit approval before any production trial. Preserve a recent
-   database plus capture-volume backup, select the engine with one environment
-   control, and ensure no competing scheduler writes to the production database.
-5. Roll back by restoring the Chromium application version and selecting the
-   Chromium engine. If a Servo visual baseline was adopted, perform one explicit
-   Chromium visual rebaseline without emitting a false change notification.
-
-No production access, deployment, database operation, or configuration change
-is part of this audit.
+A separately approved production trial would still require a sanitized staging
+copy with notifications disabled, no competing scheduler, successful egress
+review, explicit capability checks, backup/rollback readiness, and a separately
+designed silent visual rebaseline. None of those actions are performed here.
