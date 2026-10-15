@@ -69,6 +69,56 @@ export function compareText(before: string, after: string) {
     })),
   };
 }
+
+const wordCharacter = /[\p{L}\p{M}\p{N}_]/u;
+
+function folded(value: string) {
+  // Unicode default lower-casing expands capital dotted I to `i` + combining
+  // dot. Collapse that equivalent form so Turkish text matches the literal
+  // lowercase spelling without making unrelated accents insensitive.
+  return value.normalize("NFKC").toLocaleLowerCase("und").replace(/i\u0307/g, "i");
+}
+
+function edgeCharacter(value: string, edge: "first" | "last") {
+  const characters = Array.from(value);
+  return edge === "first" ? characters[0] : characters.at(-1);
+}
+
+/**
+ * Matches a literal Unicode word or phrase. The monitor keyword is never
+ * evaluated as a regular expression, and matches embedded in a larger word
+ * are rejected.
+ */
+export function containsKeyword(text: string, keyword: string) {
+  const haystack = folded(text);
+  const needle = folded(keyword.trim());
+  if (!needle) return false;
+  let offset = 0;
+  while (offset <= haystack.length - needle.length) {
+    const index = haystack.indexOf(needle, offset);
+    if (index < 0) return false;
+    const before = edgeCharacter(haystack.slice(0, index), "last");
+    const after = edgeCharacter(haystack.slice(index + needle.length), "first");
+    if ((!before || !wordCharacter.test(before)) && (!after || !wordCharacter.test(after)))
+      return true;
+    offset = index + Math.max(1, needle.length);
+  }
+  return false;
+}
+
+export function compareKeywordPresence(before: string, after: string, keyword: string) {
+  const wasPresent = containsKeyword(before, keyword);
+  const isPresent = containsKeyword(after, keyword);
+  if (wasPresent === isPresent) return { changed: false, parts: [] };
+  return {
+    changed: true,
+    parts: [{
+      value: keyword,
+      added: isPresent,
+      removed: wasPresent,
+    }],
+  };
+}
 export interface VisualComparator {
   compare: typeof compareVisual;
 }

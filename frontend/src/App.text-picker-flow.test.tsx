@@ -47,7 +47,7 @@ it("uses the real mobile TextPicker and preserves the draft through apply, remou
   await user.click(screen.getByText("Advanced settings", { exact: true }));
   await user.click(screen.getByLabelText("Text content source"));
   await user.click(screen.getByText(/Jina Reader —/, { exact: false }));
-  await user.click(screen.getByLabelText("Extraction mode"));
+  await user.click(screen.getByLabelText("Text monitoring mode"));
   await user.click(screen.getByText("Selected Text / Value", { exact: true }));
   await user.click(screen.getByRole("button", { name: "Select text from preview" }));
   const target = (await screen.findAllByRole("listitem")).find((item) => item.textContent === longLine);

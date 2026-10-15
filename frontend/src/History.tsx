@@ -129,7 +129,7 @@ export function History({ id, refresh }: { id: string; refresh: number }) {
     };
   }, [id, filter, refresh, page, retry]);
   return (
-    <>
+    <section className="monitor-history" aria-label="Monitoring history">
       <Space className="history-header">
         <Typography.Title level={3}>Monitoring history</Typography.Title>
         <Select
@@ -293,6 +293,6 @@ export function History({ id, refresh }: { id: string; refresh: number }) {
         onChange={setPage}
         hideOnSinglePage
       />
-    </>
+    </section>
   );
 }

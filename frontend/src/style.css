@@ -126,9 +126,16 @@ html, body, #root {
 .event {
   margin: 16px 0;
 }
-.history-header {
-  margin-top: 24px;
-}
+.monitor-history { margin-top: 16px; }
+.history-header { margin-top: 0; }
+.monitor-history > .ant-alert,
+.monitor-history > [role="status"],
+.monitor-history > .ant-empty,
+.event .ant-card-body > .ant-alert,
+.event .ant-card-body > .text-diff,
+.event .ant-card-body > .capture,
+.event .ant-card-body > .compare,
+.event .ant-card-body > details { margin-top: 16px; }
 .text-diff {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -309,10 +316,22 @@ details {
 .monitor-card-meta dt { color: color-mix(in srgb, var(--fusion-text, #1d1d1b) 60%, transparent); font-size: 12px; }
 .monitor-card-meta dd { margin: 2px 0 0; overflow-wrap: anywhere; }
 .monitor-card-actions .ant-btn { min-height: 44px; }
-.jina-extraction-controls, .jina-selected-text-controls { display: grid; gap: 12px; min-width: 0; }
-.jina-extraction-mode { margin-bottom: 0 !important; }
+.text-monitoring-controls, .jina-selected-text-controls { display: grid; gap: 12px; min-width: 0; }
+.text-monitoring-controls > .ant-form-item,
+.text-monitoring-mode { margin-bottom: 0 !important; }
+.text-monitoring-mode { display: grid; gap: 8px; min-width: 0; }
+.text-monitoring-mode .ant-radio-group,
+.notification-direction-control .ant-radio-group { display: flex; flex-wrap: wrap; gap: 8px 16px; min-width: 0; }
+.text-monitoring-mode .ant-radio-button-wrapper { height: auto; min-height: 40px; padding-block: 8px; white-space: normal; }
+.text-monitoring-mode-help { display: block; overflow-wrap: anywhere; }
 .jina-reader-notice { overflow-wrap: anywhere; }
 .jina-selected-text-controls > .ant-btn { justify-self: start; min-height: 44px; }
+@media (max-width: 700px) {
+  .text-monitoring-controls, .jina-selected-text-controls { gap: 16px; }
+  .text-monitoring-mode .ant-radio-group { display: grid; grid-template-columns: 1fr; width: 100%; }
+  .text-monitoring-mode .ant-radio-button-wrapper { width: 100%; text-align: center; }
+  .notification-direction-control .ant-radio-group { display: grid; gap: 12px; }
+}
 .mobile-loading { display: grid; min-height: 180px; place-items: center; }
 .delivery-card-list { display: grid; gap: 10px; margin-top: 12px; }
 .delivery-details { margin: 10px 0; overflow-wrap: anywhere; }

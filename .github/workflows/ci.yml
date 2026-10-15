@@ -57,6 +57,16 @@ jobs:
         timeout-minutes: 10
         env:
           TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/postgres
+          UI_SCREENSHOT_DIR: ${{ runner.temp }}/ui-screenshots
+      - name: Upload synthetic documentation screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: synthetic-ui-screenshots
+          path: |
+            ${{ runner.temp }}/ui-screenshots/capture-settings-mobile.png
+            ${{ runner.temp }}/ui-screenshots/history-mobile.png
+          if-no-files-found: error
       - name: Privacy scan (also on test failure)
         if: always()
         run: node scripts/privacy-scan.mjs

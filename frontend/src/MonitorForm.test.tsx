@@ -51,20 +51,66 @@ it("offers focused Jina extraction modes and hides incompatible browser controls
   const user = userEvent.setup();
   render(<Fixture />);
   await user.click(screen.getByText("Advanced settings", { exact: true }));
-  expect(screen.queryByLabelText("Extraction mode")).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Text monitoring mode")).toBeInTheDocument();
   await user.click(screen.getByLabelText("Text content source"));
   await user.click(screen.getByText(/Jina Reader/));
-  expect(screen.getByLabelText("Extraction mode")).toBeInTheDocument();
+  expect(screen.getByLabelText("Text monitoring mode")).toBeInTheDocument();
   expect(screen.queryByText("Product Price", { exact: true })).not.toBeInTheDocument();
   expect(screen.queryByLabelText("Text extraction method")).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "Add browser step" })).not.toBeInTheDocument();
-  await user.click(screen.getByLabelText("Extraction mode"));
+  await user.click(screen.getByLabelText("Text monitoring mode"));
   await user.click(screen.getByText("Selected Text / Value", { exact: true }));
   expect(screen.getByRole("button", { name: "Select text from preview" })).toBeInTheDocument();
 });
 
+it("uses one shared notification direction and configures Direct Browser keyword presence", async () => {
+  const user = userEvent.setup();
+  render(<Fixture />);
+  await user.click(screen.getByText("Advanced settings", { exact: true }));
+  expect(screen.getAllByLabelText("Notification direction")).toHaveLength(1);
+  await user.click(screen.getByText("Keyword Presence", { exact: true }));
+  expect(screen.getByLabelText("Keyword")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Select text from preview" })).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Text selector (empty = visible page text)")).toBeInTheDocument();
+  await user.type(screen.getByLabelText("Keyword"), "Kaan");
+  await user.click(screen.getByLabelText("Removed only"));
+  current.setFieldsValue({ name: "Keyword monitor", url: "https://example.com" });
+  const payload = JSON.parse(JSON.stringify(await current.validateFields()));
+  expect(payload).toMatchObject({
+    text_source: "direct",
+    extraction_mode: "keyword_presence",
+    keyword: "Kaan",
+    text_direction: "removed",
+  });
+});
+
+it("offers Keyword Presence for Jina while keeping Selected Text picker-only UI isolated", async () => {
+  const user = userEvent.setup();
+  render(<Fixture />);
+  await user.click(screen.getByText("Advanced settings", { exact: true }));
+  await user.click(screen.getByLabelText("Text content source"));
+  await user.click(screen.getByText(/Jina Reader —/));
+  await user.click(screen.getByText("Keyword Presence", { exact: true }));
+  expect(screen.getByLabelText("Keyword")).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Select text from preview" })).not.toBeInTheDocument();
+  expect(screen.getByText(/Watches whether a literal word or phrase exists/)).toBeInTheDocument();
+  await user.click(screen.getByText("Selected Text / Value", { exact: true }));
+  expect(screen.queryByLabelText("Keyword")).not.toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Select text from preview" })).toBeInTheDocument();
+  expect(screen.getAllByLabelText("Notification direction")).toHaveLength(1);
+});
+
+it("preserves legacy notification direction values", async () => {
+  const user = userEvent.setup();
+  render(<Fixture />);
+  await user.click(screen.getByText("Advanced settings", { exact: true }));
+  current.setFieldsValue({ name: "Legacy direction", url: "https://example.com", text_direction: "added" });
+  await waitFor(() => expect(screen.getByLabelText("Added only")).toBeChecked());
+  expect((await current.validateFields() as any).text_direction).toBe("added");
+});
+
 it.each([
-  ["Full text (default)", "full_text"],
+  ["Full Text Changes", "full_text"],
   ["Selected Text / Value", "selected_text"],
 ])("submits Direct Browser with full text after switching from Jina %s", async (label, mode) => {
   const user = userEvent.setup();
@@ -73,7 +119,7 @@ it.each([
   await user.click(screen.getByLabelText("Text content source"));
   await user.click(screen.getByText(/Jina Reader —/));
   if (mode !== "full_text") {
-    await user.click(screen.getByLabelText("Extraction mode"));
+    await user.click(screen.getByLabelText("Text monitoring mode"));
     await user.click(screen.getByText(label, { exact: true }));
   }
   if (mode === "selected_text") current.setFieldValue("extraction_rule", { version: 1, kind: "bounded_context", before: "Before", after: "After", max_length: 64 });
@@ -90,7 +136,7 @@ it("restores unsaved Jina extraction settings when switching back before save", 
   await user.click(screen.getByText("Advanced settings", { exact: true }));
   await user.click(screen.getByLabelText("Text content source"));
   await user.click(screen.getByText(/Jina Reader —/));
-  await user.click(screen.getByLabelText("Extraction mode"));
+  await user.click(screen.getByLabelText("Text monitoring mode"));
   await user.click(screen.getByText("Selected Text / Value", { exact: true }));
   const rule = { version: 1, kind: "bounded_context", before: "Availability", after: "Delivery", max_length: 64 };
   current.setFieldValue("extraction_rule", rule);
@@ -108,7 +154,7 @@ it("includes the applied Selected Text rule in the JSON payload used to save a n
   await user.click(screen.getByText("Advanced settings", { exact: true }));
   await user.click(screen.getByLabelText("Text content source"));
   await user.click(screen.getByText(/Jina Reader —/));
-  await user.click(screen.getByLabelText("Extraction mode"));
+  await user.click(screen.getByLabelText("Text monitoring mode"));
   await user.click(screen.getByText("Selected Text / Value", { exact: true }));
   const rule = { version: 1, kind: "bounded_context", before: "Price\n", after: "\nSeller", max_length: 64 } as const;
   current.setFieldsValue({ name: "Selected value", url: "https://example.com/product", extraction_rule: rule });

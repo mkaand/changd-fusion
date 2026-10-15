@@ -45,7 +45,8 @@ const monitorInput = z
     text_enabled: z.boolean().default(true),
     text_direction: z.enum(["added", "removed", "both"]).default("both"),
     text_source: z.enum(["direct", "jina"]).default("direct"),
-    extraction_mode: z.enum(["full_text", "selected_text"]).default("full_text"),
+    extraction_mode: z.enum(["full_text", "selected_text", "keyword_presence"]).default("full_text"),
+    keyword: z.string().trim().min(1).max(200).nullable().default(null),
     extraction_rule: z.union([
       z.object({
         version: z.literal(1), kind: z.literal("bounded_context"),
@@ -109,11 +110,17 @@ const monitorInput = z
   .refine((m) => m.text_source === "direct" || (m.kind === "browser" && m.text_enabled && !m.visual_enabled), {
     message: "Jina Reader is available only for text-only Browser monitors",
   })
-  .refine((m) => m.extraction_mode === "full_text" || m.text_source === "jina", {
-    message: "Special extraction modes require Jina Reader",
+  .refine((m) => m.extraction_mode !== "selected_text" || m.text_source === "jina", {
+    message: "Selected Text extraction requires Jina Reader",
   })
   .refine((m) => m.extraction_mode !== "selected_text" || !!m.extraction_rule, {
     message: "Selected Text extraction requires a validated rule",
+  })
+  .refine((m) => m.extraction_mode !== "keyword_presence" || !!m.keyword, {
+    message: "Keyword Presence extraction requires a keyword",
+  })
+  .refine((m) => m.extraction_mode !== "keyword_presence" || m.kind === "browser", {
+    message: "Keyword Presence extraction requires a Browser monitor",
   })
   .refine(
     (m) => m.kind === "browser" || (m.text_enabled && !m.visual_enabled),

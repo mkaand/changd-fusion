@@ -124,7 +124,58 @@ test("fresh migration is repeatable and decimal columns are NUMERIC", async () =
     "SELECT data_type FROM information_schema.columns WHERE table_name='fusion_events' AND column_name='visual_percent'",
   );
   assert.equal(r.rows[0].data_type, "numeric");
+  assert.equal(
+    (await pool.query("SELECT data_type FROM information_schema.columns WHERE table_name='fusion_monitors' AND column_name='keyword'")).rows[0].data_type,
+    "text",
+  );
   assert.equal(Number((await pool.query("SELECT count(*) FROM fusion_migrations")).rows[0].count), expectedMigrationCount);
+});
+test("migration 011 to 012 preserves existing monitors, baselines, and history", async () => {
+  const name = "fusion_upgrade_012_" + randomUUID().replaceAll("-", "");
+  const url = new URL(dbURL);
+  url.pathname = "/" + name;
+  const upgrade = makePool(url.href);
+  try {
+    await admin.query(`CREATE DATABASE ${name}`);
+    await upgrade.query("CREATE TABLE fusion_migrations(name text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())");
+    const migrationDir = path.resolve(import.meta.dirname, "../../migrations");
+    const migrations = (await readdir(migrationDir)).filter((file) => /^0(?:0[1-9]|1[01])_.+\.sql$/.test(file)).sort();
+    assert.equal(migrations.at(-1), "011_public_access_security.sql");
+    for (const migration of migrations) {
+      const sql = await readFile(path.join(migrationDir, migration), "utf8");
+      await upgrade.query("BEGIN");
+      try {
+        await upgrade.query(sql);
+        await upgrade.query("INSERT INTO fusion_migrations(name,checksum) VALUES($1,$2)", [migration, createHash("sha256").update(sql).digest("hex")]);
+        await upgrade.query("COMMIT");
+      } catch (error) {
+        await upgrade.query("ROLLBACK");
+        throw error;
+      }
+    }
+    await upgrade.query("INSERT INTO users(user_id,email,password) VALUES('upgrade-owner','upgrade@example.com','synthetic-hash')");
+    const full = (await upgrade.query("INSERT INTO fusion_monitors(user_id,name,url,kind,text_source,extraction_mode) VALUES('upgrade-owner','Existing full text','https://example.com/full','browser','direct','full_text') RETURNING id")).rows[0];
+    const selected = (await upgrade.query("INSERT INTO fusion_monitors(user_id,name,url,kind,text_source,extraction_mode,extraction_rule) VALUES('upgrade-owner','Existing selected text','https://example.com/selected','browser','jina','selected_text',$1::jsonb) RETURNING id", [JSON.stringify({ version: 1, kind: "bounded_context", before: "Before", after: "After", max_length: 80 })])).rows[0];
+    const baseline = randomUUID();
+    await upgrade.query("INSERT INTO fusion_captures(id,monitor_id,text_content) VALUES($1,$2,'Preserved baseline')", [baseline, full.id]);
+    await upgrade.query("UPDATE fusion_monitors SET baseline_id=$2,latest_capture_id=$2 WHERE id=$1", [full.id, baseline]);
+    await upgrade.query("INSERT INTO fusion_events(monitor_id,after_id,status) VALUES($1,$2,'baseline')", [full.id, baseline]);
+    await migrate(upgrade);
+    await migrate(upgrade);
+    const rows = (await upgrade.query("SELECT id,extraction_mode,extraction_rule,keyword,baseline_id,latest_capture_id FROM fusion_monitors ORDER BY name")).rows;
+    assert.equal(rows.length, 2);
+    assert.deepEqual(rows.map((row) => row.extraction_mode).sort(), ["full_text", "selected_text"]);
+    assert.ok(rows.every((row) => row.keyword === null));
+    assert.equal(rows.find((row) => row.id === full.id)?.baseline_id, baseline);
+    assert.equal(rows.find((row) => row.id === full.id)?.latest_capture_id, baseline);
+    assert.equal(rows.find((row) => row.id === selected.id)?.extraction_rule.kind, "bounded_context");
+    assert.equal((await upgrade.query("SELECT count(*) FROM fusion_events WHERE monitor_id=$1", [full.id])).rows[0].count, "1");
+    assert.equal(Number((await upgrade.query("SELECT count(*) FROM fusion_migrations")).rows[0].count), expectedMigrationCount);
+    await assert.rejects(() => upgrade.query("UPDATE fusion_monitors SET extraction_mode='keyword_presence',keyword=NULL WHERE id=$1", [full.id]));
+  } finally {
+    await upgrade.end();
+    await admin.query(`DROP DATABASE IF EXISTS ${name}`);
+  }
 });
 test("JWT, admin checks, CSRF, disabled registration and removed scheduler endpoint", async () => {
   await request(app).get("/api/v1/jobs").expect(401);
@@ -462,6 +513,73 @@ test("selected text values keep chronological baselines and existing notificatio
   await pool.query("UPDATE fusion_outbox o SET status='sent',delivered_at=now() FROM fusion_events e WHERE o.event_id=e.id AND e.monitor_id=$1", [selected.id]);
   await pool.query("UPDATE fusion_monitors SET paused=true,next_run=now()+interval '1 day' WHERE id=$1", [selected.id]);
   await pool.query("UPDATE fusion_monitors SET paused=true,next_run=now()+interval '1 day' WHERE id=$1", [direct.id]);
+});
+
+test("keyword presence persists for Direct Browser and Jina and emits only filtered presence transitions", async () => {
+  const headers = { "X-Fusion-Request": "1" };
+  const keywordApp = createApp(pool, cfg, new EgressPolicy(async () => [{ address: "8.8.8.8", family: 4 }]));
+  const keywordAgent = request.agent(keywordApp);
+  await keywordAgent.post("/api/v1/login").set(headers).send({ email: "owner@example.com", password }).expect(200);
+  await keywordAgent.post("/api/v1/jobs").set(headers).send({
+    name: "Missing keyword", url: "https://example.com/missing", kind: "browser", text_enabled: true, visual_enabled: false,
+    text_source: "direct", extraction_mode: "keyword_presence",
+  }).expect(400);
+  await keywordAgent.post("/api/v1/jobs").set(headers).send({
+    name: "Empty keyword", url: "https://example.com/empty", kind: "browser", text_enabled: true, visual_enabled: false,
+    text_source: "direct", extraction_mode: "keyword_presence", keyword: "   ",
+  }).expect(400);
+  await keywordAgent.post("/api/v1/jobs").set(headers).send({
+    name: "Oversized keyword", url: "https://example.com/long", kind: "browser", text_enabled: true, visual_enabled: false,
+    text_source: "direct", extraction_mode: "keyword_presence", keyword: "x".repeat(201),
+  }).expect(400);
+  await keywordAgent.post("/api/v1/jobs").set(headers).send({
+    name: "Invalid keyword target", url: "https://example.com/api", kind: "api", text_enabled: true, visual_enabled: false,
+    text_source: "direct", extraction_mode: "keyword_presence", keyword: "Kaan",
+  }).expect(400);
+  const jina = (await keywordAgent.post("/api/v1/jobs").set(headers).send({
+    name: "Jina keyword", url: "https://example.com/jina", kind: "browser", text_enabled: true, visual_enabled: false,
+    text_source: "jina", extraction_mode: "keyword_presence", keyword: "Kaan", paused: true,
+  }).expect(201)).body;
+  assert.equal(jina.keyword, "Kaan");
+  assert.equal(jina.extraction_mode, "keyword_presence");
+
+  const createKeywordMonitor = async (name: string, direction: "added" | "removed" | "both") =>
+    (await keywordAgent.post("/api/v1/jobs").set(headers).send({
+      name, url: `https://example.com/${direction}`, kind: "browser", text_enabled: true, visual_enabled: false,
+      text_source: "direct", extraction_mode: "keyword_presence", keyword: "Kaan", text_direction: direction,
+      channel_ids: [channelId],
+    }).expect(201)).body;
+  const take = (id: string, text: string) => runMonitor(pool, cfg, id, { force: true, capture: async () => ({ text, screenshot: null }) });
+
+  const both = await createKeywordMonitor("Keyword both", "both");
+  await take(both.id, "No matching word");
+  await take(both.id, "Kaan is present");
+  const presentBaseline = (await pool.query("SELECT baseline_id FROM fusion_monitors WHERE id=$1", [both.id])).rows[0].baseline_id;
+  await take(both.id, "Kaan remains while unrelated page text changes");
+  assert.equal((await pool.query("SELECT baseline_id FROM fusion_monitors WHERE id=$1", [both.id])).rows[0].baseline_id, presentBaseline, "unrelated text changes do not advance a keyword baseline");
+  await runMonitor(pool, cfg, both.id, { force: true, capture: async () => { throw new Error("synthetic keyword capture failure"); } });
+  assert.equal((await pool.query("SELECT baseline_id FROM fusion_monitors WHERE id=$1", [both.id])).rows[0].baseline_id, presentBaseline, "capture failure preserves the last known presence state");
+  await take(both.id, "No matching word after capture recovery");
+  const bothEvents = (await pool.query("SELECT status,text_changed,text_diff,notification_state FROM fusion_events WHERE monitor_id=$1 ORDER BY created_at,id", [both.id])).rows;
+  assert.deepEqual(bothEvents.filter((event) => event.status !== "failed").map((event) => event.status), ["baseline", "changed", "unchanged", "changed"]);
+  assert.deepEqual(bothEvents.filter((event) => event.status === "changed").map((event) => event.text_diff), [
+    [{ value: "Kaan", added: true, removed: false }],
+    [{ value: "Kaan", added: false, removed: true }],
+  ]);
+  assert.ok(bothEvents.filter((event) => event.status === "changed").every((event) => event.notification_state === "queued"));
+
+  const added = await createKeywordMonitor("Keyword added", "added");
+  await take(added.id, "Absent");
+  await take(added.id, "Kaan present");
+  await take(added.id, "Absent again");
+  assert.deepEqual((await pool.query("SELECT notification_state FROM fusion_events WHERE monitor_id=$1 AND status='changed' ORDER BY created_at,id", [added.id])).rows.map((event) => event.notification_state), ["queued", "direction_filtered"]);
+
+  const removed = await createKeywordMonitor("Keyword removed", "removed");
+  await take(removed.id, "Kaan present");
+  await take(removed.id, "Absent");
+  await take(removed.id, "Kaan present again");
+  assert.deepEqual((await pool.query("SELECT notification_state FROM fusion_events WHERE monitor_id=$1 AND status='changed' ORDER BY created_at,id", [removed.id])).rows.map((event) => event.notification_state), ["queued", "direction_filtered"]);
+  await pool.query("DELETE FROM fusion_monitors WHERE id=ANY($1::uuid[])", [[jina.id, both.id, added.id, removed.id]]);
 });
 
 test("same-monitor concurrency is rejected and configuration mutations cannot race captures", async () => {
@@ -1328,6 +1446,13 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     if (overflow.length)
       console.error("Mobile fixture overflow:", JSON.stringify(overflow));
     await page.screenshot({ path: path.join(output, "history-mobile.png") });
+    const historySpacing = await page.locator(".monitor-history").evaluate((history) => ({
+      top: Number.parseFloat(getComputedStyle(history).marginTop),
+      content: Array.from(history.querySelectorAll(".event .ant-card-body > .ant-alert, .event .ant-card-body > .text-diff"))
+        .map((element) => Number.parseFloat(getComputedStyle(element).marginTop)),
+    }));
+    assert.equal(historySpacing.top, 16, "Monitoring History keeps a 16px gap from preceding metadata");
+    assert.ok(historySpacing.content.every((margin) => margin >= 16), "history information and value blocks keep at least 16px top spacing");
     assert.ok(
       await page
         .getByRole("button", { name: "Check now", exact: true })
@@ -1397,9 +1522,32 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     assert.ok(editorBounds && editorBounds.width <= 390, "mobile editor fits the Safari-sized viewport");
     await page.getByText("Advanced settings", { exact: true }).click();
     await page.getByLabel("Screenshot capture mode", { exact: true }).waitFor();
+    const textControls = page.getByRole("region", { name: "Text monitoring settings" });
+    await textControls.waitFor();
+    assert.equal(await page.getByLabel("Notification direction", { exact: true }).count(), 1, "the editor renders one shared notification direction control");
+    for (const width of [320, 390, 430]) {
+      await page.setViewportSize({ width, height: 844 });
+      const bounds = await textControls.boundingBox();
+      assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width, `text monitoring controls fit ${width}px`);
+      const overflowing = await textControls.evaluate((controls) => Array.from(controls.querySelectorAll("*"))
+        .filter((element) => {
+          const bounds = element.getBoundingClientRect();
+          return bounds.width > 0 && (bounds.left < -1 || bounds.right > window.innerWidth + 1);
+        })
+        .map((element) => ({ tag: element.tagName, className: typeof element.className === "string" ? element.className : "" })));
+      assert.deepEqual(overflowing, [], `text monitoring controls must not overflow at ${width}px`);
+    }
+    await page.getByText("Keyword Presence", { exact: true }).click();
+    await page.getByLabel("Keyword", { exact: true }).waitFor();
+    assert.equal(await page.getByRole("button", { name: "Select text from preview", exact: true }).count(), 0, "Keyword Presence does not show the Text Picker action");
+    assert.equal(await page.getByLabel("Notification direction", { exact: true }).count(), 1, "Keyword Presence reuses the shared notification direction control");
+    await page.setViewportSize({ width: 390, height: 1400 });
+    await textControls.scrollIntoViewIfNeeded();
     await page.screenshot({
       path: path.join(output, "capture-settings-mobile.png"),
     });
+    await page.getByText("Full Text Changes", { exact: true }).click();
+    await page.setViewportSize({ width: 390, height: 844 });
     const captureMode = page.getByLabel("Screenshot capture mode", { exact: true });
     await captureMode.click();
     await page.getByText("Selected element / region", { exact: true }).last().click();

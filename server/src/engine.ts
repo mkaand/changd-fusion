@@ -2,6 +2,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { type Pool } from "./db.js";
 import { capture, type Monitor, type Capture } from "./capture.js";
 import {
+  compareKeywordPresence,
   compareText,
   pixelmatchComparator,
   type VisualComparator,
@@ -192,7 +193,9 @@ export async function runMonitor(
           VISIBLE_BROWSER_TEXT_EXTRACTION_VERSION;
       const text =
         before && m.text_enabled && !extractionTransition
-          ? compareText(before.text_content ?? "", current.text ?? "")
+          ? m.extraction_mode === "keyword_presence" && m.keyword
+            ? compareKeywordPresence(before.text_content ?? "", current.text ?? "", m.keyword)
+            : compareText(before.text_content ?? "", current.text ?? "")
           : { changed: false, parts: [] };
       stage = "comparison";
       const visual =

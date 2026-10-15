@@ -280,6 +280,11 @@ export default function FusionApp() {
         !isValidSelectedTextRule(b.extraction_rule)
       )
         throw Error("Select text and apply a valid extraction rule before saving.");
+      if (
+        b.extraction_mode === "keyword_presence" &&
+        (typeof b.keyword !== "string" || !b.keyword.trim())
+      )
+        throw Error("Enter a keyword or phrase to monitor.");
       await api(
         "/jobs" + (editing ? "/" + editing.id : ""),
         editing ? "PUT" : "POST",
