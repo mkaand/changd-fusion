@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import pixelmatch from "pixelmatch";
@@ -122,6 +122,25 @@ try {
     : { chromium: { width: chromium.width, height: chromium.height }, webkit: { width: webkit.width, height: webkit.height }, dimensionsDiffer: true };
   const serialized = JSON.stringify(output, null, 2);
   if (process.env.WEBKIT_BENCHMARK_PATH) await writeFile(process.env.WEBKIT_BENCHMARK_PATH, serialized + "\n");
+  if (process.env.GITHUB_STEP_SUMMARY) {
+    const format = (value: number) => Number.isFinite(value) ? value.toFixed(1) : "n/a";
+    const rendering = output.rendering.dimensionsDiffer
+      ? `Dimensions differ: Chromium ${output.rendering.chromium.width}x${output.rendering.chromium.height}, WebKit ${output.rendering.webkit.width}x${output.rendering.webkit.height}`
+      : `${output.rendering.differentPixels}/${output.rendering.totalPixels} pixels differ at ${output.rendering.width}x${output.rendering.height}`;
+    await appendFile(process.env.GITHUB_STEP_SUMMARY, [
+      "## Chromium and WebKit synthetic benchmark",
+      "",
+      "| Engine | Median total | P95 total | Peak child RSS | Child CPU | Success |",
+      "| --- | ---: | ---: | ---: | ---: | ---: |",
+      `| Chromium | ${format(output.chromium.medianMs)} ms | ${format(output.chromium.p95Ms)} ms | ${format(output.chromium.peakRssMb)} MiB | ${format(output.chromium.childCpuMs)} ms | ${format(output.chromium.successRate * 100)}% |`,
+      `| WebKit | ${format(output.webkit.medianMs)} ms | ${format(output.webkit.p95Ms)} ms | ${format(output.webkit.peakRssMb)} MiB | ${format(output.webkit.childCpuMs)} ms | ${format(output.webkit.successRate * 100)}% |`,
+      "",
+      `Rendering comparison: ${rendering}.`,
+      "",
+      "Each engine runs the same five synthetic captures. CI runner results do not predict Amsterdam VPS performance.",
+      "",
+    ].join("\n"));
+  }
   console.log(serialized);
   if (output.chromium.successRate !== 1 || output.webkit.successRate !== 1) process.exitCode = 1;
 } finally {
