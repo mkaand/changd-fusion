@@ -1561,7 +1561,8 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
           .filter((box) => box.width > 0);
         return { controls, left, right };
       });
-      assert.ok(layout.controls.every((control) => control.left >= layout.left - 1 && control.right <= layout.right + 1), `${source} ${mode} controls stay within the form content box at ${width}px in ${dark ? "dark" : "light"} mode`);
+      const outsideControls = layout.controls.filter((control) => control.left < layout.left - 1 || control.right > layout.right + 1);
+      assert.ok(outsideControls.length === 0, `${source} ${mode} controls stay within the form content box at ${width}px in ${dark ? "dark" : "light"} mode: ${JSON.stringify({ bounds: { left: layout.left, right: layout.right }, outsideControls })}`);
       const buttons = layout.controls.filter((control) => control.className.includes("ant-radio-button-wrapper"));
       assert.equal(buttons.length, source === "jina" ? 3 : 2, `${source} exposes the expected text-monitoring modes`);
       assert.ok(buttons.every((button) => button.height >= 44), `${source} text-monitoring buttons keep 44px touch targets`);
