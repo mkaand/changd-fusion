@@ -1537,22 +1537,16 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
         .map((element) => ({ tag: element.tagName, className: typeof element.className === "string" ? element.className : "" })));
       assert.deepEqual(overflowing, [], `text monitoring controls must not overflow at ${width}px`);
     }
-    const textSourceControl = page.getByLabel("Text content source", { exact: true });
-    await textSourceControl.click();
-    await page.getByRole("option", { name: "Jina Reader — sends the URL to a third party", exact: true }).click();
-    await page.locator(".ant-select-dropdown").waitFor({ state: "hidden" });
     await page.getByText("Keyword Presence", { exact: true }).click();
     await page.getByLabel("Keyword", { exact: true }).waitFor();
     assert.equal(await page.getByRole("button", { name: "Select text from preview", exact: true }).count(), 0, "Keyword Presence does not show the Text Picker action");
     assert.equal(await page.getByLabel("Notification direction", { exact: true }).count(), 1, "Keyword Presence reuses the shared notification direction control");
-    await page.setViewportSize({ width: 390, height: 1100 });
+    await page.setViewportSize({ width: 390, height: 1400 });
     await textControls.scrollIntoViewIfNeeded();
     await page.screenshot({
       path: path.join(output, "capture-settings-mobile.png"),
     });
-    await textSourceControl.click();
-    await page.getByRole("option", { name: "Direct browser content (default)", exact: true }).click();
-    await page.locator(".ant-select-dropdown").waitFor({ state: "hidden" });
+    await page.getByText("Full Text Changes", { exact: true }).click();
     await page.setViewportSize({ width: 390, height: 844 });
     const captureMode = page.getByLabel("Screenshot capture mode", { exact: true });
     await captureMode.click();
