@@ -316,17 +316,17 @@ details {
 .monitor-card-meta dt { color: color-mix(in srgb, var(--fusion-text, #1d1d1b) 60%, transparent); font-size: 12px; }
 .monitor-card-meta dd { margin: 2px 0 0; overflow-wrap: anywhere; }
 .monitor-card-actions .ant-btn { min-height: 44px; }
-.text-monitoring-controls, .jina-selected-text-controls { box-sizing: border-box; display: grid; gap: 12px; min-width: 0; max-width: 100%; width: 100%; }
+.text-monitoring-controls, .jina-selected-text-controls { display: grid; gap: 12px; min-width: 0; max-width: 100%; }
 .text-monitoring-controls > .ant-form-item,
 .text-monitoring-mode { margin-bottom: 0 !important; }
 .text-monitoring-controls > .ant-form-item,
-.text-monitoring-controls > .text-monitoring-mode { box-sizing: border-box; max-width: 100%; min-width: 0; width: 100%; }
+.text-monitoring-controls > .text-monitoring-mode { box-sizing: border-box; max-width: 100%; min-width: 0; }
 .text-monitoring-controls .ant-form-item-control,
 .text-monitoring-controls .ant-form-item-control-input,
 .text-monitoring-controls .ant-form-item-control-input-content,
 .text-monitoring-controls .ant-input,
 .text-monitoring-controls .ant-select,
-.text-monitoring-mode { min-width: 0; max-width: 100%; width: 100%; }
+.text-monitoring-mode { min-width: 0; max-width: 100%; }
 .text-monitoring-mode { display: grid; gap: 8px; }
 .text-monitoring-mode .ant-radio-group,
 .notification-direction-control .ant-radio-group { display: flex; flex-wrap: wrap; gap: 8px 16px; min-width: 0; max-width: 100%; }
