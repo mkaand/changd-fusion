@@ -35,6 +35,9 @@ test("resource configuration is bounded and defaults to a single Chromium captur
     CHANNEL_KEY: randomBytes(32).toString("hex"),
   };
   assert.equal(readConfig(env).CHROMIUM_CONCURRENCY, 1);
+  assert.equal(readConfig(env).CAPTURE_ENGINE, "chromium");
+  assert.equal(readConfig({ ...env, CAPTURE_ENGINE: "webkit" }).CAPTURE_ENGINE, "webkit");
+  assert.throws(() => readConfig({ ...env, CAPTURE_ENGINE: "firefox" }));
   for (const [key, value] of [
     ["CHROMIUM_CONCURRENCY", "4"],
     ["MAX_CAPTURE_PIXELS", "16000001"],

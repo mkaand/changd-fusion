@@ -30,8 +30,8 @@ jobs:
       - name: Install backend
         run: npm ci
         working-directory: server
-      - name: Install sandboxed browser
-        run: npx playwright install --with-deps chromium
+      - name: Install sandboxed browsers
+        run: npx playwright install --with-deps chromium webkit
         working-directory: server
         timeout-minutes: 5
       - name: Frontend build and tests
@@ -58,6 +58,20 @@ jobs:
         env:
           TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/postgres
           UI_SCREENSHOT_DIR: ${{ runner.temp }}/ui-screenshots
+      - name: WebKit capture and security integration
+        run: npm run test:integration
+        working-directory: server
+        timeout-minutes: 10
+        env:
+          CAPTURE_ENGINE: webkit
+          TEST_DATABASE_URL: postgresql://postgres@127.0.0.1:5432/postgres
+          UI_SCREENSHOT_DIR: ${{ runner.temp }}/ui-screenshots-webkit
+      - name: Chromium and WebKit synthetic benchmark
+        run: npm run benchmark:engines
+        working-directory: server
+        timeout-minutes: 5
+        env:
+          WEBKIT_BENCHMARK_PATH: ${{ runner.temp }}/webkit-benchmark.json
       - name: Upload synthetic documentation screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -66,6 +80,7 @@ jobs:
           path: |
             ${{ runner.temp }}/ui-screenshots/capture-settings-mobile.png
             ${{ runner.temp }}/ui-screenshots/history-mobile.png
+            ${{ runner.temp }}/webkit-benchmark.json
           if-no-files-found: error
       - name: Privacy scan (also on test failure)
         if: always()

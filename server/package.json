@@ -16,7 +16,8 @@
     "create-admin": "tsx src/create-admin.ts",
     "reset-admin-password": "tsx src/reset-admin-password.ts",
     "test": "tsx --test --test-timeout=30000 test/*.test.ts",
-    "test:integration": "node scripts/integration-runner.mjs"
+    "test:integration": "node scripts/integration-runner.mjs",
+    "benchmark:engines": "tsx scripts/benchmark-browser-engines.ts"
   },
   "dependencies": {
     "bcryptjs": "3.0.3",

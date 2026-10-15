@@ -21,7 +21,10 @@ import { mkdtemp, rm, readFile, mkdir, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import http from "node:http";
+import https from "node:https";
 import type { AddressInfo } from "node:net";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { seedPreview } from "../../src/preview-seed.js";
 import { compareVisual } from "../../src/comparison.js";
 import { telegramSummary } from "../../src/notifications.js";
@@ -45,6 +48,7 @@ let pool: Pool,
   channelId: string,
   root: string;
 const password = "synthetic-fixture-password";
+const execFileAsync = promisify(execFile);
 function managedServer(t: TestContext, handler: http.RequestListener) {
   const server = http.createServer(handler);
   t.after(() => closeServer(server));
@@ -78,7 +82,9 @@ before(async () => {
     JWT_SECRET: randomBytes(32).toString("hex"),
     CHANNEL_KEY: randomBytes(32).toString("hex"),
     DATA_DIR: root,
+    CAPTURE_ENGINE: process.env.CAPTURE_ENGINE,
     PLAYWRIGHT_EXECUTABLE_PATH: process.env.PLAYWRIGHT_EXECUTABLE_PATH,
+    WEBKIT_EXECUTABLE_PATH: process.env.WEBKIT_EXECUTABLE_PATH,
     LOG_LEVEL: "silent",
   });
   await migrate(pool);
@@ -719,6 +725,86 @@ test("real Playwright hybrid capture uses one session, selectors, masks, normali
   } finally {
     await closeServer(fixture);
     await closeServer(privateServer);
+  }
+});
+test("selected browser engine keeps redirects, subresources, WebSockets, rebinding and TLS on the authorized path", async (t) => {
+  let publicCssHits = 0, privateHits = 0, socketHits = 0, reboundHits = 0;
+  const publicFixture = managedServer(t, (req, res) => {
+    if (req.url === "/redirect") {
+      res.writeHead(302, { location: `http://private.test:${(publicFixture.address() as AddressInfo).port}/private` });
+      res.end();
+      return;
+    }
+    if (req.url === "/public.css") {
+      publicCssHits++;
+      res.setHeader("Content-Type", "text/css");
+      res.end("main{color:rgb(12,34,56)}");
+      return;
+    }
+    if (req.url === "/rebind") {
+      res.setHeader("Content-Type", "text/html");
+      res.end(`<!doctype html><main id="secure-fixture">Rebinding fixture</main><img src="http://rebind.test:${(publicFixture.address() as AddressInfo).port}/rebound.png">`);
+      return;
+    }
+    if (req.url === "/private") privateHits++;
+    if (req.url === "/rebound.png") reboundHits++;
+    res.setHeader("Content-Type", "text/html");
+    res.end(`<!doctype html><link rel="stylesheet" href="http://assets.test:${(publicFixture.address() as AddressInfo).port}/public.css"><img src="http://private.test:${(publicFixture.address() as AddressInfo).port}/private"><main id="secure-fixture">Authorized content</main><script>new WebSocket('ws://socket.test:${(publicFixture.address() as AddressInfo).port}/socket')</script>`);
+  });
+  publicFixture.on("upgrade", (_req, socket) => { socketHits++; socket.destroy(); });
+  await listenServer(publicFixture);
+  const port = (publicFixture.address() as AddressInfo).port;
+  const policy = new EgressPolicy(
+    async (host) => ["fixture.test", "assets.test", "socket.test", "tls.test"].includes(host)
+      ? [{ address: "127.0.0.1", family: 4 }]
+      : [{ address: "169.254.169.254", family: 4 }],
+    (ip) => ip === "127.0.0.1",
+    new Set([port]),
+  );
+  const base = {
+    ...monitor,
+    url: `http://fixture.test:${port}/`,
+    text_enabled: true,
+    visual_enabled: true,
+    selector: "#secure-fixture",
+    selector_type: "css",
+    ignore_selectors: [],
+    mask_selectors: [],
+    browser_steps: [],
+  };
+  const result = await capture(base, cfg, policy);
+  assert.equal(result.text, "Authorized content");
+  assert.ok(result.screenshot?.length);
+  assert.equal(publicCssHits, 1, "an allowed stylesheet traverses the pinned-IP proxy");
+  assert.equal(privateHits, 0, "a private subresource never reaches the target");
+  assert.equal(socketHits, 0, "page WebSocket attempts are closed before reaching the target");
+  await assert.rejects(capture({ ...base, url: `http://fixture.test:${port}/redirect` }, cfg, policy));
+  assert.equal(privateHits, 0, "a redirect to a private destination remains blocked");
+  let rebindLookups = 0;
+  const rebindPolicy = new EgressPolicy(
+    async () => [{ address: ++rebindLookups <= 2 ? "127.0.0.1" : "169.254.169.254", family: 4 }],
+    (ip) => ip === "127.0.0.1",
+    new Set([port]),
+  );
+  const rebound = await capture({ ...base, url: `http://rebind.test:${port}/rebind`, visual_enabled: false }, cfg, rebindPolicy);
+  assert.equal(rebound.text, "Rebinding fixture");
+  assert.equal(reboundHits, 0, "a host that rebinds after navigation cannot reach the private address");
+
+  const tlsRoot = await mkdtemp(path.join(os.tmpdir(), "fusion-tls-"));
+  const keyPath = path.join(tlsRoot, "key.pem"), certPath = path.join(tlsRoot, "cert.pem");
+  try {
+    await execFileAsync("openssl", ["req", "-x509", "-newkey", "rsa:2048", "-nodes", "-keyout", keyPath, "-out", certPath, "-subj", "/CN=tls.test", "-days", "1"]);
+    const tlsFixture = https.createServer({ key: await readFile(keyPath), cert: await readFile(certPath) }, (_req, res) => res.end("<!doctype html><main>TLS fixture</main>"));
+    t.after(() => closeServer(tlsFixture));
+    await listenServer(tlsFixture);
+    const tlsPort = (tlsFixture.address() as AddressInfo).port;
+    const tlsPolicy = new EgressPolicy(async () => [{ address: "127.0.0.1", family: 4 }], () => true, new Set([tlsPort]));
+    await assert.rejects(
+      capture({ ...base, url: `https://tls.test:${tlsPort}/` }, cfg, tlsPolicy),
+      (error: any) => error.stage === "navigation",
+    );
+  } finally {
+    await rm(tlsRoot, { recursive: true, force: true });
   }
 });
 test("text-only browser capture does not wait for an irrelevant stalled font", async (t) => {
@@ -1896,13 +1982,9 @@ test("capture modes use one browser page for text and image; limits, selector er
       "Timeout must close Chromium and its proxy promptly",
     );
     assert.equal(slowHits, 1);
-    await assert.rejects(
-      capture(
-        base,
-        { ...cfg, PLAYWRIGHT_EXECUTABLE_PATH: "/missing-synthetic-chromium" },
-        policy,
-      ),
-    );
+    await assert.rejects(capture(base, cfg.CAPTURE_ENGINE === "webkit"
+      ? { ...cfg, WEBKIT_EXECUTABLE_PATH: "/missing-synthetic-webkit" }
+      : { ...cfg, PLAYWRIGHT_EXECUTABLE_PATH: "/missing-synthetic-chromium" }, policy));
   } finally {
     await closeServer(fixture);
   }

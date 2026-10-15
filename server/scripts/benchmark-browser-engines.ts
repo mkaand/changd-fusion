@@ -1,0 +1,130 @@
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import pixelmatch from "pixelmatch";
+import { PNG } from "pngjs";
+import { capture, type Monitor } from "../src/capture.js";
+import { readConfig } from "../src/config.js";
+import { EgressPolicy } from "../src/egress.js";
+
+type ProcessSample = { cpuTicks: number; rssKb: number };
+
+async function descendants(root: number): Promise<ProcessSample> {
+  const entries = (await readdir("/proc")).filter((entry) => /^\d+$/.test(entry));
+  const rows: Array<{ pid: number; ppid: number; ticks: number; rssPages: number }> = [];
+  await Promise.all(entries.map(async (entry) => {
+    try {
+      const stat = await readFile(`/proc/${entry}/stat`, "utf8");
+      const close = stat.lastIndexOf(")");
+      const fields = stat.slice(close + 2).split(" ");
+      rows.push({ pid: Number(entry), ppid: Number(fields[1]), ticks: Number(fields[11]) + Number(fields[12]), rssPages: Number(fields[21]) });
+    } catch {}
+  }));
+  const selected = new Set([root]);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const row of rows) if (selected.has(row.ppid) && !selected.has(row.pid)) { selected.add(row.pid); changed = true; }
+  }
+  return rows.filter((row) => row.pid !== root && selected.has(row.pid)).reduce(
+    (total, row) => ({ cpuTicks: total.cpuTicks + row.ticks, rssKb: total.rssKb + row.rssPages * 4 }),
+    { cpuTicks: 0, rssKb: 0 },
+  );
+}
+
+async function measured<T>(operation: () => Promise<T>) {
+  let peakRssKb = 0, peakCpuTicks = 0, sampling = false;
+  const sample = async () => {
+    if (sampling) return;
+    sampling = true;
+    try {
+      const current = await descendants(process.pid);
+      peakRssKb = Math.max(peakRssKb, current.rssKb);
+      peakCpuTicks = Math.max(peakCpuTicks, current.cpuTicks);
+    } finally { sampling = false; }
+  };
+  const timer = setInterval(() => void sample(), 20);
+  const started = performance.now();
+  try {
+    const value = await operation();
+    await sample();
+    return { value, durationMs: performance.now() - started, peakRssMb: peakRssKb / 1024, childCpuMs: peakCpuTicks * 10 };
+  } finally { clearInterval(timer); }
+}
+
+const percentile = (values: number[], ratio: number) => [...values].sort((a, b) => a - b)[Math.max(0, Math.ceil(values.length * ratio) - 1)];
+
+const server = createServer((req, res) => {
+  if (req.url === "/asset.png") {
+    const png = new PNG({ width: 20, height: 20 });
+    png.data.fill(180);
+    res.setHeader("Content-Type", "image/png");
+    res.end(PNG.sync.write(png));
+    return;
+  }
+  if (req.url === "/slow") return;
+  res.setHeader("Content-Type", "text/html");
+  res.end(`<!doctype html><style>body{margin:0;font-family:sans-serif}.region{width:360px;height:220px;background:#1677ff;color:#fff}.masked{width:80px;height:40px;background:#f00}.tall{height:1800px}</style><main class="region"><button id="step" onclick="document.querySelector('#state').textContent='ready'">Run</button><span id="state">idle</span><img src="/asset.png"></main><div class="masked"></div><div class="tall"></div><script>document.documentElement.dataset.rendered='yes'</script>`);
+});
+await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+const port = (server.address() as AddressInfo).port;
+const root = await mkdtemp(path.join(os.tmpdir(), "fusion-browser-benchmark-"));
+const policy = new EgressPolicy(async () => [{ address: "127.0.0.1", family: 4 }], (ip) => ip === "127.0.0.1", new Set([port]));
+const base = {
+  id: "00000000-0000-4000-8000-000000000001", user_id: "fixture", name: "Engine benchmark", url: `http://fixture.test:${port}/`, kind: "browser",
+  text_enabled: true, text_source: "direct", extraction_mode: "full_text", visual_enabled: true, selector: ".region", selector_type: "css",
+  ignore_selectors: [], mask_selectors: [], ignore_text: [], normalize_whitespace: true, ignore_case: false,
+  capture_mode: "viewport", capture_selector: ".region", capture_selector_type: "css", browser_steps: [], visual_threshold: "0.35", pixel_threshold: "0.1",
+  interval_seconds: 300, baseline_id: null, latest_capture_id: null, failure_count: 0,
+} satisfies Monitor;
+const cases: Array<Partial<Monitor>> = [
+  { capture_mode: "viewport" },
+  { capture_mode: "full_page" },
+  { capture_mode: "element", capture_selector: ".region" },
+  { capture_mode: "viewport", mask_selectors: [".masked"] },
+  { capture_mode: "viewport", browser_steps: [{ action: "click", selector: "#step", selector_type: "css", timeout_ms: 5000, continue_on_error: false }] },
+];
+const output: Record<string, any> = { generatedAt: new Date().toISOString(), samplesPerEngine: cases.length, sessionReuse: "not_applicable_each_application_capture_launches_a_fresh_browser" };
+const screenshots: Record<string, Buffer> = {};
+try {
+  for (const engine of ["chromium", "webkit"] as const) {
+    const cfg = readConfig({
+      NODE_ENV: "test", DATABASE_URL: "postgresql://localhost/benchmark", JWT_SECRET: "x".repeat(32), CHANNEL_KEY: "0".repeat(64),
+      DATA_DIR: root, CAPTURE_ENGINE: engine, PLAYWRIGHT_EXECUTABLE_PATH: process.env.PLAYWRIGHT_EXECUTABLE_PATH,
+      WEBKIT_EXECUTABLE_PATH: process.env.WEBKIT_EXECUTABLE_PATH, CAPTURE_TIMEOUT_MS: "15000", LOG_LEVEL: "silent",
+    });
+    const samples: any[] = [];
+    for (const [index, overrides] of cases.entries()) {
+      try {
+        const result = await measured(() => capture({ ...base, ...overrides }, cfg, policy));
+        if (index === 0) screenshots[engine] = result.value.screenshot!;
+        samples.push({ case: index, durationMs: result.durationMs, peakRssMb: result.peakRssMb, childCpuMs: result.childCpuMs, success: true, pngBytes: result.value.screenshot?.length ?? 0, timings: result.value.timings });
+      } catch (error) {
+        samples.push({ case: index, success: false, failure: error instanceof Error ? error.name : "unknown" });
+      }
+    }
+    const successful = samples.filter((sample) => sample.success);
+    output[engine] = {
+      medianMs: percentile(successful.map((sample) => sample.durationMs), 0.5),
+      p95Ms: percentile(successful.map((sample) => sample.durationMs), 0.95),
+      peakRssMb: Math.max(0, ...successful.map((sample) => sample.peakRssMb)),
+      childCpuMs: Math.max(0, ...successful.map((sample) => sample.childCpuMs)),
+      successRate: successful.length / samples.length,
+      samples,
+    };
+  }
+  const chromium = PNG.sync.read(screenshots.chromium);
+  const webkit = PNG.sync.read(screenshots.webkit);
+  output.rendering = chromium.width === webkit.width && chromium.height === webkit.height
+    ? { width: chromium.width, height: chromium.height, differentPixels: pixelmatch(chromium.data, webkit.data, null, chromium.width, chromium.height), totalPixels: chromium.width * chromium.height }
+    : { chromium: { width: chromium.width, height: chromium.height }, webkit: { width: webkit.width, height: webkit.height }, dimensionsDiffer: true };
+  const serialized = JSON.stringify(output, null, 2);
+  if (process.env.WEBKIT_BENCHMARK_PATH) await writeFile(process.env.WEBKIT_BENCHMARK_PATH, serialized + "\n");
+  console.log(serialized);
+  if (output.chromium.successRate !== 1 || output.webkit.successRate !== 1) process.exitCode = 1;
+} finally {
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  await rm(root, { recursive: true, force: true });
+}
