@@ -200,10 +200,10 @@ try {
   }
   if (process.env.GITHUB_ACTIONS === "true") {
     const concise = [
-      `Chromium median/p95 ${output.chromium.medianMs.toFixed(1)}/${output.chromium.p95Ms.toFixed(1)} ms, peak RSS ${output.chromium.peakRssMb.toFixed(1)} MiB, CPU ${output.chromium.childCpuMs.toFixed(1)} ms`,
-      `WebKit median/p95 ${output.webkit.medianMs.toFixed(1)}/${output.webkit.p95Ms.toFixed(1)} ms, peak RSS ${output.webkit.peakRssMb.toFixed(1)} MiB, CPU ${output.webkit.childCpuMs.toFixed(1)} ms`,
+      `Chromium total median/p95 ${output.chromium.medianMs.toFixed(1)}/${output.chromium.p95Ms.toFixed(1)} ms, startup ${output.chromium.startup.median.toFixed(1)}/${output.chromium.startup.p95.toFixed(1)} ms, screenshot ${output.chromium.screenshot.median.toFixed(1)}/${output.chromium.screenshot.p95.toFixed(1)} ms, peak RSS ${output.chromium.peakRssMb.toFixed(1)} MiB, CPU ${output.chromium.childCpuMs.toFixed(1)} ms`,
+      `WebKit total median/p95 ${output.webkit.medianMs.toFixed(1)}/${output.webkit.p95Ms.toFixed(1)} ms, startup ${output.webkit.startup.median.toFixed(1)}/${output.webkit.startup.p95.toFixed(1)} ms, screenshot ${output.webkit.screenshot.median.toFixed(1)}/${output.webkit.screenshot.p95.toFixed(1)} ms, peak RSS ${output.webkit.peakRssMb.toFixed(1)} MiB, CPU ${output.webkit.childCpuMs.toFixed(1)} ms`,
       `pixel difference ${output.rendering.differentPixels ?? "dimensions differ"}/${output.rendering.totalPixels ?? "n/a"}`,
-      `timeout cleanup remaining processes Chromium ${output.chromium.timeout.remainingNewPids.length}, WebKit ${output.webkit.timeout.remainingNewPids.length}`,
+      `timeout Chromium ${output.chromium.timeout.failure} ${output.chromium.timeout.durationMs.toFixed(1)} ms, WebKit ${output.webkit.timeout.failure} ${output.webkit.timeout.durationMs.toFixed(1)} ms; remaining processes Chromium ${output.chromium.timeout.remainingNewPids.length}, WebKit ${output.webkit.timeout.remainingNewPids.length}`,
     ].join("; ");
     console.log(`::notice title=Browser engine benchmark::${concise}`);
   }
