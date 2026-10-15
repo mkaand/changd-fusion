@@ -1538,6 +1538,55 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
         .map((element) => ({ tag: element.tagName, className: typeof element.className === "string" ? element.className : "" })));
       assert.deepEqual(overflowing, [], `text monitoring controls must not overflow at ${width}px`);
     }
+    const chooseTextSource = async (label: "Direct browser content (default)" | "Jina Reader — sends the URL to a third party") => {
+      await page.getByLabel("Text content source", { exact: true }).click();
+      await page.getByText(label, { exact: true }).last().click();
+    };
+    const chooseTextMode = async (label: "Full Text Changes" | "Selected Text / Value" | "Keyword Presence") => {
+      await page.getByText(label, { exact: true }).last().click();
+    };
+    const assertTextControlBounds = async (source: "direct" | "jina", mode: string, width: number, dark: boolean) => {
+      const layout = await textControls.evaluate((section) => {
+        const form = section.closest(".monitor-editor-form");
+        if (!form) throw new Error("text monitoring form not found");
+        const formBox = form.getBoundingClientRect();
+        const style = getComputedStyle(form);
+        const left = formBox.left + Number.parseFloat(style.paddingLeft);
+        const right = formBox.right - Number.parseFloat(style.paddingRight);
+        const controls = Array.from(section.querySelectorAll(".ant-radio-button-wrapper, .ant-input, .ant-form-item-extra, .text-monitoring-mode-help, .jina-reader-notice"))
+          .map((element) => {
+            const box = element.getBoundingClientRect();
+            return { className: typeof element.className === "string" ? element.className : "", height: box.height, left: box.left, right: box.right, top: box.top, width: box.width };
+          })
+          .filter((box) => box.width > 0);
+        return { controls, left, right };
+      });
+      assert.ok(layout.controls.every((control) => control.left >= layout.left - 1 && control.right <= layout.right + 1), `${source} ${mode} controls stay within the form content box at ${width}px in ${dark ? "dark" : "light"} mode`);
+      const buttons = layout.controls.filter((control) => control.className.includes("ant-radio-button-wrapper"));
+      assert.equal(buttons.length, source === "jina" ? 3 : 2, `${source} exposes the expected text-monitoring modes`);
+      assert.ok(buttons.every((button) => button.height >= 44), `${source} text-monitoring buttons keep 44px touch targets`);
+      assert.ok(buttons.every((button) => Math.abs(button.width - buttons[0].width) < 1), `${source} text-monitoring buttons have equal widths`);
+      if (source === "jina" && width <= 430) assert.ok(buttons.every((button, index) => index === 0 || button.top >= buttons[index - 1].top + buttons[index - 1].height), `Jina Reader modes stack vertically at ${width}px`);
+      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `${source} ${mode} does not create horizontal viewport overflow at ${width}px`);
+    };
+    for (const dark of [false, true]) {
+      if ((await page.locator("html").getAttribute("data-theme")) === "dark" !== dark) {
+        await themeSwitch.click();
+        await page.waitForFunction((expected) => document.documentElement.dataset.theme === expected, dark ? "dark" : "light");
+      }
+      for (const [source, modes] of [["direct", ["Full Text Changes", "Keyword Presence"]], ["jina", ["Full Text Changes", "Selected Text / Value", "Keyword Presence"]]] as const) {
+        await chooseTextSource(source === "jina" ? "Jina Reader — sends the URL to a third party" : "Direct browser content (default)");
+        for (const mode of modes) {
+          await chooseTextMode(mode);
+          if (mode === "Keyword Presence") await page.getByLabel("Keyword", { exact: true }).waitFor();
+          for (const width of [320, 375, 390, 430, 768]) {
+            await page.setViewportSize({ width, height: 844 });
+            await assertTextControlBounds(source, mode, width, dark);
+          }
+        }
+      }
+    }
+    await chooseTextSource("Direct browser content (default)");
     await page.getByText("Keyword Presence", { exact: true }).click();
     await page.getByLabel("Keyword", { exact: true }).waitFor();
     assert.equal(await page.getByRole("button", { name: "Select text from preview", exact: true }).count(), 0, "Keyword Presence does not show the Text Picker action");
