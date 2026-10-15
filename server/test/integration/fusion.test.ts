@@ -1541,6 +1541,8 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     const chooseTextSource = async (label: "Direct browser content (default)" | "Jina Reader — sends the URL to a third party") => {
       await page.getByLabel("Text content source", { exact: true }).click();
       await page.getByText(label, { exact: true }).last().click();
+      await page.waitForFunction(() => !Array.from(document.querySelectorAll(".ant-select-dropdown"))
+        .some((dropdown) => dropdown.classList.contains("ant-slide-up-leave-active")));
     };
     const chooseTextMode = async (label: "Full Text Changes" | "Selected Text / Value" | "Keyword Presence") => {
       await page.getByText(label, { exact: true }).last().click();
