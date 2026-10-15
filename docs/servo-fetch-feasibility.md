@@ -70,6 +70,12 @@ Chromium additionally reports launch, navigation, settle, and screenshot stage
 times. Servo's CLI exposes only total runtime, so unavailable stage values are
 left null rather than estimated.
 
+The paired rendering classification is intentionally conservative: up to 5%
+different pixels is `PASS`, above 5% through 25% is `PARTIAL`, and above 25% is
+`FAIL`. PNG validity, expected dimensions, and deterministic fixture color/state
+probes are evaluated independently. This prevents a valid but materially
+different render from being labeled fully compatible.
+
 ## Current runtime findings
 
 The synthetic runtime tests establish the following without relying on README

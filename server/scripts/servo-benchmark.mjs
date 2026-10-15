@@ -202,12 +202,13 @@ const compareScreenshots = async (fixture) => {
     };
   }
   const differentPixels = pixelmatch(chromium.data, servo.data, null, chromium.width, chromium.height, { threshold: 0.1 });
+  const pixelDifferencePercent = round((differentPixels / (chromium.width * chromium.height)) * 100, 3);
   return {
-    status: "PASS",
+    status: pixelDifferencePercent <= 5 ? "PASS" : pixelDifferencePercent <= 25 ? "PARTIAL" : "FAIL",
     chromiumDimensions: `${chromium.width}x${chromium.height}`,
     servoDimensions: `${servo.width}x${servo.height}`,
     differentPixels,
-    pixelDifferencePercent: round((differentPixels / (chromium.width * chromium.height)) * 100, 3),
+    pixelDifferencePercent,
   };
 };
 
@@ -285,6 +286,7 @@ const markdown = (result) => {
     "- Both engines ran on the same Docker internal network, fixture content, concurrency (one), resource limits, viewport target, and settling delays.",
     "- Servo does not expose navigation/startup/screenshot stage timings separately; those fields are reported as unavailable rather than estimated.",
     "- Font and engine rendering differences make pixel-identical output neither expected nor required; fixture-specific state and completeness probes are also recorded in JSON.",
+    "- Paired rendering is PASS at up to 5% differing pixels, PARTIAL above 5% through 25%, and FAIL above 25%; PNG validity, dimensions, and fixture probes remain independent checks.",
   );
   return `${lines.join("\n")}\n`;
 };
