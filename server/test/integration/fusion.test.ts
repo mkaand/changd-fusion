@@ -1476,7 +1476,8 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
       const [detailsBounds, checkBounds, editBounds] = await Promise.all([details.boundingBox(), checkNow.boundingBox(), edit.boundingBox()]);
       assert.ok(detailsBounds && checkBounds && editBounds, "mobile monitor actions have measurable bounds");
       assert.ok(Math.abs(detailsBounds.y - editBounds.y) < 2, `Details and Edit share the first row at ${width}px`);
-      assert.ok(checkBounds.y >= detailsBounds.y + detailsBounds.height, `Check now is below the first row at ${width}px`);
+      const firstRowBottom = Math.max(detailsBounds.y + detailsBounds.height, editBounds.y + editBounds.height);
+      assert.ok(Math.abs(checkBounds.y - firstRowBottom - 12) < 1, `Check now keeps a 12px row gap at ${width}px`);
       assert.ok(checkBounds.width >= detailsBounds.width + editBounds.width - 4, `Check now spans both columns at ${width}px`);
       assert.ok(checkBounds.x >= 0 && checkBounds.x + checkBounds.width <= width, `monitor actions fit ${width}px without overflow`);
       assert.ok(detailsBounds.height >= 44 && editBounds.height >= 44 && checkBounds.height >= 44, `monitor actions keep 44px targets at ${width}px`);
