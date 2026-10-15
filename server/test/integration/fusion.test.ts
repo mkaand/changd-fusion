@@ -1553,7 +1553,7 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
         const style = getComputedStyle(form);
         const left = formBox.left + Number.parseFloat(style.paddingLeft);
         const right = formBox.right - Number.parseFloat(style.paddingRight);
-        const controls = Array.from(section.querySelectorAll(".ant-radio-button-wrapper, .ant-input, .ant-form-item-extra, .text-monitoring-mode-help, .jina-reader-notice"))
+        const controls = Array.from(section.querySelectorAll(".ant-radio-button-wrapper, .ant-select, input.ant-input:not(.ant-select-selection-search-input), .ant-form-item-extra, .text-monitoring-mode-help, .jina-reader-notice"))
           .map((element) => {
             const box = element.getBoundingClientRect();
             return { className: typeof element.className === "string" ? element.className : "", height: box.height, left: box.left, right: box.right, top: box.top, width: box.width };
