@@ -69,10 +69,14 @@ it("uses one shared notification direction and configures Direct Browser keyword
   await user.click(screen.getByText("Advanced settings", { exact: true }));
   expect(screen.getAllByLabelText("Notification direction")).toHaveLength(1);
   await user.click(screen.getByText("Keyword Presence", { exact: true }));
-  expect(screen.getByLabelText("Keyword")).toBeInTheDocument();
+  const keyword = screen.getByLabelText("Keyword");
+  expect(keyword).toBeInTheDocument();
+  expect(keyword).toHaveValue("");
+  expect(keyword).not.toHaveAttribute("placeholder");
   expect(screen.queryByRole("button", { name: "Select text from preview" })).not.toBeInTheDocument();
   expect(screen.getByLabelText("Text selector (empty = visible page text)")).toBeInTheDocument();
-  await user.type(screen.getByLabelText("Keyword"), "Kaan");
+  await expect(current.validateFields(["keyword"])).rejects.toBeDefined();
+  await user.type(keyword, "Kaan");
   await user.click(screen.getByLabelText("Removed only"));
   current.setFieldsValue({ name: "Keyword monitor", url: "https://example.com" });
   const payload = JSON.parse(JSON.stringify(await current.validateFields()));
@@ -82,6 +86,17 @@ it("uses one shared notification direction and configures Direct Browser keyword
     keyword: "Kaan",
     text_direction: "removed",
   });
+});
+
+it("keeps an existing keyword value when the editor validates it", async () => {
+  const user = userEvent.setup();
+  render(<Fixture />);
+  await user.click(screen.getByText("Advanced settings", { exact: true }));
+  await user.click(screen.getByText("Keyword Presence", { exact: true }));
+  current.setFieldsValue({ keyword: "Existing keyword", name: "Existing keyword monitor", url: "https://example.com" });
+  await waitFor(() => expect(screen.getByLabelText("Keyword")).toHaveValue("Existing keyword"));
+  const payload = await current.validateFields() as { keyword?: string };
+  expect(payload.keyword).toBe("Existing keyword");
 });
 
 it("offers Keyword Presence for Jina while keeping Selected Text picker-only UI isolated", async () => {
