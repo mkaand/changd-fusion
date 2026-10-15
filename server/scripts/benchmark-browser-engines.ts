@@ -198,6 +198,15 @@ try {
       "",
     ].join("\n"));
   }
+  if (process.env.GITHUB_ACTIONS === "true") {
+    const concise = [
+      `Chromium median/p95 ${output.chromium.medianMs.toFixed(1)}/${output.chromium.p95Ms.toFixed(1)} ms, peak RSS ${output.chromium.peakRssMb.toFixed(1)} MiB, CPU ${output.chromium.childCpuMs.toFixed(1)} ms`,
+      `WebKit median/p95 ${output.webkit.medianMs.toFixed(1)}/${output.webkit.p95Ms.toFixed(1)} ms, peak RSS ${output.webkit.peakRssMb.toFixed(1)} MiB, CPU ${output.webkit.childCpuMs.toFixed(1)} ms`,
+      `pixel difference ${output.rendering.differentPixels ?? "dimensions differ"}/${output.rendering.totalPixels ?? "n/a"}`,
+      `timeout cleanup remaining processes Chromium ${output.chromium.timeout.remainingNewPids.length}, WebKit ${output.webkit.timeout.remainingNewPids.length}`,
+    ].join("; ");
+    console.log(`::notice title=Browser engine benchmark::${concise}`);
+  }
   console.log(serialized);
   if (
     output.chromium.successRate !== 1 || output.webkit.successRate !== 1 ||
