@@ -1567,7 +1567,16 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
       assert.ok(buttons.every((button) => button.height >= 44), `${source} text-monitoring buttons keep 44px touch targets`);
       assert.ok(buttons.every((button) => Math.abs(button.width - buttons[0].width) < 1), `${source} text-monitoring buttons have equal widths`);
       if (source === "jina" && width <= 430) assert.ok(buttons.every((button, index) => index === 0 || button.top >= buttons[index - 1].top + buttons[index - 1].height), `Jina Reader modes stack vertically at ${width}px`);
-      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `${source} ${mode} does not create horizontal viewport overflow at ${width}px`);
+      const viewport = await page.evaluate(() => {
+        const overflowing = Array.from(document.querySelectorAll("*")).flatMap((element) => {
+          const box = element.getBoundingClientRect();
+          if (box.width === 0 || (box.left >= -1 && box.right <= window.innerWidth + 1)) return [];
+          const style = getComputedStyle(element);
+          return [{ className: typeof element.className === "string" ? element.className : "", left: box.left, maxWidth: style.maxWidth, minWidth: style.minWidth, right: box.right, tag: element.tagName, width: box.width }];
+        });
+        return { overflowing, scrollHeight: document.documentElement.scrollHeight, scrollWidth: document.documentElement.scrollWidth, viewportWidth: window.innerWidth };
+      });
+      assert.ok(viewport.scrollWidth <= viewport.viewportWidth, `${source} ${mode} does not create horizontal viewport overflow at ${width}px: ${JSON.stringify(viewport)}`);
     };
     for (const dark of [false, true]) {
       if ((await page.locator("html").getAttribute("data-theme")) === "dark" !== dark) {
