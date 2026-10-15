@@ -1537,6 +1537,8 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
         .map((element) => ({ tag: element.tagName, className: typeof element.className === "string" ? element.className : "" })));
       assert.deepEqual(overflowing, [], `text monitoring controls must not overflow at ${width}px`);
     }
+    await page.getByLabel("Text content source", { exact: true }).click();
+    await page.getByText("Jina Reader — sends the URL to a third party", { exact: true }).last().click();
     await page.getByText("Keyword Presence", { exact: true }).click();
     await page.getByLabel("Keyword", { exact: true }).waitFor();
     assert.equal(await page.getByRole("button", { name: "Select text from preview", exact: true }).count(), 0, "Keyword Presence does not show the Text Picker action");
