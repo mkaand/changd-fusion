@@ -1,4 +1,4 @@
-name: Servo Benchmark
+name: Servo Low Resource Benchmark
 
 on:
   workflow_dispatch:
@@ -61,13 +61,14 @@ jobs:
           SERVO_IMAGE: ghcr.io/konippi/servo-fetch@sha256:cd026015488a45bb1647c61d75bf94731e78b1428ffc091c725e23409ec6ec7a
           CHROMIUM_IMAGE: changd-fusion-api:servo-benchmark
           BENCHMARK_RUNS: "7"
+          BENCHMARK_PROFILES: "A,B,C"
         run: npm run benchmark:servo
 
       - name: Upload benchmark data and screenshots
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: servo-cloud-benchmark-v1
+          name: servo-cloud-benchmark-v2-low-resource
           path: ${{ runner.temp }}/servo-benchmark-results
           if-no-files-found: error
           retention-days: 30

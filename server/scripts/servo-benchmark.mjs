@@ -12,7 +12,13 @@ const outputDir = path.resolve(process.env.BENCHMARK_OUTPUT_DIR || path.join(pro
 const servoImage = process.env.SERVO_IMAGE || "ghcr.io/konippi/servo-fetch@sha256:cd026015488a45bb1647c61d75bf94731e78b1428ffc091c725e23409ec6ec7a";
 const chromiumImage = process.env.CHROMIUM_IMAGE || "changd-fusion-api:servo-benchmark";
 const measuredRuns = Number(process.env.BENCHMARK_RUNS || 7);
-const resourceLimits = { cpus: "2", memory: "1024m", pids: "256", shm: "256m" };
+const resourceProfiles = [
+  { id: "A", label: "0.5 CPU / 768 MiB", cpus: "0.5", memory: "768m", pids: "256", shm: "256m" },
+  { id: "B", label: "1.0 CPU / 768 MiB", cpus: "1", memory: "768m", pids: "256", shm: "256m" },
+  { id: "C", label: "2.0 CPU / 1024 MiB", cpus: "2", memory: "1024m", pids: "256", shm: "256m" },
+];
+const requestedProfiles = (process.env.BENCHMARK_PROFILES || "A,B,C").split(",").map((value) => value.trim().toUpperCase()).filter(Boolean);
+const selectedProfiles = resourceProfiles.filter((profile) => requestedProfiles.includes(profile.id));
 const id = randomUUID().replaceAll("-", "").slice(0, 12);
 const networkName = `servo-benchmark-${id}`;
 const fixtureName = `servo-fixture-${id}`;
@@ -98,32 +104,32 @@ const inspectPng = async (file, fixture) => {
   }
 };
 
-const dockerSecurityArgs = (sampleDir) => [
+const dockerSecurityArgs = (sampleDir, profile) => [
   "--network", networkName,
   "--read-only",
   "--security-opt", `seccomp=${path.resolve(scriptDir, "../../docker/chromium-seccomp.json")}`,
-  "--pids-limit", resourceLimits.pids,
-  "--memory", resourceLimits.memory,
-  "--cpus", resourceLimits.cpus,
-  "--shm-size", resourceLimits.shm,
+  "--pids-limit", profile.pids,
+  "--memory", profile.memory,
+  "--cpus", profile.cpus,
+  "--shm-size", profile.shm,
   "--tmpfs", "/tmp:rw,nosuid,nodev,noexec,size=512m",
   "--mount", `type=bind,src=${scriptDir}/servo-benchmark-wrapper.sh,dst=/bench/wrapper.sh,readonly`,
   "--mount", `type=bind,src=${sampleDir},dst=/output`,
   ...envArgs,
 ];
 
-const runCapture = async ({ engine, fixture, phase, index, timeoutSeconds = 20, expectedFailure = false }) => {
-  const sampleDir = path.join(workDir, `${fixture.name}-${engine}-${phase}-${index}`);
+const runCapture = async ({ profile, engine, fixture, phase, index, timeoutSeconds = 20, expectedFailure = false }) => {
+  const sampleDir = path.join(workDir, `${profile.id}-${fixture.name}-${engine}-${phase}-${index}`);
   await mkdir(sampleDir, { recursive: true });
   await chmod(sampleDir, 0o777);
   const screenshotFile = path.join(sampleDir, "screenshot.png");
   const metricsFile = path.join(sampleDir, "metrics.json");
   const stagesFile = path.join(sampleDir, "stages.json");
   const url = `http://fixture:4173${fixture.path}`;
-  const containerName = `servo-bench-${engine}-${id}-${fixture.name}-${phase}-${index}`.slice(0, 63);
+  const containerName = `servo-bench-${profile.id}-${engine}-${id}-${fixture.name}-${phase}-${index}`.slice(0, 63);
   const common = [
     "run", "--rm", "--name", containerName,
-    ...dockerSecurityArgs(sampleDir),
+    ...dockerSecurityArgs(sampleDir, profile),
   ];
   let command;
   if (engine === "chromium") {
@@ -156,15 +162,19 @@ const runCapture = async ({ engine, fixture, phase, index, timeoutSeconds = 20, 
   const hasScreenshot = await access(screenshotFile).then(() => true, () => false);
   const png = hasScreenshot ? await inspectPng(screenshotFile, fixture) : null;
   const succeeded = processResult.code === 0 && metrics?.exitCode === 0 && hasScreenshot && png?.valid === true;
+  const diagnosticPassed = expectedFailure ? !succeeded : succeeded;
   const record = {
-    engine, fixture: fixture.name, phase, index, expectedFailure,
-    succeeded, processExitCode: processResult.code, endToEndMs,
+    profile: profile.id, engine, fixture: fixture.name, phase, index, expectedFailure,
+    succeeded, diagnosticPassed, processExitCode: processResult.code, endToEndMs,
     commandWallMs: metrics?.commandWallMs ?? null,
     startupMs: stages?.startupMs ?? null,
     navigationMs: stages?.navigationMs ?? null,
     settleMs: stages?.settleMs ?? null,
     screenshotMs: stages?.screenshotMs ?? null,
     cpuMs: metrics?.cpuMs ?? null,
+    cpuThrottledMs: metrics?.cpuThrottledMs ?? null,
+    cpuThrottledPeriods: metrics?.cpuThrottledPeriods ?? null,
+    cpuPeriods: metrics?.cpuPeriods ?? null,
     peakProcessRssBytes: metrics?.peakProcessRssBytes ?? null,
     peakCgroupBytes: metrics?.peakCgroupBytes ?? null,
     remainingProcesses: metrics?.remainingProcesses ?? null,
@@ -173,9 +183,9 @@ const runCapture = async ({ engine, fixture, phase, index, timeoutSeconds = 20, 
   records.push(record);
 
   if (phase === "warm" && index === 1 && succeeded) {
-    const destination = path.join(screenshotsDir, `${fixture.name}-${engine}.png`);
+    const destination = path.join(screenshotsDir, `${profile.id}-${fixture.name}-${engine}.png`);
     await copyFile(screenshotFile, destination);
-    representative.set(`${fixture.name}:${engine}`, destination);
+    representative.set(`${profile.id}:${fixture.name}:${engine}`, destination);
   }
   if (!expectedFailure && !succeeded) {
     const diagnostic = processResult.stderr.trim().slice(-2_000).replaceAll(url, "<synthetic-fixture>");
@@ -187,9 +197,9 @@ const runCapture = async ({ engine, fixture, phase, index, timeoutSeconds = 20, 
   return record;
 };
 
-const compareScreenshots = async (fixture) => {
-  const chromiumPath = representative.get(`${fixture.name}:chromium`);
-  const servoPath = representative.get(`${fixture.name}:servo`);
+const compareScreenshots = async (profile, fixture) => {
+  const chromiumPath = representative.get(`${profile.id}:${fixture.name}:chromium`);
+  const servoPath = representative.get(`${profile.id}:${fixture.name}:servo`);
   if (!chromiumPath || !servoPath) return { status: "FAIL", reason: "missing representative screenshot" };
   const chromium = PNG.sync.read(await readFile(chromiumPath));
   const servo = PNG.sync.read(await readFile(servoPath));
@@ -212,12 +222,12 @@ const compareScreenshots = async (fixture) => {
   };
 };
 
-const summarize = (comparisons) => {
+const summarize = (profile, comparisons) => {
   const perFixture = fixtures.map((fixture) => {
     const result = { fixture: fixture.name, fullPage: fixture.fullPage, engines: {}, visual: comparisons[fixture.name] };
     for (const engine of engines) {
-      const warm = records.filter((record) => record.engine === engine && record.fixture === fixture.name && record.phase === "warm");
-      const cold = records.find((record) => record.engine === engine && record.fixture === fixture.name && record.phase === "cold");
+      const warm = records.filter((record) => record.profile === profile.id && record.engine === engine && record.fixture === fixture.name && record.phase === "warm");
+      const cold = records.find((record) => record.profile === profile.id && record.engine === engine && record.fixture === fixture.name && record.phase === "cold");
       result.engines[engine] = {
         coldEndToEndMs: round(cold?.endToEndMs),
         medianCaptureMs: round(median(warm.map((record) => record.commandWallMs).filter(Number.isFinite))),
@@ -228,6 +238,9 @@ const summarize = (comparisons) => {
         medianNavigationMs: round(median(warm.map((record) => record.navigationMs).filter(Number.isFinite))),
         medianScreenshotMs: round(median(warm.map((record) => record.screenshotMs).filter(Number.isFinite))),
         medianCpuMs: round(median(warm.map((record) => record.cpuMs).filter(Number.isFinite))),
+        medianCpuThrottledMs: round(median(warm.map((record) => record.cpuThrottledMs).filter(Number.isFinite))),
+        maxCpuThrottledMs: round(Math.max(0, ...warm.map((record) => record.cpuThrottledMs).filter(Number.isFinite))),
+        throttledSamples: warm.filter((record) => (record.cpuThrottledPeriods || 0) > 0).length,
         peakProcessRssBytes: Math.max(...warm.map((record) => record.peakProcessRssBytes).filter(Number.isFinite)),
         peakCgroupBytes: Math.max(...warm.map((record) => record.peakCgroupBytes).filter(Number.isFinite)),
         successRate: round((warm.filter((record) => record.succeeded).length / warm.length) * 100),
@@ -240,7 +253,7 @@ const summarize = (comparisons) => {
   });
   const overall = {};
   for (const engine of engines) {
-    const warm = records.filter((record) => record.engine === engine && record.phase === "warm");
+    const warm = records.filter((record) => record.profile === profile.id && record.engine === engine && record.phase === "warm");
     overall[engine] = {
       samples: warm.length,
       medianCaptureMs: round(median(warm.map((record) => record.commandWallMs).filter(Number.isFinite))),
@@ -248,45 +261,56 @@ const summarize = (comparisons) => {
       medianContainerEndToEndMs: round(median(warm.map((record) => record.endToEndMs))),
       p95ContainerEndToEndMs: round(percentile(warm.map((record) => record.endToEndMs), 95)),
       medianCpuMs: round(median(warm.map((record) => record.cpuMs).filter(Number.isFinite))),
+      medianCpuThrottledMs: round(median(warm.map((record) => record.cpuThrottledMs).filter(Number.isFinite))),
+      maxCpuThrottledMs: round(Math.max(0, ...warm.map((record) => record.cpuThrottledMs).filter(Number.isFinite))),
+      throttledSamples: warm.filter((record) => (record.cpuThrottledPeriods || 0) > 0).length,
       peakProcessRssBytes: Math.max(...warm.map((record) => record.peakProcessRssBytes).filter(Number.isFinite)),
       peakCgroupBytes: Math.max(...warm.map((record) => record.peakCgroupBytes).filter(Number.isFinite)),
       successRate: round((warm.filter((record) => record.succeeded).length / warm.length) * 100),
     };
   }
-  return { perFixture, overall };
+  return { profile: { id: profile.id, label: profile.label, resourceLimits: { cpus: profile.cpus, memory: profile.memory, pids: profile.pids, shm: profile.shm } }, perFixture, overall };
 };
 
 const markdown = (result) => {
   const lines = [
-    "# Servo Cloud Benchmark V1", "",
+    "# Servo Cloud Benchmark V2 — Low resource profiles", "",
     `Measured on \`${result.environment.platform} ${result.environment.arch}\` with ${result.environment.cpuCount} logical CPUs.`,
-    `Each normal fixture used one cold sample, one unmeasured warm-up, and ${measuredRuns} measured fresh-container captures per engine.`,
-    "", "## Results", "",
+    `Each normal fixture used one cold sample, one unmeasured warm-up, and ${measuredRuns} measured fresh-container captures per engine and resource profile.`,
+    "", "## Results by resource profile", "",
+  ];
+  for (const profileSummary of result.profiles) {
+    lines.push(
+      `### Profile ${profileSummary.profile.id}: ${profileSummary.profile.label}`, "",
     "| Fixture | Chromium capture median / p95 | Servo capture median / p95 | Servo / Chromium | Chromium peak RSS | Servo peak RSS | Chromium CPU | Servo CPU | Visual |",
     "| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | --- |",
-  ];
-  for (const entry of result.summary.perFixture) {
+    );
+    for (const entry of profileSummary.perFixture) {
     lines.push(`| ${entry.fixture}${entry.fullPage ? " (full page)" : ""} | ${formatMs(entry.engines.chromium.medianCaptureMs)} / ${formatMs(entry.engines.chromium.p95CaptureMs)} | ${formatMs(entry.engines.servo.medianCaptureMs)} / ${formatMs(entry.engines.servo.p95CaptureMs)} | ${entry.speedRatioServoOverChromium}x | ${formatMiB(entry.engines.chromium.peakProcessRssBytes)} | ${formatMiB(entry.engines.servo.peakProcessRssBytes)} | ${formatMs(entry.engines.chromium.medianCpuMs)} | ${formatMs(entry.engines.servo.medianCpuMs)} | ${entry.visual.status}${entry.visual.pixelDifferencePercent == null ? "" : ` (${entry.visual.pixelDifferencePercent}% pixels)`} |`);
   }
+    lines.push(
+      "", "**Overall**", "",
+      `- Chromium capture process: median ${formatMs(profileSummary.overall.chromium.medianCaptureMs)}, p95 ${formatMs(profileSummary.overall.chromium.p95CaptureMs)}, peak process-tree RSS ${formatMiB(profileSummary.overall.chromium.peakProcessRssBytes)}, ${profileSummary.overall.chromium.successRate}% success, median CPU throttling ${formatMs(profileSummary.overall.chromium.medianCpuThrottledMs)} (${profileSummary.overall.chromium.throttledSamples} throttled samples).`,
+      `- Servo capture process: median ${formatMs(profileSummary.overall.servo.medianCaptureMs)}, p95 ${formatMs(profileSummary.overall.servo.p95CaptureMs)}, peak process-tree RSS ${formatMiB(profileSummary.overall.servo.peakProcessRssBytes)}, ${profileSummary.overall.servo.successRate}% success, median CPU throttling ${formatMs(profileSummary.overall.servo.medianCpuThrottledMs)} (${profileSummary.overall.servo.throttledSamples} throttled samples).`,
+      `- Fresh-container end-to-end medians (reported separately because image/rootfs startup is not engine capture time): Chromium ${formatMs(profileSummary.overall.chromium.medianContainerEndToEndMs)}, Servo ${formatMs(profileSummary.overall.servo.medianContainerEndToEndMs)}.`, "",
+    );
+  }
   lines.push(
-    "", "## Overall", "",
-    `- Chromium capture process: median ${formatMs(result.summary.overall.chromium.medianCaptureMs)}, p95 ${formatMs(result.summary.overall.chromium.p95CaptureMs)}, peak process-tree RSS ${formatMiB(result.summary.overall.chromium.peakProcessRssBytes)}, ${result.summary.overall.chromium.successRate}% success.`,
-    `- Servo capture process: median ${formatMs(result.summary.overall.servo.medianCaptureMs)}, p95 ${formatMs(result.summary.overall.servo.p95CaptureMs)}, peak process-tree RSS ${formatMiB(result.summary.overall.servo.peakProcessRssBytes)}, ${result.summary.overall.servo.successRate}% success.`,
-    `- Fresh-container end-to-end medians (reported separately because image/rootfs startup is not engine capture time): Chromium ${formatMs(result.summary.overall.chromium.medianContainerEndToEndMs)}, Servo ${formatMs(result.summary.overall.servo.medianContainerEndToEndMs)}.`,
-    "", "## Failure and timeout diagnostics", "",
+    "## Failure and timeout diagnostics", "",
     "| Engine | Fixture | Rejected as failure | Process exit | Remaining processes |",
     "| --- | --- | --- | ---: | ---: |",
   );
   for (const record of records.filter((entry) => entry.expectedFailure)) {
-    lines.push(`| ${record.engine} | ${record.fixture} | ${record.succeeded ? "NO" : "yes"} | ${record.processExitCode} | ${record.remainingProcesses ?? "unavailable"} |`);
+    lines.push(`| ${record.profile} / ${record.engine} | ${record.fixture} | ${record.diagnosticPassed ? "yes" : "NO"} | ${record.processExitCode} | ${record.remainingProcesses ?? "unavailable"} |`);
   }
   lines.push(
     "", "## Interpretation boundaries", "",
     "- This is an isolated synthetic benchmark, not certification for Changd Fusion production egress security or feature parity.",
-    "- Both engines ran on the same Docker internal network, fixture content, concurrency (one), resource limits, viewport target, and settling delays.",
+    "- Both engines ran on the same Docker internal network, fixture content, concurrency (one), profile-specific resource limits, viewport target, and settling delays.",
     "- Servo does not expose navigation/startup/screenshot stage timings separately; those fields are reported as unavailable rather than estimated.",
     "- Font and engine rendering differences make pixel-identical output neither expected nor required; fixture-specific state and completeness probes are also recorded in JSON.",
     "- Paired rendering is PASS at up to 5% differing pixels, PARTIAL above 5% through 25%, and FAIL above 25%; PNG validity, dimensions, and fixture probes remain independent checks.",
+    "- A valid PNG from an expected-failure fixture is not a successful failure diagnostic. In particular, an engine-generated error page is reported as a diagnostic failure.",
   );
   return `${lines.join("\n")}\n`;
 };
@@ -305,6 +329,8 @@ const writeChecksums = async () => {
 let primaryError;
 try {
   if (!Number.isInteger(measuredRuns) || measuredRuns < 1) throw new Error("BENCHMARK_RUNS must be a positive integer");
+  if (!selectedProfiles.length) throw new Error("BENCHMARK_PROFILES must select at least one of A, B, C");
+  if (selectedProfiles.length !== requestedProfiles.length) throw new Error("BENCHMARK_PROFILES contains an unknown profile");
   await mkdir(screenshotsDir, { recursive: true });
   await chmod(path.join(scriptDir, "servo-benchmark-wrapper.sh"), 0o755);
   await docker(["image", "inspect", servoImage]);
@@ -327,28 +353,34 @@ try {
   }
   if (!ready) throw new Error("fixture server did not become ready");
 
-  for (let fixtureIndex = 0; fixtureIndex < fixtures.length; fixtureIndex += 1) {
-    const fixture = fixtures[fixtureIndex];
-    const orderedEngines = fixtureIndex % 2 === 0 ? engines : [...engines].reverse();
-    for (const engine of orderedEngines) {
-      process.stdout.write(`benchmark:${fixture.name}:${engine}:cold\n`);
-      await runCapture({ engine, fixture, phase: "cold", index: 1 });
-      process.stdout.write(`benchmark:${fixture.name}:${engine}:warmup\n`);
-      await runCapture({ engine, fixture, phase: "warmup", index: 1 });
-      for (let index = 1; index <= measuredRuns; index += 1) {
-        process.stdout.write(`benchmark:${fixture.name}:${engine}:warm:${index}/${measuredRuns}\n`);
-        await runCapture({ engine, fixture, phase: "warm", index });
+  for (const profile of selectedProfiles) {
+    for (let fixtureIndex = 0; fixtureIndex < fixtures.length; fixtureIndex += 1) {
+      const fixture = fixtures[fixtureIndex];
+      const orderedEngines = fixtureIndex % 2 === 0 ? engines : [...engines].reverse();
+      for (const engine of orderedEngines) {
+        process.stdout.write(`benchmark:${profile.id}:${fixture.name}:${engine}:cold\n`);
+        await runCapture({ profile, engine, fixture, phase: "cold", index: 1 });
+        process.stdout.write(`benchmark:${profile.id}:${fixture.name}:${engine}:warmup\n`);
+        await runCapture({ profile, engine, fixture, phase: "warmup", index: 1 });
+        for (let index = 1; index <= measuredRuns; index += 1) {
+          process.stdout.write(`benchmark:${profile.id}:${fixture.name}:${engine}:warm:${index}/${measuredRuns}\n`);
+          await runCapture({ profile, engine, fixture, phase: "warm", index });
+        }
       }
+    }
+
+    for (const engine of engines) {
+      await runCapture({ profile, engine, fixture: { name: "invalid-response", path: "/failure", settleMs: 0, fullPage: false }, phase: "diagnostic", index: 1, timeoutSeconds: 4, expectedFailure: true });
+      await runCapture({ profile, engine, fixture: { name: "timeout", path: "/timeout", settleMs: 0, fullPage: false }, phase: "diagnostic", index: 1, timeoutSeconds: 2, expectedFailure: true });
     }
   }
 
-  for (const engine of engines) {
-    await runCapture({ engine, fixture: { name: "invalid-response", path: "/failure", settleMs: 0, fullPage: false }, phase: "diagnostic", index: 1, timeoutSeconds: 4, expectedFailure: true });
-    await runCapture({ engine, fixture: { name: "timeout", path: "/timeout", settleMs: 0, fullPage: false }, phase: "diagnostic", index: 1, timeoutSeconds: 2, expectedFailure: true });
+  const profileSummaries = [];
+  for (const profile of selectedProfiles) {
+    const comparisons = {};
+    for (const fixture of fixtures) comparisons[fixture.name] = await compareScreenshots(profile, fixture);
+    profileSummaries.push(summarize(profile, comparisons));
   }
-
-  const comparisons = {};
-  for (const fixture of fixtures) comparisons[fixture.name] = await compareScreenshots(fixture);
   const dockerVersion = (await docker(["version", "--format", "{{.Server.Version}}"])) .stdout.trim();
   const imageInfo = {};
   for (const [engine, image] of [["servo", servoImage], ["chromium", chromiumImage]]) {
@@ -356,12 +388,12 @@ try {
     imageInfo[engine] = { reference: image, id: inspected.Id, repoDigests: inspected.RepoDigests || [], labels: inspected.Config?.Labels || {} };
   }
   const result = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     generatedAt: new Date().toISOString(),
     environment: {
       platform: os.platform(), arch: os.arch(), cpuCount: os.cpus().length,
       cpuModel: os.cpus()[0]?.model || "unknown", totalMemoryBytes: os.totalmem(),
-      dockerVersion, networkInternal: true, concurrency: 1, resourceLimits,
+      dockerVersion, networkInternal: true, concurrency: 1, resourceProfiles: selectedProfiles.map((profile) => ({ id: profile.id, label: profile.label, cpus: profile.cpus, memory: profile.memory, pids: profile.pids, shm: profile.shm })),
     },
     provenance: {
       servoVersion: "0.15.1", servoReleaseCommit: "fa90cf0b6f76def0b7d5e9baeb13b9aceeb232b4",
@@ -369,8 +401,8 @@ try {
       servoManifestDigest: "sha256:cd026015488a45bb1647c61d75bf94731e78b1428ffc091c725e23409ec6ec7a",
       images: imageInfo,
     },
-    methodology: { measuredRuns, coldRuns: 1, warmupRuns: 1, freshContainerPerCapture: true, viewport: "1280x800 where supported", fixtureNetwork: "Docker internal bridge" },
-    summary: summarize(comparisons),
+    methodology: { measuredRuns, coldRuns: 1, warmupRuns: 1, freshContainerPerCapture: true, viewport: "1280x800 where supported", fixtureNetwork: "Docker internal bridge", v1ComparableProfile: "C" },
+    profiles: profileSummaries,
     records,
   };
   await writeFile(path.join(outputDir, "benchmark-results.json"), `${JSON.stringify(result, null, 2)}\n`);
@@ -379,7 +411,8 @@ try {
   await writeChecksums();
   if (process.env.GITHUB_STEP_SUMMARY) await writeFile(process.env.GITHUB_STEP_SUMMARY, report, { flag: "a" });
   process.stdout.write(`benchmark-results:${path.join(outputDir, "benchmark-results.json")}\n`);
-  process.stdout.write(`::notice title=Servo benchmark::Chromium median ${result.summary.overall.chromium.medianCaptureMs} ms / p95 ${result.summary.overall.chromium.p95CaptureMs} ms; Servo median ${result.summary.overall.servo.medianCaptureMs} ms / p95 ${result.summary.overall.servo.p95CaptureMs} ms\n`);
+  const profileA = result.profiles.find((profile) => profile.profile.id === "A") || result.profiles[0];
+  process.stdout.write(`::notice title=Servo benchmark::Profile ${profileA.profile.id}: Chromium median ${profileA.overall.chromium.medianCaptureMs} ms / p95 ${profileA.overall.chromium.p95CaptureMs} ms; Servo median ${profileA.overall.servo.medianCaptureMs} ms / p95 ${profileA.overall.servo.p95CaptureMs} ms\n`);
 } catch (error) {
   primaryError = error;
   process.stderr.write(`benchmark-error:${error.stack || error}\n`);

@@ -23,7 +23,7 @@ checks the image version and source revision labels before execution.
 
 ## Reproducible benchmark
 
-The manually triggerable `Servo Benchmark` workflow builds the repository's
+The manually triggerable `Servo Low Resource Benchmark` workflow builds the repository's
 pinned Chromium image, pulls the pinned Servo image, and runs:
 
 ```bash
@@ -40,8 +40,10 @@ network. The fixture-only `--allow-private-addresses` flag is passed to Servo
 solely because the target is on this isolated internal bridge; it must never be
 copied into a production adapter.
 
-Both engines use single-capture concurrency and the same limits: 2 CPUs, 1 GiB
-memory, 256 PIDs, 256 MiB shared memory, a read-only root filesystem, an
+Both engines use single-capture concurrency and the same limits within each
+profile: A is 0.5 CPU / 768 MiB, B is 1 CPU / 768 MiB, and C is 2 CPUs / 1 GiB
+(the V1 reference profile). Every profile uses 256 PIDs, 256 MiB shared memory,
+a read-only root filesystem, and an
 ephemeral `/tmp`, and the project's Chromium seccomp profile. Chromium runs as
 the image's non-root `node` user with its setuid sandbox; Servo runs as its
 official image's non-root `servo` user with all capabilities dropped and
@@ -49,7 +51,10 @@ official image's non-root `servo` user with all capabilities dropped and
 
 Normal fixtures cover static HTML/CSS, JavaScript-rendered content, a large DOM
 and CSS grid, SVG images and installed fonts, a long full-page layout, a delayed
-DOM update, and delayed resources. Separate diagnostics cover a broken HTTP
+DOM update, and delayed resources. The long and dynamic fixtures exercise
+full-page and post-settle behavior, but do not claim Browser Steps or
+same-session interactive scrolling parity, which Servo Fetch's public CLI does
+not expose. Separate diagnostics cover a broken HTTP
 response and a forced timeout. Each normal fixture has one cold run, one
 unmeasured warm-up, and at least seven measured fresh-process runs per engine.
 Cold and warm results remain separate.
@@ -57,13 +62,16 @@ Cold and warm results remain separate.
 The artifacts contain:
 
 - `benchmark-results.json`: machine-readable environment, provenance, per-run
-  timing, CPU, memory, dimensions, PNG validity, cleanup, and comparison data;
-- `benchmark-summary.md`: per-fixture and aggregate human-readable results;
+  timing, CPU time, cgroup throttling, memory, dimensions, PNG validity,
+  cleanup, and comparison data;
+- `benchmark-summary.md`: per-profile, per-fixture and aggregate human-readable results;
 - `screenshots/*.png`: one deterministic representative image per engine and
   normal fixture;
 - `SHA256SUMS`: hashes for the JSON, Markdown, and screenshots.
 
-Capture-process wall time is the primary engine measurement. Fresh-container
+Capture-process wall time is the primary engine measurement. Peak cgroup memory,
+process-tree RSS, CPU time, cgroup CPU periods/throttled periods and throttled
+time are measured for each capture. Fresh-container
 end-to-end time is also recorded separately because container rootfs startup
 and cleanup are runner/storage-driver effects rather than browser capture time.
 Chromium additionally reports launch, navigation, settle, and screenshot stage
@@ -74,7 +82,9 @@ The paired rendering classification is intentionally conservative: up to 5%
 different pixels is `PASS`, above 5% through 25% is `PARTIAL`, and above 25% is
 `FAIL`. PNG validity, expected dimensions, and deterministic fixture color/state
 probes are evaluated independently. This prevents a valid but materially
-different render from being labeled fully compatible.
+different render from being labeled fully compatible. A syntactically valid PNG
+from an expected-failure fixture is not a successful diagnostic: Servo Fetch's
+error-page PNG is recorded as a failed failure-rejection result.
 
 ## Current runtime findings
 
