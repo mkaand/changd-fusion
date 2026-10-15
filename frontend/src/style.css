@@ -319,10 +319,14 @@ details {
 .text-monitoring-controls, .jina-selected-text-controls { box-sizing: border-box; display: grid; gap: 12px; min-width: 0; max-width: 100%; width: 100%; }
 .text-monitoring-controls > .ant-form-item,
 .text-monitoring-mode { margin-bottom: 0 !important; }
+.text-monitoring-controls > .ant-form-item,
+.text-monitoring-controls > .text-monitoring-mode { box-sizing: border-box; max-width: 100%; min-width: 0; width: 100%; }
 .text-monitoring-controls .ant-form-item-control,
 .text-monitoring-controls .ant-form-item-control-input,
 .text-monitoring-controls .ant-form-item-control-input-content,
-.text-monitoring-mode { min-width: 0; max-width: 100%; }
+.text-monitoring-controls .ant-input,
+.text-monitoring-controls .ant-select,
+.text-monitoring-mode { min-width: 0; max-width: 100%; width: 100%; }
 .text-monitoring-mode { display: grid; gap: 8px; }
 .text-monitoring-mode .ant-radio-group,
 .notification-direction-control .ant-radio-group { display: flex; flex-wrap: wrap; gap: 8px 16px; min-width: 0; max-width: 100%; }
