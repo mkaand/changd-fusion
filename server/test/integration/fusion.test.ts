@@ -1547,12 +1547,9 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     };
     const assertTextControlBounds = async (source: "direct" | "jina", mode: string, width: number, dark: boolean) => {
       const layout = await textControls.evaluate((section) => {
-        const form = section.closest(".monitor-editor-form");
-        if (!form) throw new Error("text monitoring form not found");
-        const formBox = form.getBoundingClientRect();
-        const style = getComputedStyle(form);
-        const left = formBox.left + Number.parseFloat(style.paddingLeft);
-        const right = formBox.right - Number.parseFloat(style.paddingRight);
+        const sectionBox = section.getBoundingClientRect();
+        const left = sectionBox.left;
+        const right = sectionBox.right;
         const controls = Array.from(section.querySelectorAll(".ant-radio-button-wrapper, .ant-select, input.ant-input:not(.ant-select-selection-search-input), .ant-form-item-extra, .text-monitoring-mode-help, .jina-reader-notice"))
           .map((element) => {
             const box = element.getBoundingClientRect();
