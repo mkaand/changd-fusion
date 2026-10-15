@@ -9,7 +9,7 @@ import { capture, type Monitor } from "../src/capture.js";
 import { readConfig } from "../src/config.js";
 import { EgressPolicy } from "../src/egress.js";
 
-type ProcessSample = { cpuTicks: number; rssKb: number };
+type ProcessSample = { cpuTicks: number; rssKb: number; pids: number[] };
 
 async function descendants(root: number): Promise<ProcessSample> {
   const entries = (await readdir("/proc")).filter((entry) => /^\d+$/.test(entry));
@@ -28,10 +28,12 @@ async function descendants(root: number): Promise<ProcessSample> {
     changed = false;
     for (const row of rows) if (selected.has(row.ppid) && !selected.has(row.pid)) { selected.add(row.pid); changed = true; }
   }
-  return rows.filter((row) => row.pid !== root && selected.has(row.pid)).reduce(
-    (total, row) => ({ cpuTicks: total.cpuTicks + row.ticks, rssKb: total.rssKb + row.rssPages * 4 }),
-    { cpuTicks: 0, rssKb: 0 },
-  );
+  const processes = rows.filter((row) => row.pid !== root && selected.has(row.pid));
+  return {
+    cpuTicks: processes.reduce((total, row) => total + row.ticks, 0),
+    rssKb: processes.reduce((total, row) => total + row.rssPages * 4, 0),
+    pids: processes.map((row) => row.pid).sort((a, b) => a - b),
+  };
 }
 
 async function measured<T>(operation: () => Promise<T>) {
@@ -55,6 +57,12 @@ async function measured<T>(operation: () => Promise<T>) {
 }
 
 const percentile = (values: number[], ratio: number) => [...values].sort((a, b) => a - b)[Math.max(0, Math.ceil(values.length * ratio) - 1)];
+const stageTotal = (timings: Record<string, number> | undefined, stages: string[]) =>
+  stages.reduce((total, stage) => total + (timings?.[stage] ?? 0), 0);
+const metric = (samples: any[], key: string) => ({
+  median: percentile(samples.map((sample) => sample[key]), 0.5),
+  p95: percentile(samples.map((sample) => sample[key]), 0.95),
+});
 
 const server = createServer((req, res) => {
   if (req.url === "/asset.png") {
@@ -79,14 +87,22 @@ const base = {
   capture_mode: "viewport", capture_selector: ".region", capture_selector_type: "css", browser_steps: [], visual_threshold: "0.35", pixel_threshold: "0.1",
   interval_seconds: 300, baseline_id: null, latest_capture_id: null, failure_count: 0,
 } satisfies Monitor;
-const cases: Array<Partial<Monitor>> = [
-  { capture_mode: "viewport" },
-  { capture_mode: "full_page" },
-  { capture_mode: "element", capture_selector: ".region" },
-  { capture_mode: "viewport", mask_selectors: [".masked"] },
-  { capture_mode: "viewport", browser_steps: [{ action: "click", selector: "#step", selector_type: "css", timeout_ms: 5000, continue_on_error: false }] },
+const cases: Array<{ name: string; monitor: Partial<Monitor> }> = [
+  { name: "viewport", monitor: { capture_mode: "viewport" } },
+  { name: "full_page", monitor: { capture_mode: "full_page" } },
+  { name: "element", monitor: { capture_mode: "element", capture_selector: ".region" } },
+  { name: "mask", monitor: { capture_mode: "viewport", mask_selectors: [".masked"] } },
+  { name: "browser_step", monitor: { capture_mode: "viewport", browser_steps: [{ action: "click", selector: "#step", selector_type: "css", timeout_ms: 5000, continue_on_error: false }] } },
 ];
-const output: Record<string, any> = { generatedAt: new Date().toISOString(), samplesPerEngine: cases.length, sessionReuse: "not_applicable_each_application_capture_launches_a_fresh_browser" };
+const rounds = 3;
+const output: Record<string, any> = {
+  generatedAt: new Date().toISOString(),
+  cases: cases.map(({ name }) => name),
+  rounds,
+  samplesPerEngine: cases.length * rounds,
+  browserReuse: false,
+  cacheModel: "first_round_cold_then_host_cache_warm_repeats; every capture launches a fresh browser",
+};
 const screenshots: Record<string, Buffer> = {};
 try {
   for (const engine of ["chromium", "webkit"] as const) {
@@ -96,22 +112,59 @@ try {
       WEBKIT_EXECUTABLE_PATH: process.env.WEBKIT_EXECUTABLE_PATH, CAPTURE_TIMEOUT_MS: "15000", LOG_LEVEL: "silent",
     });
     const samples: any[] = [];
-    for (const [index, overrides] of cases.entries()) {
-      try {
-        const result = await measured(() => capture({ ...base, ...overrides }, cfg, policy));
-        if (index === 0) screenshots[engine] = result.value.screenshot!;
-        samples.push({ case: index, durationMs: result.durationMs, peakRssMb: result.peakRssMb, childCpuMs: result.childCpuMs, success: true, pngBytes: result.value.screenshot?.length ?? 0, timings: result.value.timings });
-      } catch (error) {
-        samples.push({ case: index, success: false, failure: error instanceof Error ? error.name : "unknown" });
+    for (let round = 0; round < rounds; round++) {
+      for (const [index, benchmarkCase] of cases.entries()) {
+        try {
+          const result = await measured(() => capture({ ...base, ...benchmarkCase.monitor }, cfg, policy));
+          if (round === 0 && index === 0) screenshots[engine] = result.value.screenshot!;
+          const timings = result.value.timings as Record<string, number> | undefined;
+          samples.push({
+            case: benchmarkCase.name,
+            round,
+            cache: round === 0 ? "cold" : "warm",
+            durationMs: result.durationMs,
+            startupMs: stageTotal(timings, ["proxy_initialization", "browser_launch", "browser_context"]),
+            navigationMs: timings?.navigation ?? 0,
+            screenshotMs: stageTotal(timings, ["screenshot", "selector_lookup", "visibility_validation", "scroll_into_view", "element_stability", "screenshot_rasterization", "image_validation"]),
+            peakRssMb: result.peakRssMb,
+            childCpuMs: result.childCpuMs,
+            success: true,
+            pngBytes: result.value.screenshot?.length ?? 0,
+            timings,
+          });
+        } catch (error) {
+          samples.push({ case: benchmarkCase.name, round, cache: round === 0 ? "cold" : "warm", success: false, failure: error instanceof Error ? error.name : "unknown" });
+        }
       }
     }
     const successful = samples.filter((sample) => sample.success);
+    const cold = successful.filter((sample) => sample.cache === "cold");
+    const warm = successful.filter((sample) => sample.cache === "warm");
+    const beforeTimeout = await descendants(process.pid);
+    const timeoutStarted = performance.now();
+    let timeoutFailure = "unexpected_success";
+    try {
+      await capture({ ...base, url: `http://fixture.test:${port}/slow` }, { ...cfg, CAPTURE_TIMEOUT_MS: 2000 }, policy);
+    } catch (error: any) {
+      timeoutFailure = typeof error?.code === "string" ? error.code : error instanceof Error ? error.name : "unknown";
+    }
+    const timeoutDurationMs = performance.now() - timeoutStarted;
+    await new Promise((resolve) => setTimeout(resolve, 1000));
+    const afterTimeout = await descendants(process.pid);
+    const previousPids = new Set(beforeTimeout.pids);
+    const remainingNewPids = afterTimeout.pids.filter((pid) => !previousPids.has(pid));
     output[engine] = {
       medianMs: percentile(successful.map((sample) => sample.durationMs), 0.5),
       p95Ms: percentile(successful.map((sample) => sample.durationMs), 0.95),
+      cold: metric(cold, "durationMs"),
+      warm: metric(warm, "durationMs"),
+      startup: metric(successful, "startupMs"),
+      navigation: metric(successful, "navigationMs"),
+      screenshot: metric(successful, "screenshotMs"),
       peakRssMb: Math.max(0, ...successful.map((sample) => sample.peakRssMb)),
       childCpuMs: Math.max(0, ...successful.map((sample) => sample.childCpuMs)),
       successRate: successful.length / samples.length,
+      timeout: { durationMs: timeoutDurationMs, failure: timeoutFailure, remainingNewPids },
       samples,
     };
   }
@@ -135,14 +188,22 @@ try {
       `| Chromium | ${format(output.chromium.medianMs)} ms | ${format(output.chromium.p95Ms)} ms | ${format(output.chromium.peakRssMb)} MiB | ${format(output.chromium.childCpuMs)} ms | ${format(output.chromium.successRate * 100)}% |`,
       `| WebKit | ${format(output.webkit.medianMs)} ms | ${format(output.webkit.p95Ms)} ms | ${format(output.webkit.peakRssMb)} MiB | ${format(output.webkit.childCpuMs)} ms | ${format(output.webkit.successRate * 100)}% |`,
       "",
+      `Chromium startup median/p95: ${format(output.chromium.startup.median)}/${format(output.chromium.startup.p95)} ms; screenshot median/p95: ${format(output.chromium.screenshot.median)}/${format(output.chromium.screenshot.p95)} ms.`,
+      `WebKit startup median/p95: ${format(output.webkit.startup.median)}/${format(output.webkit.startup.p95)} ms; screenshot median/p95: ${format(output.webkit.screenshot.median)}/${format(output.webkit.screenshot.p95)} ms.`,
+      `Timeout cleanup: Chromium ${output.chromium.timeout.failure} in ${format(output.chromium.timeout.durationMs)} ms with ${output.chromium.timeout.remainingNewPids.length} remaining processes; WebKit ${output.webkit.timeout.failure} in ${format(output.webkit.timeout.durationMs)} ms with ${output.webkit.timeout.remainingNewPids.length} remaining processes.`,
+      "",
       `Rendering comparison: ${rendering}.`,
       "",
-      "Each engine runs the same five synthetic captures. CI runner results do not predict Amsterdam VPS performance.",
+      `Each engine runs ${cases.length} synthetic cases across ${rounds} rounds. The first round is cold and later rounds retain only host caches; every application capture still launches a fresh browser. CI runner results do not predict Amsterdam VPS performance.`,
       "",
     ].join("\n"));
   }
   console.log(serialized);
-  if (output.chromium.successRate !== 1 || output.webkit.successRate !== 1) process.exitCode = 1;
+  if (
+    output.chromium.successRate !== 1 || output.webkit.successRate !== 1 ||
+    !String(output.chromium.timeout.failure).includes("timeout") || !String(output.webkit.timeout.failure).includes("timeout") ||
+    output.chromium.timeout.remainingNewPids.length || output.webkit.timeout.remainingNewPids.length
+  ) process.exitCode = 1;
 } finally {
   await new Promise<void>((resolve) => server.close(() => resolve()));
   await rm(root, { recursive: true, force: true });

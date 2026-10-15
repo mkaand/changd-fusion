@@ -28,8 +28,8 @@ or database migration, and it never falls back between engines silently.
 
 | Capability | Audit result | Notes |
 | --- | --- | --- |
-| Playwright launch proxy | Implemented, runtime validation required | Both engines receive the same per-capture pinned-IP proxy. CI fixtures cover navigation, redirects, subresources, WebSockets, and rebinding. |
-| TLS validation | Supported by intended context settings | A WebKit context can retain `ignoreHTTPSErrors: false`; it must never be changed. |
+| Playwright launch proxy | Implemented and runtime-tested | Both engines receive the same per-capture pinned-IP proxy. CI fixtures cover navigation, redirects, subresources, WebSockets, and rebinding. |
+| TLS validation | Implemented and runtime-tested | Both contexts retain `ignoreHTTPSErrors: false`; a synthetic self-signed HTTPS endpoint must fail. |
 | JavaScript, CSS, Browser Steps | Implemented | Both engines use the existing Playwright `Page`/`Locator` workflow and the same rendered page. |
 | CSS and XPath selection | Implemented | Existing `locate()` and `xpath=` locator paths remain unchanged. |
 | Viewport/full-page/element screenshots | Available | Use `page.screenshot()` / locator-based or clip-based native APIs. Chromium CDP `Page.captureScreenshot` is Chromium-only and cannot be reused. |
@@ -41,11 +41,10 @@ or database migration, and it never falls back between engines silently.
 
 ## Egress/security gate
 
-The existing proxy is independent of Chromium and can be passed through
-Playwright's generic proxy launch option. That is promising, but source/type
-inspection is not proof of network equivalence. Before any WebKit adapter is
-allowed, a pinned WebKit integration environment must prove all of the
-following with synthetic endpoints:
+The existing proxy is independent of Chromium and is passed through
+Playwright's generic proxy launch option. The CI workflow runs the complete
+browser/PostgreSQL integration suite with each engine and proves the following
+with isolated synthetic endpoints:
 
 - navigation, redirects, subresources, and WebSockets reach only the
   `browserProxy` path;
@@ -54,11 +53,32 @@ following with synthetic endpoints:
 - private-value workflow restrictions remain text-only, HTTPS-only, and
   same-origin;
 - cancellation closes the WebKit process tree without orphan processes;
-- the current rootless Docker limits and security policy remain intact.
+- the current rootless Docker user and existing limits remain intact.
 
-The GitHub workflow installs the pinned WebKit revision and executes the full
-PostgreSQL/browser integration suite once per engine. These items remain
-unverified until that workflow completes successfully.
+The Docker job also builds the image containing the pinned Playwright WebKit
+revision and passes the existing rootless smoke check. These results establish
+equivalence for the tested HTTP/HTTPS fixtures; they do not prove that every
+Internet protocol or future WebKit release behaves identically. WebKit has no
+equivalent for Playwright's Chromium-only `chromiumSandbox` launch switch, so
+the experiment relies on the same rootless container boundary and deployment
+resource policy rather than claiming a browser-level Chromium sandbox.
+
+## Synthetic benchmark
+
+The CI benchmark exercises viewport, full-page, element, masking, and Browser
+Steps captures with identical monitor objects and content. Each engine runs
+three rounds: a first cold host-cache round and two warm host-cache repeats.
+Every sample still launches a new browser, matching the application's current
+capture lifecycle. The report separates startup, navigation, screenshot, total
+duration, child-process CPU, peak child RSS, PNG dimensions, rendering pixel
+differences, success rate, and bounded timeout cleanup. Machine-readable JSON
+is uploaded with the synthetic UI artifact and a concise table is written to
+the Actions job summary.
+
+GitHub-hosted runner measurements are comparative evidence for the prototype,
+not a prediction of Amsterdam VPS performance. A separately authorized trial
+on representative hardware is still required before making performance or
+capacity claims for production.
 
 ## Deferred baseline-transition requirement
 
