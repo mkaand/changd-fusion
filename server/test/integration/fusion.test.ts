@@ -1541,19 +1541,20 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     const chooseTextSource = async (label: "Direct browser content (default)" | "Jina Reader — sends the URL to a third party") => {
       await page.getByLabel("Text content source", { exact: true }).click();
       await page.getByText(label, { exact: true }).last().click();
-      await page.waitForFunction(() => !Array.from(document.querySelectorAll(".ant-select-dropdown"))
-        .some((dropdown) => dropdown.classList.contains("ant-slide-up-leave-active")));
+      await page.waitForFunction(() => Array.from(document.querySelectorAll(".ant-select-dropdown"))
+        .every((dropdown) => dropdown.classList.contains("ant-select-dropdown-hidden") || dropdown.getBoundingClientRect().width === 0));
     };
     const chooseTextMode = async (label: "Full Text Changes" | "Selected Text / Value" | "Keyword Presence") => {
       await page.getByText(label, { exact: true }).last().click();
     };
     const assertTextControlBounds = async (source: "direct" | "jina", mode: string, width: number, dark: boolean) => {
       const layout = await textControls.evaluate((section) => {
-        const editor = section.closest(".mobile-monitor-editor") ?? section.closest(".monitor-editor-form");
-        if (!editor) throw new Error("mobile monitor editor not found");
-        const editorBox = editor.getBoundingClientRect();
-        const left = editorBox.left;
-        const right = editorBox.right;
+        const form = section.closest(".monitor-editor-form");
+        if (!form) throw new Error("mobile monitor form not found");
+        const formBox = form.getBoundingClientRect();
+        const formStyle = getComputedStyle(form);
+        const left = formBox.left + Number.parseFloat(formStyle.paddingLeft);
+        const right = formBox.right - Number.parseFloat(formStyle.paddingRight);
         const controls = Array.from(section.querySelectorAll(".ant-radio-button-wrapper, .ant-select, input.ant-input:not(.ant-select-selection-search-input), .ant-form-item-extra, .text-monitoring-mode-help, .jina-reader-notice"))
           .map((element) => {
             const box = element.getBoundingClientRect();
