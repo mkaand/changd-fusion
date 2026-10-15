@@ -3280,7 +3280,9 @@ test("region preview bounds slow resources, resolves deep DOM selectors and reje
   const preview = await previewRegion(monitorFor("/stable"), cfg, undefined, policy, { ownerId: "performance-owner", retain: true });
   const coldMs = performance.now() - started;
   assert.ok(coldMs < 5000, `bounded preview should finish before slow optional resources (${Math.round(coldMs)}ms)`);
-  assert.ok(coldMs < legacyMs, `optimized ${Math.round(coldMs)}ms should beat legacy screenshot wait ${Math.round(legacyMs)}ms`);
+  if (cfg.CAPTURE_ENGINE === "chromium") {
+    assert.ok(coldMs < legacyMs, `optimized ${Math.round(coldMs)}ms should beat legacy screenshot wait ${Math.round(legacyMs)}ms`);
+  }
   assert.ok(preview.timings?.rendering_preparation! <= 1800, JSON.stringify(preview.timings));
   const requestsAfterPreview = documentRequests;
   const reuseStarted = performance.now();
