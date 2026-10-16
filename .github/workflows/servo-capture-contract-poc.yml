@@ -1,0 +1,32 @@
+name: Servo Capture Contract POC
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/servo-fetch-visual-engine
+    paths:
+      - .github/workflows/servo-capture-contract-poc.yml
+      - experiments/servo-capture-contract-poc/**
+      - server/scripts/servo-capture-contract-poc-test.mjs
+      - server/scripts/servo-benchmark-fixture.mjs
+      - docs/servo-fetch-feasibility.md
+
+permissions:
+  contents: read
+
+jobs:
+  same-session-contract:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.19.0
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - name: Run isolated same-session Servo proof
+        working-directory: server
+        env:
+          CARGO_NET_RETRY: "2"
+        run: node scripts/servo-capture-contract-poc-test.mjs

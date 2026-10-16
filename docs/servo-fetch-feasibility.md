@@ -120,6 +120,34 @@ steps, CSS/XPath regions, clipping, masks, stable element geometry, a fixed
 The benchmark deliberately does not claim to satisfy this application
 contract.
 
+## Capture-contract proof of concept
+
+`experiments/servo-capture-contract-poc` is a small Rust executable built
+against the pinned `servo-fetch = 0.15.1` crate. The isolated test serves the
+existing synthetic JavaScript fixture, invokes exactly one
+`FetchOptions::screenshot` call, and verifies that the returned single `Page`
+contains both the post-JavaScript `inner_text` and a valid PNG. It emits only
+bounded metadata (PNG dimensions and byte count), never the URL, rendered text,
+or image content.
+
+Run it on a disposable fixture-only machine with Rust 1.88:
+
+```bash
+cd server
+npm run test:servo-contract-poc
+```
+
+`--allow-fixture-private` is used only by the executable test so its local
+synthetic fixture can be reached. It is not an application integration, must
+not be reused for monitor URLs, and does not alter Changd's egress policy.
+
+The proof makes no false compatibility claim. In 0.15.1, the public `Page`
+does **not** expose navigation response status, CSS/XPath element coordinates,
+an XPath lookup API, ordered click/fill/scroll/wait steps, or a transport proxy
+hook. The test reports those limits explicitly. Therefore it proves only the
+same-page text+PNG primitive; it does not prove strict HTTP failure handling,
+safe region cropping, Browser Steps, or production egress equivalence.
+
 ## Servo feature and extensibility matrix
 
 | Capability | Classification | Evidence and adapter consequence |
