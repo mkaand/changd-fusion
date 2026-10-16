@@ -34,6 +34,7 @@ jobs:
           docker run --name capture-performance --init --network none \
             --security-opt seccomp=docker/chromium-seccomp.json \
             --cpus 0.5 --memory 768m --memory-swap 768m --pids-limit 256 --shm-size 256m \
+            --env CAPTURE_OPTIMIZED_SHA=${{ github.sha }} \
             --volume "$RUNNER_TEMP/capture-results:/results" capture-performance
         timeout-minutes: 24
       - name: Remove benchmark container

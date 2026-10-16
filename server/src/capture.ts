@@ -248,7 +248,11 @@ export async function capture(
     stageStarted = performance.now();
   };
   const finishTimings = () => {
-    timings[stage] = Math.round((timings[stage] ?? 0) + performance.now() - stageStarted);
+    const now = performance.now();
+    timings[stage] = Math.round((timings[stage] ?? 0) + now - stageStarted);
+    // catch/return records the active stage before finally enters cleanup.
+    // Advance the checkpoint so that transition cannot count this work twice.
+    stageStarted = now;
   };
   let proxy: Awaited<ReturnType<typeof browserProxy>> | undefined;
   let browser: Browser | undefined;

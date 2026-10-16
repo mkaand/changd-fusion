@@ -1,8 +1,14 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import type { Page } from "playwright";
-import { navigateForCapture, stableElementBounds } from "../src/capture.js";
+import { capture, navigateForCapture, stableElementBounds, type Monitor } from "../src/capture.js";
 import { AttentionFailure } from "../src/attention.js";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
+import { randomBytes } from "node:crypto";
+import { EgressPolicy } from "../src/egress.js";
+import { readConfig } from "../src/config.js";
+import { closeServer, listenServer } from "./helpers/server.js";
 
 function navigationPage(status: number, ready: () => Promise<void>) {
   const calls: string[] = [];
@@ -47,4 +53,23 @@ test("visible-region observation is reused but a fresh frame must still confirm 
   samples = 0;
   assert.deepEqual(await stableElementBounds(async () => { samples++; return shifted; }, async () => {}, Date.now() + 1000, initial), shifted);
   assert.equal(samples, 2, "a changed initial box needs two new equivalent observations");
+});
+
+test("failure timing is recorded once before cleanup, rather than counting navigation twice", async (t) => {
+  const fixture = http.createServer((_req, res) => {
+    const timer = setTimeout(() => { res.writeHead(503); res.end("Synthetic error"); }, 100);
+    res.on("close", () => clearTimeout(timer));
+  });
+  t.after(() => closeServer(fixture));
+  await listenServer(fixture);
+  const port = (fixture.address() as AddressInfo).port;
+  const policy = new EgressPolicy(async () => [{ address: "127.0.0.1", family: 4 }], ip => ip === "127.0.0.1", new Set([port]));
+  const cfg = readConfig({ DATABASE_URL: "postgresql://localhost/unused", JWT_SECRET: randomBytes(32).toString("hex"), CHANNEL_KEY: randomBytes(32).toString("hex") });
+  const start = performance.now();
+  await assert.rejects(capture({ kind: "html", url: `http://fixture.test:${port}/` } as Monitor, cfg, policy), (error: any) => {
+    const elapsed = performance.now() - start;
+    assert.ok(error.timings.navigation >= 90);
+    assert.ok(error.timings.navigation <= elapsed + 10, "an error cannot report more navigation time than total wall time");
+    return true;
+  });
 });

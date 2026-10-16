@@ -8,6 +8,8 @@ import { performance } from "node:perf_hooks";
 import { pathToFileURL } from "node:url";
 import { PNG } from "pngjs";
 import pixelmatch from "pixelmatch";
+import { chromium } from "playwright";
+import { execFileSync } from "node:child_process";
 import { capture as after } from "../dist/capture.js";
 import { EgressPolicy } from "../dist/egress.js";
 import { readConfig } from "../dist/config.js";
@@ -121,7 +123,8 @@ try {
       } catch (error) {
         timings = error.timings ?? timings;
         code = error.code ?? error.state ?? "assertion_failure";
-        if (!expectedFailure || code === "assertion_failure") failure = true;
+        const expectedCode = scenario === "challenge" ? "challenge_detected" : scenario === "error_deferred" ? "capture_failed" : "timeout";
+        if (!expectedFailure || code !== expectedCode) failure = true;
       } finally { clearInterval(observer); }
       const elapsed = performance.now() - started;
       const endCPU = await cpu();
@@ -160,6 +163,8 @@ const summary = scenarios.flatMap(scenario => ["before", "after"].map(engine => 
     peak_cgroup_bytes: Math.max(...rows.map(row => row.peak_cgroup_bytes)), peak_browser_rss_bytes: Math.max(...rows.map(row => row.peak_browser_rss_bytes)) };
 }));
 const environment = { cpu: "0.5", memory_mib: 768, pids: 256, concurrency: 1, viewport: [1280, 900], scale: 1,
+  chromium: execFileSync(chromium.executablePath(), ["--version"], { encoding: "utf8", timeout: 5000 }).trim(),
+  optimized: process.env.CAPTURE_OPTIMIZED_SHA ?? "unspecified",
   node: process.version, baseline: "21990d7784e9f9f94976c20fdf32bfc63bbe7a45", cpu_model: (await readFile("/proc/cpuinfo", "utf8")).match(/^model name\s*:\s*(.+)/m)?.[1],
   playwright: JSON.parse(await readFile(new URL("../node_modules/playwright/package.json", import.meta.url), "utf8")).version,
   methodology: "one excluded warm-up; seven fresh-browser samples; alternating order; complete pipeline including cleanup; no external network; 50ms memory/RSS samples; cgroup CPU accounting; not VPS measurements" };
@@ -171,4 +176,15 @@ const markdown = ["# Chromium capture comparison", "", `Baseline: ${environment.
   `Result: ${failure ? "FAIL" : "PASS"}`].join("\n");
 await writeFile(`${output}/summary.md`, markdown);
 console.log(markdown);
+const aggregate = ["before", "after"].map(engine => {
+  const rows = samples.filter(row => row.engine === engine && row.measured && !row.expected_failure);
+  return { engine, samples: rows.length, valid: rows.filter(row => row.valid).length,
+    p50_ms: quantile(rows.map(row => row.wall_ms), .5), p95_ms: quantile(rows.map(row => row.wall_ms), .95),
+    cpu_p50_ms: Math.round(quantile(rows.map(row => row.cpu_usec), .5) / 1000),
+    throttled_p50_ms: Math.round(quantile(rows.map(row => row.throttled_usec), .5) / 1000),
+    peak_cgroup_mib: Math.round(Math.max(...rows.map(row => row.peak_cgroup_bytes)) / 1048576),
+    peak_browser_rss_mib: Math.round(Math.max(...rows.map(row => row.peak_browser_rss_bytes)) / 1048576),
+    remaining_processes: Math.max(...rows.map(row => row.remaining_processes)) };
+});
+console.log("CAPTURE_RESULT_SUMMARY " + JSON.stringify({ environment, summary, aggregate, comparisons, passed: !failure }));
 if (failure) process.exitCode = 1;
