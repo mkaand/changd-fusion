@@ -99,7 +99,7 @@ export function ImageComparison({
         <img
           {...imageProps}
           className="after"
-          style={{ clipPath: `inset(0 ${100 - position}% 0 0)` }}
+          style={{ clipPath: `inset(0 0 0 ${position}%)` }}
           src={url(after)}
           alt="After capture"
           draggable={false}
@@ -113,7 +113,7 @@ export function ImageComparison({
       <Slider
         ariaLabelForHandle="Before / After comparison"
         ariaValueTextFormatterForHandle={(value) =>
-          `${value}% after, ${100 - value}% before`
+          `${value}% before, ${100 - value}% after`
         }
         value={position}
         onChange={setPosition}

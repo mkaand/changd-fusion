@@ -19,7 +19,7 @@ it("comparison slider has a keyboard-accessible label and changes the image over
   fireEvent.keyDown(slider, { key: "ArrowRight", keyCode: 39 });
   expect(slider).toHaveAttribute("aria-valuenow", "51");
   expect(screen.getByAltText("After capture")).toHaveStyle({
-    clipPath: "inset(0 49% 0 0)",
+    clipPath: "inset(0 0 0 51%)",
   });
 });
 it("dragging directly over a screenshot updates and clamps the comparison, with safe pointer release", () => {
