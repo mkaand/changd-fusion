@@ -27,7 +27,7 @@ jobs:
         run: |
           apt-get update
           apt-get install -y --no-install-recommends \
-            build-essential ca-certificates curl file pkg-config \
+            build-essential ca-certificates clang libclang-dev curl file pkg-config \
             libegl1-mesa-dev libfontconfig1-dev libfreetype-dev \
             libglib2.0-dev libharfbuzz-dev libssl-dev
           rm -rf /var/lib/apt/lists/*
