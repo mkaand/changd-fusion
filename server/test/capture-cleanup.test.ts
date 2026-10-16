@@ -13,6 +13,10 @@ test("proxy cleanup watchdog is independently bounded", async () => {
   assert.equal(await closeWithDeadline(() => new Promise<void>(() => {}), 15), false);
 });
 
+test("rejected cleanup is treated as a fatal-recovery outcome", async () => {
+  assert.equal(await closeWithDeadline(async () => { throw Error("synthetic close rejection"); }, 15), false);
+});
+
 test("normal cleanup completes within the production safety deadline", async () => {
   assert.ok(CAPTURE_CLEANUP_TIMEOUT_MS >= 1_000);
   assert.equal(await closeWithDeadline(async () => {}, CAPTURE_CLEANUP_TIMEOUT_MS), true);

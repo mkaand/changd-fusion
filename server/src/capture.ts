@@ -76,7 +76,7 @@ export async function closeWithDeadline(close: (() => Promise<void>) | undefined
   void closing.catch(() => {});
   try {
     return await Promise.race([
-      closing.then(() => true, () => true),
+      closing.then(() => true, () => false),
       new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); }),
     ]);
   } finally { if (timer) clearTimeout(timer); }

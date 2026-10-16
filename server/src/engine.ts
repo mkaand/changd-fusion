@@ -288,6 +288,10 @@ export async function runMonitor(
         throw e;
       }
     } catch (e) {
+      // Cleanup watchdog failures are process-fatal, not monitor failures.
+      // Do not touch failure_count, monitor state, events, or notifications;
+      // the finally block below still releases this monitor's DB locks.
+      if (isWorkerFatalError(e)) throw e;
       for (const file of saved) await storage.remove(file);
       const diagnostic =
         e instanceof AttentionFailure
@@ -341,7 +345,6 @@ export async function runMonitor(
         await c.query("ROLLBACK");
         throw error;
       }
-        if (isWorkerFatalError(e)) throw e;
     }
     return true;
   } finally {
