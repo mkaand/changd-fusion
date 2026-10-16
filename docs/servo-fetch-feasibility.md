@@ -148,6 +148,11 @@ hook. The test reports those limits explicitly. Therefore it proves only the
 same-page text+PNG primitive; it does not prove strict HTTP failure handling,
 safe region cropping, Browser Steps, or production egress equivalence.
 
+The POC pins the pre-release `pkcs1`/`pkcs8` transitive versions that upstream
+0.15.1's own lock file uses. This avoids a fresh Cargo solver selecting newer,
+incompatible release-candidate crypto APIs; it is a reproducibility pin, not a
+runtime security-policy change.
+
 ## Servo feature and extensibility matrix
 
 | Capability | Classification | Evidence and adapter consequence |
