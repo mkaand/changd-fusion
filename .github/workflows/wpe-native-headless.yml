@@ -1,0 +1,70 @@
+name: Native WPE Headless Feasibility
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - experiment/wpe-webkit-benchmark
+    paths:
+      - .github/workflows/wpe-native-headless.yml
+      - docs/wpe-webkit-feasibility.md
+
+permissions:
+  contents: read
+
+jobs:
+  native-wpe:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Build an isolated Debian Sid runtime
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends debootstrap
+          root="$RUNNER_TEMP/wpe-sid-root"
+          sudo debootstrap --variant=minbase --components=main sid "$root" http://deb.debian.org/debian
+          sudo chroot "$root" /bin/sh -ceu '
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+              bubblewrap ca-certificates curl file libwpewebkit-2.0-dev=2.54.1-1 \
+              wpewebkit-webdriver=2.54.1-1
+            test "$(pkg-config --modversion wpe-webkit-2.0)" = "2.54.1"
+            useradd --create-home --uid 1000 wpe
+          '
+
+      - name: Verify unprivileged Bubblewrap namespaces
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/wpe-sid-root"
+          sudo chroot --userspec=wpe:wpe "$root" /usr/bin/bwrap \
+            --unshare-user --unshare-pid --proc /proc --dev /dev --ro-bind / /bin/true
+
+      - name: Prove native WPE headless JavaScript screenshot
+        run: |
+          set -euo pipefail
+          root="$RUNNER_TEMP/wpe-sid-root"
+          sudo chroot --userspec=wpe:wpe "$root" /bin/sh -ceu '
+            export HOME=/home/wpe XDG_RUNTIME_DIR=/tmp/wpe-runtime
+            export PATH=/usr/lib/x86_64-linux-gnu/wpe-webkit-2.0:$PATH
+            mkdir -p "$XDG_RUNTIME_DIR"; chmod 700 "$XDG_RUNTIME_DIR"
+            WPE_PLATFORM=headless WPEWebDriver --host=local --port=9515 >/tmp/wpe-webdriver.log 2>&1 &
+            driver=$!
+            cleanup() { kill "$driver" 2>/dev/null || true; wait "$driver" 2>/dev/null || true; }
+            trap cleanup EXIT
+            for n in $(seq 1 30); do curl -fsS http://127.0.0.1:9515/status >/dev/null && break; sleep 1; done
+            session=$(curl -fsS -X POST http://127.0.0.1:9515/session -H "Content-Type: application/json" --data "{\"capabilities\":{\"alwaysMatch\":{\"browserName\":\"MiniBrowser\"}}}")
+            printf "%s" "$session" | grep -q "\"browserVersion\":\"2.54.1\""
+            id=$(printf "%s" "$session" | sed -n "s/.*\"sessionId\":\"\\([^\"]*\\)\".*/\\1/p")
+            test -n "$id"
+            url="data:text/html,%3Cbody%20style%3D%27margin%3A0%3Bbackground%3A%2316a34a%27%3E%3Ch1%3EWaiting%3C%2Fh1%3E%3Cscript%3Edocument.body.dataset.ready%3D%27native-wpe%27%3Bdocument.querySelector%28%27h1%27%29.textContent%3D%27JavaScript%20rendered%27%3B%3C%2Fscript%3E"
+            curl -fsS -X POST "http://127.0.0.1:9515/session/$id/url" -H "Content-Type: application/json" --data "{\"url\":\"$url\"}" >/dev/null
+            state=$(curl -fsS -X POST "http://127.0.0.1:9515/session/$id/execute/sync" -H "Content-Type: application/json" --data "{\"script\":\"return document.body.dataset.ready\",\"args\":[]}")
+            printf "%s" "$state" | grep -q native-wpe
+            curl -fsS "http://127.0.0.1:9515/session/$id/screenshot" | sed -n "s/.*\"value\":\"\\([^\"]*\\)\".*/\\1/p" | base64 -d >/tmp/wpe-native.png
+            file /tmp/wpe-native.png | grep -q "PNG image data"
+            curl -fsS -X DELETE "http://127.0.0.1:9515/session/$id" >/dev/null
+            test "$(pgrep -c -f "WPEWebProcess|WPENetworkProcess" || true)" = "0"
+          '

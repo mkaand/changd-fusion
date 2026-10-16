@@ -50,3 +50,13 @@ made. A native WPE benchmark can proceed only in a CI executor that supports
 the required unprivileged user namespace while retaining WPE's own sandbox and
 the benchmark's internal fixture isolation. The production image, application
 egress policy, monitor data, and Servo benchmark remain unchanged.
+
+## Hosted-runner recovery probe
+
+`Native WPE Headless Feasibility` creates an ephemeral Debian Sid chroot on a
+GitHub-hosted Ubuntu runner. It installs the exact `2.54.1-1` Sid packages in
+that chroot, runs an unprivileged Bubblewrap namespace preflight, then launches
+`WPE_PLATFORM=headless WPEWebDriver`. The probe uses a local `data:` JavaScript
+fixture and the native WPE WebDriver screenshot endpoint. It neither changes
+the runner's sandbox configuration nor uses Docker, Chromium, Playwright, GTK
+WebKit, production data, or external page targets.
