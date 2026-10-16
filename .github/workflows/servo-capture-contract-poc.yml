@@ -39,4 +39,11 @@ jobs:
         working-directory: server
         env:
           CARGO_NET_RETRY: "2"
-        run: node scripts/servo-capture-contract-poc-test.mjs
+        run: |
+          runtime_dir="$(mktemp -d)"
+          chmod 700 "$runtime_dir"
+          test "$(stat -c %a "$runtime_dir")" = "700"
+          test -O "$runtime_dir"
+          export XDG_RUNTIME_DIR="$runtime_dir"
+          trap 'rm -rf "$runtime_dir"' EXIT
+          node scripts/servo-capture-contract-poc-test.mjs
