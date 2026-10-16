@@ -36,7 +36,7 @@ jobs:
             libxcb1 libxcb-render0 libxcb-shape0 libxcb-xfixes0 \
             fonts-dejavu-core fonts-noto-core fonts-liberation2 \
             xauth xvfb
-          rm -rf /var/lib/apt/lists/*
+          sudo rm -rf /var/lib/apt/lists/*
       - uses: actions/setup-node@v6
         with:
           node-version: 24.19.0
