@@ -29,7 +29,12 @@ jobs:
           apt-get install -y --no-install-recommends \
             build-essential ca-certificates clang libclang-dev curl file pkg-config \
             libegl1-mesa-dev libfontconfig1-dev libfreetype-dev \
-            libglib2.0-dev libharfbuzz-dev libssl-dev
+            libglib2.0-dev libharfbuzz-dev libssl-dev \
+            libegl1 libegl-mesa0 libgles2 libgl1-mesa-dri \
+            libfontconfig1 libfreetype6 libharfbuzz0b libx11-6 \
+            libxcb1 libxcb-render0 libxcb-shape0 libxcb-xfixes0 \
+            fonts-dejavu-core fonts-noto-core fonts-liberation2 \
+            xauth xvfb
           rm -rf /var/lib/apt/lists/*
       - uses: actions/setup-node@v6
         with:
@@ -45,5 +50,7 @@ jobs:
           test "$(stat -c %a "$runtime_dir")" = "700"
           test -O "$runtime_dir"
           export XDG_RUNTIME_DIR="$runtime_dir"
+          export LIBGL_ALWAYS_SOFTWARE=1
           trap 'rm -rf "$runtime_dir"' EXIT
-          node scripts/servo-capture-contract-poc-test.mjs
+          xvfb-run -a --server-args='-screen 0 1280x800x24 -nolisten tcp' \
+            node scripts/servo-capture-contract-poc-test.mjs
