@@ -9,6 +9,7 @@ import {
   type CaptureStage,
   type CaptureTimings,
   HttpError,
+  WorkerFatalError,
 } from "./errors.js";
 import { checkDimensions, pngDimensions } from "./image.js";
 import type { Config } from "./config.js";
@@ -65,6 +66,21 @@ export type Capture = {
   // map without URLs, selectors, page content, or raw provider errors.
   timings?: CaptureTimings;
 };
+
+export const CAPTURE_CLEANUP_TIMEOUT_MS = 5_000;
+
+export async function closeWithDeadline(close: (() => Promise<void>) | undefined, timeoutMs = CAPTURE_CLEANUP_TIMEOUT_MS): Promise<boolean> {
+  if (!close) return true;
+  let timer: NodeJS.Timeout | undefined;
+  const closing = Promise.resolve().then(close);
+  void closing.catch(() => {});
+  try {
+    return await Promise.race([
+      closing.then(() => true, () => false),
+      new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); }),
+    ]);
+  } finally { if (timer) clearTimeout(timer); }
+}
 
 export function shouldBypassJinaCache(m: Pick<Monitor, "text_source" | "extraction_mode">) {
   return m.text_source === "jina" && m.extraction_mode === "selected_text";
@@ -441,6 +457,7 @@ export async function capture(
     return { text, screenshot, warning, timings };
   } catch (error) {
     finishTimings();
+    if (error instanceof WorkerFatalError) { error.timings = timings; throw error; }
     if (error instanceof AttentionFailure) { error.timings = timings; throw error; }
     const failure = deadlineElapsed
       ? new CaptureFailure(stage, (stage as string) === "screenshot_rasterization" ? "screenshot_timeout" : "timeout")
@@ -450,11 +467,12 @@ export async function capture(
   } finally {
     if (timer) clearTimeout(timer);
     enterStage("cleanup");
-    try {
-      await browser?.close();
-    } finally {
-      await proxy?.close();
-      finishTimings();
-    }
+    const browserToClose = browser;
+    const proxyToClose = proxy;
+    const browserClosed = await closeWithDeadline(browserToClose ? () => browserToClose.close() : undefined);
+    const proxyClosed = await closeWithDeadline(proxyToClose ? () => proxyToClose.close() : undefined);
+    finishTimings();
+    if (!browserClosed) throw new WorkerFatalError("browser", timings);
+    if (!proxyClosed) throw new WorkerFatalError("proxy", timings);
   }
 }

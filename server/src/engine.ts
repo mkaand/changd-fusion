@@ -14,6 +14,7 @@ import { openValues } from "./vault.js";
 import { AttentionFailure } from "./attention.js";
 import {
   captureFailure,
+  isWorkerFatalError,
   type CaptureStage,
   publicFailure,
 } from "./errors.js";
@@ -287,6 +288,10 @@ export async function runMonitor(
         throw e;
       }
     } catch (e) {
+      // Cleanup watchdog failures are process-fatal, not monitor failures.
+      // Do not touch failure_count, monitor state, events, or notifications;
+      // the finally block below still releases this monitor's DB locks.
+      if (isWorkerFatalError(e)) throw e;
       for (const file of saved) await storage.remove(file);
       const diagnostic =
         e instanceof AttentionFailure

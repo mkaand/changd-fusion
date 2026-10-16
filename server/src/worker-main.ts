@@ -2,6 +2,7 @@ import { readConfig } from "./config.js";
 import { makePool } from "./db.js";
 import { retainHistory } from "./engine.js";
 import { workerCycle } from "./worker.js";
+import { isWorkerFatalError } from "./errors.js";
 import pino from "pino";
 const cfg = readConfig(),
   pool = makePool(cfg.DATABASE_URL),
@@ -51,7 +52,14 @@ try {
         await retainHistory(pool, cfg);
         cleanup = Date.now();
       }
-    } catch {
+    } catch (error) {
+      if (isWorkerFatalError(error)) {
+        log.fatal(
+          { code: "worker_cleanup_watchdog", resource: error.resource, timings: error.timings, worker_pid: process.pid },
+          "Capture cleanup watchdog triggered; exiting for supervised restart",
+        );
+        process.exit(1);
+      }
       log.error({ code: "worker_cycle_failed" }, "Worker cycle failed");
     }
     if (!stopped) await new Promise((resolve) => setTimeout(resolve, 1000));

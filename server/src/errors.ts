@@ -52,6 +52,7 @@ export const captureFailureCodes = [
   "capacity_busy",
   "resource_limit",
   "capture_failed",
+  "cleanup_timeout",
   "internal_error",
   "unknown",
 ] as const;
@@ -68,6 +69,18 @@ export class CaptureFailure extends Error {
   ) {
     super(message);
   }
+}
+
+export class WorkerFatalError extends Error {
+  readonly code = "cleanup_timeout" as const;
+  constructor(public resource: "browser" | "proxy", public timings?: CaptureTimings) {
+    super("Capture cleanup did not complete before its safety deadline.");
+    this.name = "WorkerFatalError";
+  }
+}
+
+export function isWorkerFatalError(error: unknown): error is WorkerFatalError {
+  return error instanceof WorkerFatalError;
 }
 
 // This deliberately examines only stable error names, safe HttpError messages
