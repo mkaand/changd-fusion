@@ -1,9 +1,14 @@
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+const expectedVersion = readFileSync(".devcontainer/Dockerfile", "utf8").match(/^ARG CHROMIUM_VERSION=(\S+)$/m)?.[1];
+if (!expectedVersion) throw Error("Missing pinned Dev Container Chromium version");
 // Reuse the checked-in application browser dependency through a read-only bind, never copy private runtime state.
 const script = `
 const {chromium}=require('/source/server/node_modules/playwright');
+const {execFileSync}=require('node:child_process');
 (async()=>{
- if(process.getuid()===0)throw Error('Rootless browser required');
+ if(process.getuid()!==1000)throw Error('UID 1000 browser required');
+ for(const pkg of ['chromium','chromium-common','chromium-sandbox'])if(execFileSync('dpkg-query',['-W','-f='+String.fromCharCode(36)+'{Version}',pkg],{encoding:'utf8'})!==process.env.EXPECTED_CHROMIUM_VERSION)throw Error('Chromium package version mismatch');
  const browser=await chromium.launch({executablePath:'/usr/bin/chromium',chromiumSandbox:true,timeout:15000});
  try{const page=await browser.newPage();await page.goto('chrome://sandbox');if(!/Seccomp-BPF sandbox\\s+Yes/.test(await page.locator('body').innerText()))throw Error('Sandbox inactive');}
  finally{await browser.close();}
@@ -27,6 +32,8 @@ const r = spawnSync(
     "256",
     "--shm-size",
     "256m",
+    "--env",
+    "EXPECTED_CHROMIUM_VERSION=" + expectedVersion,
     "-v",
     `${process.cwd()}/server/node_modules:/source/server/node_modules:ro`,
     process.env.FUSION_PREVIEW_IMAGE ?? "changd-fusion-preview:ci",

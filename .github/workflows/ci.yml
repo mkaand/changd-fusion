@@ -93,7 +93,7 @@ jobs:
         with:
           node-version: 24.19.0
       - name: Build production API and UI images
-        run: docker build -t changd-fusion-api:ci ./server && docker build -t changd-fusion-ui:ci ./frontend && docker build -t changd-fusion-preview:ci -f .devcontainer/Dockerfile .
+        run: docker build --pull --no-cache --progress=plain -t changd-fusion-api:ci ./server && docker build --pull --no-cache --progress=plain -t changd-fusion-ui:ci ./frontend && docker build --pull --no-cache --progress=plain -t changd-fusion-preview:ci -f .devcontainer/Dockerfile .
         timeout-minutes: 10
       - name: Rootless resource limits and sandboxed Browser Steps smoke
         run: node scripts/docker-smoke.mjs
@@ -102,6 +102,29 @@ jobs:
         run: npm ci --prefix server --ignore-scripts --no-audit --no-fund && node scripts/preview-docker-smoke.mjs
         timeout-minutes: 2
       - name: Real Dev Container creation, HOME ownership and cross-UID resume
+        run: npm install --prefix "$RUNNER_TEMP/fusion-devcontainer-cli" --no-audit --no-fund @devcontainers/cli@0.89.0 && node scripts/devcontainer-smoke.mjs
+        env:
+          DEVCONTAINER_CLI: ${{ runner.temp }}/fusion-devcontainer-cli/node_modules/.bin/devcontainer
+        timeout-minutes: 10
+  docker-arm64:
+    # Native architecture validation; no privileged QEMU/binfmt setup or host policy changes.
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24.19.0
+      - name: Clean native ARM64 image builds
+        run: docker build --pull --no-cache --progress=plain -t changd-fusion-api:ci ./server && docker build --pull --no-cache --progress=plain -t changd-fusion-ui:ci ./frontend && docker build --pull --no-cache --progress=plain -t changd-fusion-preview:ci -f .devcontainer/Dockerfile .
+        timeout-minutes: 10
+      - name: ARM64 rootless resource limits and sandboxed Browser Steps smoke
+        run: node scripts/docker-smoke.mjs
+        timeout-minutes: 2
+      - name: ARM64 Codespaces image sandbox smoke
+        run: npm ci --prefix server --ignore-scripts --no-audit --no-fund && node scripts/preview-docker-smoke.mjs
+        timeout-minutes: 2
+      - name: ARM64 real Dev Container creation, HOME ownership and cross-UID resume
         run: npm install --prefix "$RUNNER_TEMP/fusion-devcontainer-cli" --no-audit --no-fund @devcontainers/cli@0.89.0 && node scripts/devcontainer-smoke.mjs
         env:
           DEVCONTAINER_CLI: ${{ runner.temp }}/fusion-devcontainer-cli/node_modules/.bin/devcontainer
