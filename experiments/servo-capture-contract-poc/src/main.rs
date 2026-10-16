@@ -1,4 +1,4 @@
-use std::{env, time::Duration};
+use std::{env, io::Write, time::Duration};
 
 use serde_json::json;
 use servo_fetch::{FetchOptions, NetworkPolicy, fetch};
@@ -6,7 +6,19 @@ use servo_fetch::{FetchOptions, NetworkPolicy, fetch};
 const PNG_SIGNATURE: &[u8; 8] = b"\x89PNG\r\n\x1a\n";
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() {
+    let exit_code = match run().await {
+        Ok(()) => 0,
+        Err(error) => {
+            eprintln!("servo-contract-stage: failed: {error}");
+            1
+        }
+    };
+    stage("process-exiting");
+    flush_and_exit(exit_code);
+}
+
+async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut args = env::args().skip(1);
     let allow_fixture_private = matches!(args.next().as_deref(), Some("--allow-fixture-private"));
     let url = args.next().ok_or("usage: servo-capture-contract-poc [--allow-fixture-private] URL EXPECTED_TEXT")?;
@@ -30,15 +42,18 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .settle(Duration::from_millis(350)),
     )
     .await?;
+    stage("fetch-returned");
 
     if !page.inner_text.contains(&expected_text) {
         return Err("expected rendered synthetic text was not present".into());
     }
+    stage("text-verified");
     let png = page.screenshot_png().ok_or("screenshot mode returned no PNG")?;
     let (width, height) = png_dimensions(png)?;
     if width == 0 || height == 0 {
         return Err("PNG dimensions must be non-zero".into());
     }
+    stage("png-verified");
 
     // Do not print page text, URLs, or screenshots: real Changd values may be
     // private. The machine-readable result exposes only bounded synthetic facts.
@@ -56,7 +71,28 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             }
         })
     );
+    std::io::stdout().flush()?;
+    stage("json-emitted");
     Ok(())
+}
+
+fn stage(name: &str) {
+    eprintln!("servo-contract-stage: {name}");
+    let _ = std::io::stderr().flush();
+}
+
+fn flush_and_exit(code: i32) -> ! {
+    let _ = std::io::stdout().flush();
+    let _ = std::io::stderr().flush();
+    // This isolated executable follows servo-fetch PRs #37 and #89 only after
+    // the FetchOptions result has been validated and emitted. It must never be
+    // copied into Changd's long-lived production workers.
+    #[allow(unsafe_code)]
+    // SAFETY: all POC output was flushed above and this short-lived executable
+    // owns no child process. _exit avoids SpiderMonkey's known atexit race.
+    unsafe {
+        libc::_exit(code);
+    }
 }
 
 fn png_dimensions(png: &[u8]) -> Result<(u32, u32), Box<dyn std::error::Error>> {

@@ -68,13 +68,28 @@ function run(command, args, options = {}) {
     child.stderr.on("data", chunk => { stderr += chunk; });
     child.once("error", error => finish(reject, error));
     child.once("close", (code, signal) => {
-      if (code === 0 && !timedOut) finish(resolve, { stdout, stderr });
+      if (code === 0 && !timedOut) finish(resolve, { stdout, stderr, pid: child.pid });
       else {
         const prefix = timedOut ? `${command} timed out after ${options.timeoutMs ?? PROCESS_TIMEOUT_MS}ms; ` : "";
         finish(reject, new Error(`${prefix}${describeExit(command, code, signal, stderr, stdout)}`));
       }
     });
   });
+}
+
+async function assertProcessGroupExited(pid) {
+  if (process.platform === "win32" || !pid) return;
+  const deadline = Date.now() + TERMINATION_GRACE_MS;
+  while (Date.now() < deadline) {
+    try {
+      process.kill(-pid, 0);
+    } catch (error) {
+      if (error.code === "ESRCH") return;
+      throw error;
+    }
+    await new Promise(resolve => setTimeout(resolve, 50));
+  }
+  throw new Error("Servo POC process group remained after capture completion");
 }
 
 async function ensurePrivateRuntimeDirectory() {
@@ -126,7 +141,7 @@ try {
     timeoutMs: BUILD_TIMEOUT_MS
   });
   const binary = path.join(pocDir, "target", "debug", "servo-capture-contract-poc");
-  const { stdout } = await run(binary, ["--allow-fixture-private", "http://127.0.0.1:4173/javascript", "JavaScript rendered"], {
+  const { stdout, stderr, pid } = await run(binary, ["--allow-fixture-private", "http://127.0.0.1:4173/javascript", "JavaScript rendered"], {
     cwd: pocDir,
     env: childEnvironment
   });
@@ -137,6 +152,12 @@ try {
   if (!String(result.capabilityLimits?.httpStatus).includes("not exposed")) {
     throw new Error("POC must not claim HTTP status support");
   }
+  for (const stage of ["fetch-returned", "text-verified", "png-verified", "json-emitted", "process-exiting"]) {
+    if (!stderr.includes(`servo-contract-stage: ${stage}`)) {
+      throw new Error(`missing Servo POC diagnostic stage: ${stage}`);
+    }
+  }
+  await assertProcessGroupExited(pid);
   process.stdout.write(`servo-contract-poc: ${JSON.stringify(result)}\n`);
 } finally {
   try {
