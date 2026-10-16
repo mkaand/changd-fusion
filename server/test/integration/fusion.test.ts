@@ -1423,6 +1423,28 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await slider.focus();
     await slider.press("ArrowRight");
     assert.equal(await slider.getAttribute("aria-valuenow"), "51");
+    const comparisonImage = page.getByRole("group", { name: "Drag to compare before and after" }).first();
+    await comparisonImage.scrollIntoViewIfNeeded();
+    const comparisonBounds = await comparisonImage.boundingBox();
+    assert.ok(comparisonBounds);
+    const comparisonY = comparisonBounds.y + Math.min(80, comparisonBounds.height / 2);
+    await page.mouse.move(comparisonBounds.x + comparisonBounds.width / 2, comparisonY);
+    await page.mouse.down();
+    await page.mouse.move(comparisonBounds.x + comparisonBounds.width * .25, comparisonY, { steps: 4 });
+    await page.mouse.up();
+    assert.equal(await slider.getAttribute("aria-valuenow"), "25", "mouse drag moves the on-image divider");
+    const touchSession = await page.context().newCDPSession(page);
+    try {
+      await touchSession.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: comparisonBounds.x + comparisonBounds.width / 2, y: comparisonY }] });
+      await touchSession.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: comparisonBounds.x + comparisonBounds.width * .75, y: comparisonY }] });
+      await touchSession.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      assert.equal(await slider.getAttribute("aria-valuenow"), "75", "touch drag moves the same divider");
+      assert.equal(await comparisonImage.locator(".after").evaluate(el => getComputedStyle(el).clipPath), "inset(0px 0px 0px 75%)");
+    } finally { await touchSession.detach(); }
+    // Restore the documented composition after exercising both input paths.
+    await slider.focus();
+    await slider.press("Home");
+    for (let value = 0; value < 51; value++) await slider.press("ArrowRight");
     await page.screenshot({ path: path.join(output, "history-desktop.png") });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.evaluate(() => window.scrollTo(0, 0));

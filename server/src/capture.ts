@@ -119,6 +119,29 @@ export function isElementFullyInViewport(
     bounds.y + bounds.height <= viewport.height);
 }
 
+export async function navigateForCapture(page: Page, url: string, deadline: number) {
+  // Inspect the final HTTP redirect response as soon as it commits. An error
+  // document must not spend the capture budget loading scripts before rejection.
+  // Successful documents still require DOMContentLoaded: commit alone is not
+  // evidence that parsing, deferred scripts or application initialization finished.
+  const response = await page.goto(url, {
+    waitUntil: "commit",
+    timeout: Math.max(1, deadline - Date.now()),
+  });
+  if (!response) throw Error("Capture navigation failed");
+  if (!response.ok())
+    throw (detectAttention(response.status(), new URL(page.url()).pathname, "", false, false) ??
+      new HttpError(422, "Website returned an unsuccessful HTTP response"));
+  await page.waitForLoadState("domcontentloaded", { timeout: Math.max(1, deadline - Date.now()) });
+}
+
+export async function scrollCaptureRegion(region: Locator) {
+  // Visibility and uniqueness are checked by the caller. Native instant scroll
+  // handles nested scroll containers without Playwright's redundant pre-scroll
+  // stability wait. The capture still requires stable bounds AFTER scrolling.
+  await region.evaluate((element) => element.scrollIntoView({ behavior: "instant", block: "center", inline: "center" }));
+}
+
 const boxIsClose = (a: { x: number; y: number; width: number; height: number }, b: { x: number; y: number; width: number; height: number }) =>
   Math.abs(a.x - b.x) <= 1 && Math.abs(a.y - b.y) <= 1 && Math.abs(a.width - b.width) <= 1 && Math.abs(a.height - b.height) <= 1;
 
@@ -126,8 +149,9 @@ export async function stableElementBounds(
   sample: () => Promise<{ x: number; y: number; width: number; height: number } | null>,
   nextFrame: () => Promise<void>,
   deadline: number,
+  initial?: { x: number; y: number; width: number; height: number } | null,
 ) {
-  let previous = await sample(), bounds = previous;
+  let previous = initial === undefined ? await sample() : initial, bounds = previous;
   for (let attempt = 0; attempt < 4 && Date.now() < deadline; attempt++) {
     await nextFrame();
     const current = await sample();
@@ -313,22 +337,7 @@ export async function capture(
       if (r.request().isNavigationRequest() && r.frame() === page.mainFrame())
         navigationStatus = r.status();
     });
-    const response = await page.goto(m.url, {
-      waitUntil: "domcontentloaded",
-      timeout: cfg.CAPTURE_TIMEOUT_MS,
-    });
-    if (!response) throw Error("Capture navigation failed");
-    if (!response.ok())
-      throw (
-        detectAttention(
-          response.status(),
-          new URL(page.url()).pathname,
-          "",
-          false,
-          false,
-        ) ??
-        new HttpError(422, "Website returned an unsuccessful HTTP response")
-      );
+    await navigateForCapture(page, m.url, deadline);
     enterStage("browser_steps");
     const warning = await runSteps(
       page,
@@ -418,8 +427,9 @@ export async function capture(
         // Playwright scroll actionability can be slow even when the element is
         // fully on screen. Preserve the existing scroll for offscreen/lazy
         // content, but avoid it when the current bounds are already visible.
-        if (!isElementFullyInViewport(await region.boundingBox(), page.viewportSize()))
-          await region.scrollIntoViewIfNeeded();
+        const initialBounds = await region.boundingBox();
+        const fullyVisible = isElementFullyInViewport(initialBounds, page.viewportSize());
+        if (!fullyVisible) await scrollCaptureRegion(region);
         // locator.screenshot performs another potentially long actionability
         // wait. Resolve a stable, validated box and use the bounded page
         // screenshot path shared by the other capture modes instead.
@@ -431,6 +441,7 @@ export async function capture(
           () => region.boundingBox(),
           () => page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))),
           deadline,
+          fullyVisible ? initialBounds : undefined,
         );
         if (bounds === undefined) throw new CaptureFailure("element_stability", "element_not_visible", "Capture region is not visible.");
         if (bounds === null) throw new CaptureFailure("element_stability", "element_unstable", "Capture region did not become stable in the bounded sampling window.");
