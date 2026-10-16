@@ -41,7 +41,7 @@ jobs:
           set -euo pipefail
           root="$RUNNER_TEMP/wpe-sid-root"
           sudo chroot --userspec=wpe:wpe "$root" /usr/bin/bwrap \
-            --unshare-user --unshare-pid --proc /proc --dev /dev --ro-bind / /bin/true
+            --unshare-user --unshare-pid --proc /proc --dev /dev --ro-bind / / -- /bin/true
 
       - name: Prove native WPE headless JavaScript screenshot
         run: |
