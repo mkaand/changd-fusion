@@ -17,16 +17,17 @@ permissions:
 
 jobs:
   same-session-contract:
-    runs-on: ubuntu-22.04
-    container:
-      image: debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
+    # servo-fetch exercises Servo directly. Its upstream E2E suite runs on a
+    # GitHub-hosted Ubuntu runner; the nested job container reproduced Servo's
+    # SIGSEGV after XDG runtime validation, so keep this proof on that model.
+    runs-on: ubuntu-24.04
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
       - name: Install native Servo build dependencies
         run: |
-          apt-get update
-          apt-get install -y --no-install-recommends \
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
             build-essential ca-certificates clang libclang-dev curl file pkg-config \
             libegl1-mesa-dev libfontconfig1-dev libfreetype-dev \
             libglib2.0-dev libharfbuzz-dev libssl-dev \
