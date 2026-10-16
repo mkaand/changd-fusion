@@ -18,9 +18,19 @@ permissions:
 jobs:
   same-session-contract:
     runs-on: ubuntu-22.04
+    container:
+      image: debian:trixie-slim@sha256:a99cfc517144bc59b1978475ec53b46ecabec7e43635402ee5b77cc54cd1b20a
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@v6
+      - name: Install native Servo build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends \
+            build-essential ca-certificates curl file pkg-config \
+            libegl1-mesa-dev libfontconfig1-dev libfreetype-dev \
+            libglib2.0-dev libharfbuzz-dev libssl-dev
+          rm -rf /var/lib/apt/lists/*
       - uses: actions/setup-node@v6
         with:
           node-version: 24.19.0
