@@ -26,6 +26,7 @@ jobs:
           sudo apt-get install -y --no-install-recommends debootstrap
           root="$RUNNER_TEMP/wpe-sid-root"
           sudo debootstrap --variant=minbase --components=main sid "$root" http://deb.debian.org/debian
+          sudo mount --bind /proc "$root/proc"
           sudo chroot "$root" /bin/sh -ceu '
             apt-get update -qq
             DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
@@ -68,3 +69,7 @@ jobs:
             curl -fsS -X DELETE "http://127.0.0.1:9515/session/$id" >/dev/null
             test "$(pgrep -c -f "WPEWebProcess|WPENetworkProcess" || true)" = "0"
           '
+
+      - name: Remove ephemeral chroot mounts
+        if: always()
+        run: sudo umount "$RUNNER_TEMP/wpe-sid-root/proc" || true
