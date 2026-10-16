@@ -14,6 +14,7 @@ import { openValues } from "./vault.js";
 import { AttentionFailure } from "./attention.js";
 import {
   captureFailure,
+  isWorkerFatalError,
   type CaptureStage,
   publicFailure,
 } from "./errors.js";
@@ -340,6 +341,7 @@ export async function runMonitor(
         await c.query("ROLLBACK");
         throw error;
       }
+        if (isWorkerFatalError(e)) throw e;
     }
     return true;
   } finally {

@@ -5,6 +5,7 @@ import { runMonitor, type CaptureFailureDiagnostic } from "./engine.js";
 import { dispatch } from "./outbox.js";
 import { deliver } from "./notifications.js";
 import { acquireChromiumLease } from "./chromium-capacity.js";
+import { isWorkerFatalError } from "./errors.js";
 export async function workerCycle(
   pool: Pool,
   cfg: Config,
@@ -30,12 +31,18 @@ export async function workerCycle(
         // Capacity contention is not a capture failure. Keep next_run due so a
         // later cycle can prefer this scheduled monitor over a new preview.
         if (usesChromium && !options.capture && !capacity) continue;
+        let fatalCleanup = false;
         try {
           await runMonitor(pool, cfg, monitor.id, {
             capture: options.capture,
             onFailure: options.onFailure,
           });
-        } finally { await capacity?.release(); }
+        } catch (error) {
+          fatalCleanup = isWorkerFatalError(error);
+          throw error;
+        } finally {
+          if (!fatalCleanup) await capacity?.release();
+        }
       }
     }),
   );
