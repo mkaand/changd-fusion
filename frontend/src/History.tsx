@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, type PointerEvent as ReactPointerEvent } from "react";
 import {
   Alert,
   Card,
@@ -24,6 +24,25 @@ export function ImageComparison({
 }) {
   const [position, setPosition] = useState(50),
     [failed, setFailed] = useState(false);
+  const activePointer = useRef<number | null>(null);
+  const moveDivider = (event: ReactPointerEvent<HTMLDivElement>) => {
+    const rect = event.currentTarget.getBoundingClientRect();
+    if (rect.width > 0) {
+      setPosition(Math.max(0, Math.min(100, Math.round((event.clientX - rect.left) * 100 / rect.width))));
+    }
+  };
+  const beginDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (event.pointerType === "mouse" && event.button !== 0) return;
+    activePointer.current = event.pointerId;
+    event.currentTarget.setPointerCapture?.(event.pointerId);
+    moveDivider(event);
+  };
+  const endDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
+    if (activePointer.current !== event.pointerId) return;
+    activePointer.current = null;
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId))
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
+  };
   const imageProps = {
     loading: "lazy" as const,
     decoding: "async" as const,
@@ -67,16 +86,29 @@ export function ImageComparison({
           type="warning"
         />
       )}
-      <div className="compare">
-        <img {...imageProps} src={url(before)} alt="Before capture" />
+      <div
+        className="compare"
+        role="group"
+        aria-label="Drag to compare before and after"
+        onPointerDown={beginDrag}
+        onPointerMove={(event) => { if (activePointer.current === event.pointerId) moveDivider(event); }}
+        onPointerUp={endDrag}
+        onPointerCancel={endDrag}
+      >
+        <img {...imageProps} src={url(before)} alt="Before capture" draggable={false} />
         <img
           {...imageProps}
           className="after"
           style={{ clipPath: `inset(0 ${100 - position}% 0 0)` }}
           src={url(after)}
           alt="After capture"
+          draggable={false}
         />
-        <div className="divider" style={{ left: position + "%" }} />
+        <span className="comparison-side comparison-side-before" aria-hidden="true">Before</span>
+        <span className="comparison-side comparison-side-after" aria-hidden="true">After</span>
+        <div className="divider" style={{ left: position + "%" }} aria-hidden="true">
+          <span className="comparison-handle">↔</span>
+        </div>
       </div>
       <Slider
         ariaLabelForHandle="Before / After comparison"
@@ -86,9 +118,7 @@ export function ImageComparison({
         value={position}
         onChange={setPosition}
       />
-      <Space>
-        Before <span>↔</span> After
-      </Space>
+      <Typography.Text type="secondary">Drag the divider on the image, or use the keyboard-accessible slider.</Typography.Text>
     </>
   );
 }

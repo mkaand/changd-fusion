@@ -164,22 +164,59 @@ html, body, #root {
   max-width: 900px;
   margin-top: 16px;
   overflow: hidden;
+  touch-action: pan-y;
+  user-select: none;
+  cursor: ew-resize;
 }
 .compare img {
   display: block;
   width: 100%;
+  pointer-events: none;
 }
 .compare .after {
   position: absolute;
   inset: 0;
 }
-.divider {
+.compare .divider {
   position: absolute;
   top: 0;
   bottom: 0;
-  width: 2px;
+  width: 3px;
   background: #1677ff;
+  pointer-events: none;
+  z-index: 2;
 }
+.comparison-handle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border: 2px solid white;
+  border-radius: 50%;
+  color: white;
+  background: #1677ff;
+  font-weight: 700;
+  font-size: 22px;
+  box-shadow: 0 2px 8px #0005;
+}
+.comparison-side {
+  position: absolute;
+  top: 12px;
+  z-index: 2;
+  border-radius: 4px;
+  padding: 3px 8px;
+  background: #0009;
+  color: #fff;
+  font-size: 12px;
+  font-weight: 600;
+  pointer-events: none;
+}
+.comparison-side-before { left: 12px; }
+.comparison-side-after { right: 12px; }
 details {
   margin: 12px 0;
 }

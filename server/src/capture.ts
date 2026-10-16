@@ -107,6 +107,18 @@ async function cdpScreenshot(context: BrowserContext, page: Page, clip?: { x: nu
   } finally { await cdp.detach().catch(() => {}); }
 }
 
+export function isElementFullyInViewport(
+  bounds: { x: number; y: number; width: number; height: number } | null,
+  viewport: { width: number; height: number } | null,
+): boolean {
+  return Boolean(bounds && viewport &&
+    [bounds.x, bounds.y, bounds.width, bounds.height, viewport.width, viewport.height].every(Number.isFinite) &&
+    bounds.width > 0 && bounds.height > 0 &&
+    bounds.x >= 0 && bounds.y >= 0 &&
+    bounds.x + bounds.width <= viewport.width &&
+    bounds.y + bounds.height <= viewport.height);
+}
+
 const boxIsClose = (a: { x: number; y: number; width: number; height: number }, b: { x: number; y: number; width: number; height: number }) =>
   Math.abs(a.x - b.x) <= 1 && Math.abs(a.y - b.y) <= 1 && Math.abs(a.width - b.width) <= 1 && Math.abs(a.height - b.height) <= 1;
 
@@ -325,16 +337,18 @@ export async function capture(
       privateValues,
     );
     enterStage("attention_detection");
+    // One bounded DOM round-trip instead of three independent title/locator calls.
+    const attentionSignals = await page.evaluate(() => ({
+      title: document.title,
+      password: Boolean(document.querySelector('input[type="password"]')),
+      challenge: Boolean(document.querySelector('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .cf-challenge, #challenge-running, [data-sitekey]')),
+    }));
     const attention = detectAttention(
       navigationStatus,
       new URL(page.url()).pathname,
-      await page.title(),
-      (await page.locator('input[type="password"]').count()) > 0,
-      (await page
-        .locator(
-          'iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .cf-challenge, #challenge-running, [data-sitekey]',
-        )
-        .count()) > 0,
+      attentionSignals.title,
+      attentionSignals.password,
+      attentionSignals.challenge,
     );
     if (attention) throw attention;
     // Font readiness can wait for third-party font downloads until the global
@@ -401,7 +415,11 @@ export async function capture(
         if (!(await region.isVisible()))
           throw new CaptureFailure("visibility_validation", "element_not_visible", "Capture region is not visible.");
         enterStage("scroll_into_view");
-        await region.scrollIntoViewIfNeeded();
+        // Playwright scroll actionability can be slow even when the element is
+        // fully on screen. Preserve the existing scroll for offscreen/lazy
+        // content, but avoid it when the current bounds are already visible.
+        if (!isElementFullyInViewport(await region.boundingBox(), page.viewportSize()))
+          await region.scrollIntoViewIfNeeded();
         // locator.screenshot performs another potentially long actionability
         // wait. Resolve a stable, validated box and use the bounded page
         // screenshot path shared by the other capture modes instead.
