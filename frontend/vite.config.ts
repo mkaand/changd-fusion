@@ -4,12 +4,12 @@ import { loadEnv } from "vite";
 import packageJson from "./package.json" with { type: "json" };
 
 export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, ".", "VITE_");
+  const env = loadEnv(mode, ".", "");
   const buildMetadata = {
     version: packageJson.version,
-    commit: env.VITE_APP_COMMIT || "",
-    branch: env.VITE_APP_BRANCH || "",
-    sourcePr: env.VITE_APP_SOURCE_PR || "",
+    commit: env.VITE_APP_COMMIT || env.APP_COMMIT || "",
+    branch: env.VITE_APP_BRANCH || env.APP_BRANCH || "",
+    sourcePr: env.VITE_APP_SOURCE_PR || env.APP_SOURCE_PR || "",
   };
   return {
   plugins: [react()],
