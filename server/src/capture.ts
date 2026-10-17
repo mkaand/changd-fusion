@@ -119,6 +119,54 @@ export function isElementFullyInViewport(
     bounds.y + bounds.height <= viewport.height);
 }
 
+type ElementBounds = { x: number; y: number; width: number; height: number };
+
+// A locator bounding box is relative to the viewport but does not include
+// clipping imposed by overflow ancestors.  Keep this check in the page so a
+// visible viewport box is not mistaken for a fully paintable capture region.
+export async function elementCaptureViewportState(
+  region: Locator,
+): Promise<{ bounds: ElementBounds | null; fullyVisible: boolean }> {
+  return await region.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const bounds = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    const finite = [bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite);
+    if (
+      !finite ||
+      bounds.width <= 0 ||
+      bounds.height <= 0 ||
+      bounds.x < 0 ||
+      bounds.y < 0 ||
+      bounds.x + bounds.width > window.innerWidth ||
+      bounds.y + bounds.height > window.innerHeight
+    )
+      return { bounds: finite ? bounds : null, fullyVisible: false };
+
+    // The client box is the area that descendants may paint into.  Check only
+    // axes that the ancestor actually clips; overflow:hidden remains eligible
+    // for native programmatic scrolling, while overflow:clip is revalidated
+    // after that attempt and deterministically rejected if it cannot reveal
+    // the entire target.
+    for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+      const style = window.getComputedStyle(ancestor);
+      const clipsX = /^(?:auto|scroll|hidden|clip|overlay)$/.test(style.overflowX);
+      const clipsY = /^(?:auto|scroll|hidden|clip|overlay)$/.test(style.overflowY);
+      if (!clipsX && !clipsY) continue;
+      const container = ancestor.getBoundingClientRect();
+      const left = container.left + ancestor.clientLeft;
+      const top = container.top + ancestor.clientTop;
+      const right = left + ancestor.clientWidth;
+      const bottom = top + ancestor.clientHeight;
+      if (
+        (clipsX && (rect.left < left || rect.right > right)) ||
+        (clipsY && (rect.top < top || rect.bottom > bottom))
+      )
+        return { bounds, fullyVisible: false };
+    }
+    return { bounds, fullyVisible: true };
+  });
+}
+
 export async function navigateForCapture(page: Page, url: string, deadline: number) {
   // Inspect the final HTTP redirect response as soon as it commits. An error
   // document must not spend the capture budget loading scripts before rejection.
@@ -431,9 +479,14 @@ export async function capture(
         // Playwright scroll actionability can be slow even when the element is
         // fully on screen. Preserve the existing scroll for offscreen/lazy
         // content, but avoid it when the current bounds are already visible.
-        const initialBounds = await region.boundingBox();
-        const fullyVisible = isElementFullyInViewport(initialBounds, page.viewportSize());
-        if (!fullyVisible) await scrollCaptureRegion(region);
+        const initial = await elementCaptureViewportState(region);
+        if (!initial.fullyVisible) await scrollCaptureRegion(region);
+        // scrollIntoView() may not be able to reveal a target inside
+        // overflow:clip.  Do not rasterize the clipping background as if it
+        // were a complete element screenshot.
+        const afterScroll = initial.fullyVisible ? initial : await elementCaptureViewportState(region);
+        if (!afterScroll.fullyVisible)
+          throw new CaptureFailure("visibility_validation", "element_not_visible", "Capture region is clipped and cannot be fully revealed.");
         // locator.screenshot performs another potentially long actionability
         // wait. Resolve a stable, validated box and use the bounded page
         // screenshot path shared by the other capture modes instead.
@@ -445,7 +498,7 @@ export async function capture(
           () => region.boundingBox(),
           () => page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))),
           deadline,
-          fullyVisible ? initialBounds : undefined,
+          afterScroll.bounds,
         );
         if (bounds === undefined) throw new CaptureFailure("element_stability", "element_not_visible", "Capture region is not visible.");
         if (bounds === null) throw new CaptureFailure("element_stability", "element_unstable", "Capture region did not become stable in the bounded sampling window.");
