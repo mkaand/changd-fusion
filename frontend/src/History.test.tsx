@@ -19,9 +19,22 @@ it("comparison slider has a keyboard-accessible label and changes the image over
   fireEvent.keyDown(slider, { key: "ArrowRight", keyCode: 39 });
   expect(slider).toHaveAttribute("aria-valuenow", "51");
   expect(screen.getByAltText("After capture")).toHaveStyle({
-    clipPath: "inset(0 49% 0 0)",
+    clipPath: "inset(0 0 0 51%)",
   });
 });
+it("dragging directly over a screenshot updates and clamps the comparison, with safe pointer release", () => {
+  render(<ImageComparison before="before.png" after="after.png" />);
+  const image = screen.getByRole("group", { name: "Drag to compare before and after" });
+  vi.spyOn(image, "getBoundingClientRect").mockReturnValue({ left: 10, width: 200 } as DOMRect);
+  fireEvent.pointerDown(image, { pointerId: 7, pointerType: "touch", clientX: 160 });
+  expect(screen.getByRole("slider")).toHaveAttribute("aria-valuenow", "75");
+  fireEvent.pointerMove(image, { pointerId: 7, pointerType: "touch", clientX: 290 });
+  expect(screen.getByRole("slider")).toHaveAttribute("aria-valuenow", "100");
+  fireEvent.pointerUp(image, { pointerId: 7, pointerType: "touch", clientX: 290 });
+  fireEvent.pointerMove(image, { pointerId: 7, pointerType: "touch", clientX: 30 });
+  expect(screen.getByRole("slider")).toHaveAttribute("aria-valuenow", "100");
+});
+
 it("dimension changes show separate images rather than overlaying incompatible sizes", () => {
   render(
     <ImageComparison before="before.png" after="after.png" dimensionChanged />,

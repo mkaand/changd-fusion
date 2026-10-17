@@ -1398,6 +1398,60 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await themeSwitch.click();
     await page.getByText("Settings", { exact: true }).first().click();
     await page.getByRole("heading", { name: "Settings" }).waitFor();
+    const applicationMetadata = page.locator(".application-metadata");
+    await applicationMetadata.waitFor();
+    const waitForApplicationLayout = async (width: number, theme: "light" | "dark") => {
+      await page.setViewportSize({ width, height: 844 });
+      await page.waitForFunction((expected) => document.documentElement.dataset.theme === expected, theme);
+      await page.evaluate(async () => {
+        await document.fonts.ready.catch(() => undefined);
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+      });
+    };
+    for (const theme of ["light", "dark"] as const) {
+      if (await page.locator("html").getAttribute("data-theme") !== theme) {
+        await page.getByRole("banner").locator("[data-allmy-theme-switch]").click();
+        await page.waitForFunction((expected) => document.documentElement.dataset.theme === expected, theme);
+      }
+      for (const width of [320, 360, 375, 390, 430, 768, 1280]) {
+        await waitForApplicationLayout(width, theme);
+      const layout = await applicationMetadata.evaluate((card) => {
+        const content = card.querySelector(".ant-card-body") ?? card;
+        const contentBox = content.getBoundingClientRect();
+        const values = Array.from(card.querySelectorAll(".ant-descriptions-item-content, .application-metadata-value"))
+          .map((element) => {
+            const box = element.getBoundingClientRect();
+            return { left: box.left, right: box.right, width: box.width, scrollWidth: element.scrollWidth, clientWidth: element.clientWidth };
+          })
+          .filter((box) => box.width > 0);
+        const branch = card.querySelector(".application-metadata-value:not(a)");
+        return {
+          contentBox: { left: contentBox.left, right: contentBox.right },
+          values,
+          branch: branch ? { scrollWidth: branch.scrollWidth, clientWidth: branch.clientWidth } : null,
+          scrollWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
+          viewportWidth: window.innerWidth,
+        };
+      });
+        assert.ok(layout.scrollWidth <= layout.viewportWidth, `Application metadata does not overflow at ${width}px in ${theme} theme`);
+        assert.ok(layout.values.every((value) => value.left >= layout.contentBox.left - 1 && value.right <= layout.contentBox.right + 1), `Application metadata values fit their card at ${width}px in ${theme} theme`);
+        assert.ok(layout.values.every((value) => value.scrollWidth <= value.clientWidth + 1), `Application metadata values wrap without clipping at ${width}px in ${theme} theme`);
+        assert.ok(!layout.branch || layout.branch.scrollWidth <= layout.branch.clientWidth + 1, `Application branch remains readable at ${width}px in ${theme} theme`);
+      }
+    }
+    await page.getByRole("link", { name: /^Commit [0-9a-f]{40}$/i }).waitFor();
+    assert.match(await page.getByRole("link", { name: /^Commit [0-9a-f]{40}$/i }).getAttribute("href") ?? "", /^https:\/\/github\.com\/mkaand\/changd-fusion\/commit\/[0-9a-f]{40}$/i);
+    const sourcePr = page.getByRole("link", { name: /^#\d+$/ });
+    if (await sourcePr.count())
+      assert.match(await sourcePr.getAttribute("href") ?? "", /^https:\/\/github\.com\/mkaand\/changd-fusion\/pull\/\d+$/);
+    else
+      assert.ok(await applicationMetadata.getByText("Unavailable", { exact: true }).count(), "missing source PR metadata has a safe fallback");
+    if (await page.locator("html").getAttribute("data-theme") !== "light") {
+      await page.getByRole("banner").locator("[data-allmy-theme-switch]").click();
+      await page.waitForFunction(() => document.documentElement.dataset.theme === "light");
+    }
+    await page.setViewportSize({ width: 1280, height: 900 });
     await page.getByText("Notifications", { exact: true }).first().click();
     await page.getByRole("heading", { name: "Notification channels" }).waitFor();
     await page.screenshot({ path: path.join(output, "settings-notifications.png") });
@@ -1423,6 +1477,28 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await slider.focus();
     await slider.press("ArrowRight");
     assert.equal(await slider.getAttribute("aria-valuenow"), "51");
+    const comparisonImage = page.getByRole("group", { name: "Drag to compare before and after" }).first();
+    await comparisonImage.scrollIntoViewIfNeeded();
+    const comparisonBounds = await comparisonImage.boundingBox();
+    assert.ok(comparisonBounds);
+    const comparisonY = comparisonBounds.y + Math.min(80, comparisonBounds.height / 2);
+    await page.mouse.move(comparisonBounds.x + comparisonBounds.width / 2, comparisonY);
+    await page.mouse.down();
+    await page.mouse.move(comparisonBounds.x + comparisonBounds.width * .25, comparisonY, { steps: 4 });
+    await page.mouse.up();
+    assert.equal(await slider.getAttribute("aria-valuenow"), "25", "mouse drag moves the on-image divider");
+    const touchSession = await page.context().newCDPSession(page);
+    try {
+      await touchSession.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [{ x: comparisonBounds.x + comparisonBounds.width / 2, y: comparisonY }] });
+      await touchSession.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [{ x: comparisonBounds.x + comparisonBounds.width * .75, y: comparisonY }] });
+      await touchSession.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+      assert.equal(await slider.getAttribute("aria-valuenow"), "75", "touch drag moves the same divider");
+      assert.equal(await comparisonImage.locator(".after").evaluate(el => getComputedStyle(el).clipPath), "inset(0px 0px 0px 75%)");
+    } finally { await touchSession.detach(); }
+    // Restore the documented composition after exercising both input paths.
+    await slider.focus();
+    await slider.press("Home");
+    for (let value = 0; value < 51; value++) await slider.press("ArrowRight");
     await page.screenshot({ path: path.join(output, "history-desktop.png") });
     await page.setViewportSize({ width: 390, height: 844 });
     await page.evaluate(() => window.scrollTo(0, 0));

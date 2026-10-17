@@ -1,0 +1,52 @@
+name: Chromium capture performance
+on:
+  workflow_dispatch:
+  push:
+    branches: [feature/chromium-targeted-optimizations-visual-compare]
+    paths:
+      - server/src/capture.ts
+      - server/scripts/capture-performance.mjs
+      - server/benchmarks/Dockerfile
+      - .github/workflows/capture-performance.yml
+permissions:
+  contents: read
+concurrency:
+  group: capture-performance-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  benchmark:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          ref: 21990d7784e9f9f94976c20fdf32bfc63bbe7a45
+          path: benchmark-baseline
+          persist-credentials: false
+      - name: Build isolated benchmark runtime
+        run: docker build -t capture-performance -f server/benchmarks/Dockerfile .
+        timeout-minutes: 10
+      - name: Compare complete capture pipelines at half a CPU
+        run: |
+          mkdir -p "$RUNNER_TEMP/capture-results"
+          chmod 777 "$RUNNER_TEMP/capture-results"
+          docker run --name capture-performance --init --network none \
+            --security-opt seccomp=docker/chromium-seccomp.json \
+            --cpus 0.5 --memory 768m --memory-swap 768m --pids-limit 256 --shm-size 256m \
+            --env CAPTURE_OPTIMIZED_SHA=${{ github.sha }} \
+            --volume "$RUNNER_TEMP/capture-results:/results" capture-performance
+        timeout-minutes: 24
+      - name: Remove benchmark container
+        if: always()
+        run: docker rm -f capture-performance || true
+      - name: Upload measured results and synthetic PNGs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: chromium-capture-performance
+          path: ${{ runner.temp }}/capture-results
+          if-no-files-found: error
+      - name: Publish summary
+        if: always()
+        run: test ! -f "$RUNNER_TEMP/capture-results/summary.md" || cat "$RUNNER_TEMP/capture-results/summary.md" >> "$GITHUB_STEP_SUMMARY"
