@@ -127,7 +127,7 @@ type ElementBounds = { x: number; y: number; width: number; height: number };
 // region; CDP can still capture a valid target beyond the viewport.
 export async function elementCaptureViewportState(
   region: Locator,
-): Promise<{ bounds: ElementBounds | null; needsScroll: boolean; clippedByAncestor: boolean }> {
+): Promise<{ bounds: ElementBounds | null; needsScroll: boolean; clippedByAncestor: boolean; exceedsViewport: boolean }> {
   return await region.evaluate((element) => {
     const rect = element.getBoundingClientRect();
     const bounds = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
@@ -137,7 +137,7 @@ export async function elementCaptureViewportState(
       bounds.width <= 0 ||
       bounds.height <= 0
     )
-      return { bounds: finite ? bounds : null, needsScroll: true, clippedByAncestor: true };
+      return { bounds: finite ? bounds : null, needsScroll: true, clippedByAncestor: true, exceedsViewport: false };
 
     // The client box is the area that descendants may paint into.  Check only
     // axes that the ancestor actually clips; overflow:hidden remains eligible
@@ -158,7 +158,7 @@ export async function elementCaptureViewportState(
         (clipsX && (rect.left < left || rect.right > right)) ||
         (clipsY && (rect.top < top || rect.bottom > bottom))
       )
-        return { bounds, needsScroll: true, clippedByAncestor: true };
+        return { bounds, needsScroll: true, clippedByAncestor: true, exceedsViewport: false };
     }
     // CDP captures a document-space clip with captureBeyondViewport enabled.
     // A target larger than the viewport is therefore valid when no overflow
@@ -169,7 +169,12 @@ export async function elementCaptureViewportState(
       bounds.x >= 0 && bounds.y >= 0 &&
       bounds.x + bounds.width <= window.innerWidth &&
       bounds.y + bounds.height <= window.innerHeight;
-    return { bounds, needsScroll: fitsViewport && !withinViewport, clippedByAncestor: false };
+    return {
+      bounds,
+      needsScroll: fitsViewport && !withinViewport,
+      clippedByAncestor: false,
+      exceedsViewport: !fitsViewport,
+    };
   });
 }
 
@@ -513,15 +518,13 @@ export async function capture(
           limits,
         );
         enterStage("screenshot_rasterization");
-        const viewport = page.viewportSize();
-        const exceedsViewport = Boolean(viewport && (bounds.width > viewport.width || bounds.height > viewport.height));
         // Chromium's direct CDP clipping is the lower-overhead path for normal
         // element captures. In the sandboxed Chromium runtime, however, its
         // captureBeyondViewport flag can still truncate a clip larger than the
         // active viewport. Playwright's native clipped screenshot path handles
         // that valid, already dimension-checked case without adding locator
         // actionability waits. Keep it limited to oversize targets (and masks).
-        if (m.mask_selectors.length || exceedsViewport) screenshot = await page.screenshot({ ...options, clip: bounds });
+        if (m.mask_selectors.length || afterScroll.exceedsViewport) screenshot = await page.screenshot({ ...options, clip: bounds });
         else {
           const scroll = await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
           screenshot = await cdpScreenshot(context, page, { x: bounds.x + scroll.x, y: bounds.y + scroll.y, width: bounds.width, height: bounds.height });
