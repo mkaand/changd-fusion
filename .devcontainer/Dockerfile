@@ -1,10 +1,11 @@
 # syntax=docker/dockerfile:1
 # Development-only image; no application credentials or checkout copied into layers.
 FROM node:24.19.0-bookworm-slim@sha256:a9f5f7c91a432850b2a8a7797adf5eadb6c733ceed61167806cee7ea7fbc29df
-ARG CHROMIUM_VERSION=155.0.8059.39-1~deb12u1
+# Keep browser/common/sandbox aligned with the authenticated Bookworm security update.
+ARG CHROMIUM_VERSION=155.0.8059.79-1~deb12u1
 ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    chromium=${CHROMIUM_VERSION} chromium-sandbox=${CHROMIUM_VERSION} fonts-liberation \
+    chromium=${CHROMIUM_VERSION} chromium-common=${CHROMIUM_VERSION} chromium-sandbox=${CHROMIUM_VERSION} fonts-liberation \
     git curl ca-certificates python3 procps \
     && find /var/lib/apt/lists -type f -delete
 RUN --mount=type=secret,id=build_ca \
