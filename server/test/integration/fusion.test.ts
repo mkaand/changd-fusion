@@ -1411,7 +1411,7 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     };
     for (const theme of ["light", "dark"] as const) {
       if (await page.locator("html").getAttribute("data-theme") !== theme) {
-        await page.locator("[data-allmy-theme-switch]:visible").click();
+        await page.getByRole("banner").locator("[data-allmy-theme-switch]").click();
         await page.waitForFunction((expected) => document.documentElement.dataset.theme === expected, theme);
       }
       for (const width of [320, 360, 375, 390, 430, 768, 1280]) {
@@ -1448,7 +1448,7 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     else
       assert.ok(await applicationMetadata.getByText("Unavailable", { exact: true }).count(), "missing source PR metadata has a safe fallback");
     if (await page.locator("html").getAttribute("data-theme") !== "light") {
-      await page.locator("[data-allmy-theme-switch]:visible").click();
+      await page.getByRole("banner").locator("[data-allmy-theme-switch]").click();
       await page.waitForFunction(() => document.documentElement.dataset.theme === "light");
     }
     await page.setViewportSize({ width: 1280, height: 900 });
