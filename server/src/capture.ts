@@ -513,7 +513,15 @@ export async function capture(
           limits,
         );
         enterStage("screenshot_rasterization");
-        if (m.mask_selectors.length) screenshot = await page.screenshot({ ...options, clip: bounds });
+        const viewport = page.viewportSize();
+        const exceedsViewport = Boolean(viewport && (bounds.width > viewport.width || bounds.height > viewport.height));
+        // Chromium's direct CDP clipping is the lower-overhead path for normal
+        // element captures. In the sandboxed Chromium runtime, however, its
+        // captureBeyondViewport flag can still truncate a clip larger than the
+        // active viewport. Playwright's native clipped screenshot path handles
+        // that valid, already dimension-checked case without adding locator
+        // actionability waits. Keep it limited to oversize targets (and masks).
+        if (m.mask_selectors.length || exceedsViewport) screenshot = await page.screenshot({ ...options, clip: bounds });
         else {
           const scroll = await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
           screenshot = await cdpScreenshot(context, page, { x: bounds.x + scroll.x, y: bounds.y + scroll.y, width: bounds.width, height: bounds.height });
