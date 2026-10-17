@@ -1398,6 +1398,24 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await themeSwitch.click();
     await page.getByText("Settings", { exact: true }).first().click();
     await page.getByRole("heading", { name: "Settings" }).waitFor();
+    const applicationMetadata = page.locator(".application-metadata");
+    await applicationMetadata.waitFor();
+    for (const width of [320, 390, 430]) {
+      await page.setViewportSize({ width, height: 844 });
+      const layout = await applicationMetadata.evaluate((card) => {
+        const cardBox = card.getBoundingClientRect();
+        const values = Array.from(card.querySelectorAll(".ant-descriptions-item-content, .application-metadata-value"))
+          .map((element) => {
+            const box = element.getBoundingClientRect();
+            return { left: box.left, right: box.right, width: box.width };
+          })
+          .filter((box) => box.width > 0);
+        return { cardBox, values, scrollWidth: document.documentElement.scrollWidth, viewportWidth: window.innerWidth };
+      });
+      assert.ok(layout.scrollWidth <= layout.viewportWidth, `Application metadata does not overflow at ${width}px`);
+      assert.ok(layout.values.every((value) => value.left >= layout.cardBox.left - 1 && value.right <= layout.cardBox.right + 1), `Application metadata values fit their card at ${width}px`);
+    }
+    await page.setViewportSize({ width: 1280, height: 900 });
     await page.getByText("Notifications", { exact: true }).first().click();
     await page.getByRole("heading", { name: "Notification channels" }).waitFor();
     await page.screenshot({ path: path.join(output, "settings-notifications.png") });

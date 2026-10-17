@@ -463,6 +463,9 @@ details {
 .settings-page .ant-segmented { margin-bottom: 16px; }
 .settings-stack { width: 100%; }
 .settings-stack .ant-card { width: 100%; }
+.application-metadata .ant-descriptions-view table { table-layout: fixed; width: 100%; }
+.application-metadata .ant-descriptions-item-label { width: 150px; }
+.application-metadata-value { display: inline-block; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
 .telegram-help { padding-left: 20px; color: var(--fusion-text, #1d1d1b); }
 .step-target {
   display: grid;
@@ -475,6 +478,7 @@ details {
   }
   .settings-page .ant-segmented-group { flex-wrap: wrap; }
   .settings-page .ant-segmented-item { flex: 1 1 45%; text-align: center; }
+  .application-metadata .ant-descriptions-item-label { width: 108px; }
   .dashboard-header-actions { margin-left: 0; width: 100%; }
   .dashboard-header-actions .ant-btn { flex: 1; }
   .monitor-card-meta dd { font-size: 13px; line-height: 1.35; }

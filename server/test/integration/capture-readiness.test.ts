@@ -14,19 +14,23 @@ test("capture retains deferred JS readiness and scrolls clipped CSS/XPath region
     if (req.url === "/never.js") return;
     if (req.url === "/ready.js") {
       res.setHeader("Content-Type", "application/javascript");
-      res.end('document.querySelector("main").textContent="Deferred JS finished";'); return;
+      res.end('document.querySelector("main .label").textContent="Deferred JS finished";'); return;
     }
     if (req.url === "/error") res.statusCode = 503;
     res.setHeader("Content-Type", "text/html");
     const offset = req.url === "/partial" ? 850 : req.url === "/nested" ? 1600 : 60;
     const clipped = req.url === "/nested-auto" || req.url === "/nested-hidden" || req.url === "/nested-clip";
+    const large = req.url === "/large" || req.url === "/large-tall" || req.url === "/large-mask";
+    const height = req.url === "/large-tall" ? 3600 : large ? 1200 : 240;
     const overflow = req.url === "/nested-clip" ? "clip" : req.url === "/nested-hidden" ? "hidden" : "auto";
+    const target = `<main><span class="label">Not ready</span>${req.url === "/large-mask" ? "<i class=\"mask\"></i>" : ""}</main>`;
     const region = clipped
-      ? `<section class="outer"><section class="inner"><main>Not ready</main></section></section>`
-      : `${req.url === "/nested" ? "<section>" : ""}<main>Not ready</main><footer style="height:2400px"></footer>${req.url === "/nested" ? "</section>" : ""}`;
+      ? `<section class="outer"><section class="inner">${target}</section></section>`
+      : `${req.url === "/nested" ? "<section>" : ""}${target}<footer style="height:2400px"></footer>${req.url === "/nested" ? "</section>" : ""}`;
     res.end(`<style>
       html{scroll-behavior:smooth}body{margin:0}
-      main{position:absolute;left:40px;top:${clipped ? 220 : offset}px;width:320px;height:240px;background:#267850}
+      main{position:absolute;left:40px;top:${clipped ? 220 : offset}px;width:320px;height:${height}px;background:#267850}
+      .mask{position:absolute;left:120px;top:560px;width:80px;height:80px;background:#111}
       section{height:500px;overflow:auto;position:relative}
       .outer{height:420px;margin:80px 40px;overflow:auto;position:relative;background:#ddd}
       .inner{height:320px;margin-top:40px;overflow:${overflow};position:relative;background:#ddd}
@@ -62,6 +66,30 @@ test("capture retains deferred JS readiness and scrolls clipped CSS/XPath region
     const lowerPixel = (220 * image.width + 160) * 4;
     assert.deepEqual([...image.data.subarray(lowerPixel, lowerPixel + 3)], [38, 120, 80], "nested scroll capture includes the entire rendered target");
   }
+  const assertGreen = (image: PNG, y: number) => {
+    const pixel = (y * image.width + 280) * 4;
+    assert.deepEqual([...image.data.subarray(pixel, pixel + 3)], [38, 120, 80], `long capture retains rendered content at y=${y}`);
+  };
+  for (const [route, height] of [["large", 1200], ["large-tall", 3600]] as const) {
+    for (const selector of [
+      { capture_selector: "main", capture_selector_type: "css" as const },
+      { capture_selector: "//main", capture_selector_type: "xpath" as const },
+    ]) {
+      const result = await capture({ ...base, url: `http://fixture.test:${port}/${route}`, ...selector }, cfg, policy);
+      const image = PNG.sync.read(result.screenshot!);
+      assert.deepEqual([image.width, image.height], [320, height]);
+      assertGreen(image, 20);
+      assertGreen(image, Math.floor(height / 2));
+      assertGreen(image, height - 20);
+    }
+  }
+  const masked = await capture({ ...base, url: `http://fixture.test:${port}/large-mask`, mask_selectors: [".mask"] }, cfg, policy);
+  const maskedImage = PNG.sync.read(masked.screenshot!);
+  assert.deepEqual([maskedImage.width, maskedImage.height], [320, 1200]);
+  assertGreen(maskedImage, 20);
+  assertGreen(maskedImage, 1180);
+  const maskPixel = (600 * maskedImage.width + 160) * 4;
+  assert.deepEqual([...maskedImage.data.subarray(maskPixel, maskPixel + 3)], [255, 0, 255], "masked large-element capture retains Playwright masking");
   await assert.rejects(capture({ ...base, url: `http://fixture.test:${port}/nested-clip` }, cfg, policy),
     (error: any) => error.code === "element_not_visible" && error.stage === "visibility_validation");
   await assert.rejects(capture({ ...base, url: `http://fixture.test:${port}/error` }, cfg, policy),

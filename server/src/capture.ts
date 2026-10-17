@@ -122,11 +122,12 @@ export function isElementFullyInViewport(
 type ElementBounds = { x: number; y: number; width: number; height: number };
 
 // A locator bounding box is relative to the viewport but does not include
-// clipping imposed by overflow ancestors.  Keep this check in the page so a
-// visible viewport box is not mistaken for a fully paintable capture region.
+// clipping imposed by overflow ancestors. Keep this check in the page so an
+// unobscured document-space target is not mistaken for a clipped capture
+// region; CDP can still capture a valid target beyond the viewport.
 export async function elementCaptureViewportState(
   region: Locator,
-): Promise<{ bounds: ElementBounds | null; fullyVisible: boolean }> {
+): Promise<{ bounds: ElementBounds | null; needsScroll: boolean; clippedByAncestor: boolean }> {
   return await region.evaluate((element) => {
     const rect = element.getBoundingClientRect();
     const bounds = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
@@ -134,13 +135,9 @@ export async function elementCaptureViewportState(
     if (
       !finite ||
       bounds.width <= 0 ||
-      bounds.height <= 0 ||
-      bounds.x < 0 ||
-      bounds.y < 0 ||
-      bounds.x + bounds.width > window.innerWidth ||
-      bounds.y + bounds.height > window.innerHeight
+      bounds.height <= 0
     )
-      return { bounds: finite ? bounds : null, fullyVisible: false };
+      return { bounds: finite ? bounds : null, needsScroll: true, clippedByAncestor: true };
 
     // The client box is the area that descendants may paint into.  Check only
     // axes that the ancestor actually clips; overflow:hidden remains eligible
@@ -161,9 +158,18 @@ export async function elementCaptureViewportState(
         (clipsX && (rect.left < left || rect.right > right)) ||
         (clipsY && (rect.top < top || rect.bottom > bottom))
       )
-        return { bounds, fullyVisible: false };
+        return { bounds, needsScroll: true, clippedByAncestor: true };
     }
-    return { bounds, fullyVisible: true };
+    // CDP captures a document-space clip with captureBeyondViewport enabled.
+    // A target larger than the viewport is therefore valid when no overflow
+    // ancestor clips it. Keep scrolling for smaller offscreen elements (which
+    // may trigger lazy content), but do not require an impossible full fit.
+    const fitsViewport = bounds.width <= window.innerWidth && bounds.height <= window.innerHeight;
+    const withinViewport =
+      bounds.x >= 0 && bounds.y >= 0 &&
+      bounds.x + bounds.width <= window.innerWidth &&
+      bounds.y + bounds.height <= window.innerHeight;
+    return { bounds, needsScroll: fitsViewport && !withinViewport, clippedByAncestor: false };
   });
 }
 
@@ -480,12 +486,12 @@ export async function capture(
         // fully on screen. Preserve the existing scroll for offscreen/lazy
         // content, but avoid it when the current bounds are already visible.
         const initial = await elementCaptureViewportState(region);
-        if (!initial.fullyVisible) await scrollCaptureRegion(region);
+        if (initial.needsScroll) await scrollCaptureRegion(region);
         // scrollIntoView() may not be able to reveal a target inside
         // overflow:clip.  Do not rasterize the clipping background as if it
         // were a complete element screenshot.
-        const afterScroll = initial.fullyVisible ? initial : await elementCaptureViewportState(region);
-        if (!afterScroll.fullyVisible)
+        const afterScroll = initial.needsScroll ? await elementCaptureViewportState(region) : initial;
+        if (afterScroll.clippedByAncestor)
           throw new CaptureFailure("visibility_validation", "element_not_visible", "Capture region is clipped and cannot be fully revealed.");
         // locator.screenshot performs another potentially long actionability
         // wait. Resolve a stable, validated box and use the bounded page

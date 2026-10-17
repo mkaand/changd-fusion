@@ -6,8 +6,9 @@ import { AccountSecurity } from "./AccountSecurity";
 import { ApiError, api } from "./api";
 import type { ThemeAdapter } from "./theme";
 import { AllMyThemeControls } from "./AllMyThemeControls";
+import { buildMetadata, commitUrl, normalizeBuildMetadata, pullRequestUrl, type BuildMetadataInput } from "./build-metadata";
 
-export function Settings({ channels, monitors, reload, report, admin, signedOut, theme }: any) {
+export function Settings({ channels, monitors, reload, report, admin, signedOut, theme, buildMetadata: metadataOverride }: any) {
   const [section, setSection] = useState("general");
   const [diagnostics, setDiagnostics] = useState<any>();
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
@@ -18,6 +19,7 @@ export function Settings({ channels, monitors, reload, report, admin, signedOut,
   const [bulkIds, setBulkIds] = useState<string[]>([]);
   const [bulkChannel, setBulkChannel] = useState<string>();
   const [bulkAction, setBulkAction] = useState("add");
+  const metadata = normalizeBuildMetadata((metadataOverride ?? buildMetadata) as BuildMetadataInput);
   useEffect(() => { api("/preferences/monitoring").then((d) => { setDefaults(d); defaultForm.setFieldsValue(d); }).catch(() => {}); }, [defaultForm]);
   const diagnosticsMessage = (cause: unknown) => {
     if (cause instanceof ApiError) {
@@ -53,7 +55,13 @@ export function Settings({ channels, monitors, reload, report, admin, signedOut,
     ]} />
     {section === "general" && <Space direction="vertical" size="middle" className="settings-stack">
       <Card title="Appearance"><Space wrap><AllMyThemeControls adapter={theme as ThemeAdapter} /><span>Theme: {theme.preference} ({theme.resolved})</span></Space></Card>
-      <Card title="Application"><Descriptions column={1} items={[{ key: "version", label: "Version", children: "Changd Fusion Sprint 3" }, { key: "time", label: "Display timezone", children: "Browser locale" }]} /></Card>
+      <Card title="Application" className="application-metadata"><Descriptions column={1} items={[
+        { key: "version", label: "Version", children: metadata.version ?? "Unavailable" },
+        { key: "branch", label: "Branch", children: <span className="application-metadata-value">{metadata.branch ?? "Unavailable"}</span> },
+        { key: "commit", label: "Commit HEAD", children: metadata.commit ? <Typography.Link className="application-metadata-value" href={commitUrl(metadata.commit)} target="_blank" rel="noreferrer" title={metadata.commit} aria-label={`Commit ${metadata.commit}`}>{metadata.commit.slice(0, 12)}</Typography.Link> : "Unavailable" },
+        { key: "pr", label: "Source PR", children: metadata.sourcePr ? <Typography.Link href={pullRequestUrl(metadata.sourcePr)} target="_blank" rel="noreferrer">#{metadata.sourcePr}</Typography.Link> : "Unavailable" },
+        { key: "time", label: "Display timezone", children: "Browser locale" },
+      ]} /></Card>
     </Space>}
     {section === "notifications" && <><Channels channels={channels} monitors={monitors} reload={reload} report={report} /><Deliveries admin={admin} /></>}
     {section === "monitoring" && <Space direction="vertical" className="settings-stack" size="middle">
