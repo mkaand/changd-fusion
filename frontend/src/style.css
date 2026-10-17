@@ -463,8 +463,13 @@ details {
 .settings-page .ant-segmented { margin-bottom: 16px; }
 .settings-stack { width: 100%; }
 .settings-stack .ant-card { width: 100%; }
+.application-metadata,
+.application-metadata .ant-card-body,
+.application-metadata .ant-descriptions,
+.application-metadata .ant-descriptions-view { min-width: 0; }
 .application-metadata .ant-descriptions-view table { table-layout: fixed; width: 100%; }
 .application-metadata .ant-descriptions-item-label { width: 150px; }
+.application-metadata .ant-descriptions-item-content { min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
 .application-metadata-value { display: inline-block; max-width: 100%; overflow-wrap: anywhere; word-break: break-word; }
 .telegram-help { padding-left: 20px; color: var(--fusion-text, #1d1d1b); }
 .step-target {
@@ -483,6 +488,26 @@ details {
   .dashboard-header-actions .ant-btn { flex: 1; }
   .monitor-card-meta dd { font-size: 13px; line-height: 1.35; }
   .event { font-size: 13px; line-height: 1.45; }
+}
+
+@media (max-width: 480px) {
+  /* A horizontal descriptions table leaves too little content width for
+     build metadata at phone widths. Preserve the same semantic component but
+     stack each label/value pair so long verified branch names wrap naturally. */
+  .application-metadata .ant-descriptions-view,
+  .application-metadata .ant-descriptions-view table,
+  .application-metadata .ant-descriptions-view tbody,
+  .application-metadata .ant-descriptions-row { display: block; width: 100%; }
+  .application-metadata .ant-descriptions-item-label,
+  .application-metadata .ant-descriptions-item-content {
+    box-sizing: border-box;
+    display: block;
+    width: 100% !important;
+    min-width: 0;
+  }
+  .application-metadata .ant-descriptions-item-label { padding-bottom: 2px; }
+  .application-metadata .ant-descriptions-item-content { padding: 0 0 12px !important; }
+  .application-metadata .ant-descriptions-row:last-child .ant-descriptions-item-content { padding-bottom: 0 !important; }
 }
 
 @media (prefers-reduced-motion: reduce) {
