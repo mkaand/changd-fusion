@@ -537,7 +537,7 @@ export function createApp(
       channel_ids: channels.rows.map((r) => r.channel_id),
     });
   });
-  const runRegionPreview = async (req: Request, res: Response, monitor: any, point?: { x: number; y: number }, sessionId?: string, useSession = false, previewRequestId?: string, refresh = false) => {
+  const runRegionPreview = async (req: Request, res: Response, monitor: any, point?: { x: number; y: number }, sessionId?: string, useSession = false, previewRequestId?: string, refresh = false, captureLayout = true) => {
     const started = performance.now();
     const cancellation = new AbortController();
     const cancelled = () => { if (!res.writableEnded) cancellation.abort(); };
@@ -553,6 +553,7 @@ export function createApp(
           ownerId: res.locals.user.user_id,
           id: useSession ? sessionId : undefined,
           retain: useSession,
+          captureLayout,
           refresh,
           signal: cancellation.signal,
           progress: previewRequestId ? (stage) => updatePreviewProgress(previewRequestId, res.locals.user.user_id, stage) : undefined,
@@ -578,7 +579,7 @@ export function createApp(
   app.post("/api/v1/region-preview", async (req, res) => {
     const body = regionPreviewInput.parse(req.body);
     if (body.monitor_id) await owner(body.monitor_id, res.locals.user.user_id);
-    await runRegionPreview(req, res, { ...body.monitor, id: body.monitor_id ?? "preview", browser_steps: body.monitor.browser_steps }, body.point, body.session_id, body.mode === "element", body.preview_request_id, body.refresh);
+    await runRegionPreview(req, res, { ...body.monitor, id: body.monitor_id ?? "preview", browser_steps: body.monitor.browser_steps }, body.point, body.session_id, body.mode === "element", body.preview_request_id, body.refresh, body.mode === "element");
   });
   app.delete("/api/v1/region-preview/:sessionId", async (req, res) => {
     const sessionId = uuid.parse(req.params.sessionId);

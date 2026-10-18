@@ -216,7 +216,7 @@ export async function selectionAt(page: Page, point: { x: number; y: number }): 
   return { selection, candidates };
 }
 
-export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number; y: number }, policy = new EgressPolicy(), session?: { ownerId: string; id?: string; retain?: boolean; refresh?: boolean; progress?: (stage: PreviewStage) => void; signal?: AbortSignal; operations?: PreviewOperations; acquireCapacity?: () => Promise<ChromiumLease | null> }) {
+export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number; y: number }, policy = new EgressPolicy(), session?: { ownerId: string; id?: string; retain?: boolean; captureLayout?: boolean; refresh?: boolean; progress?: (stage: PreviewStage) => void; signal?: AbortSignal; operations?: PreviewOperations; acquireCapacity?: () => Promise<ChromiumLease | null> }) {
   let stage: CaptureStage = "target_validation";
   await purgeExpired();
   if (session?.id) {
@@ -295,7 +295,7 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
       ]);
     });
     stage = "screenshot";
-    if (session?.retain)
+    if (session?.captureLayout !== false)
       await boundedPreviewOperation({ operation: () => (session?.operations?.snapshot ?? snapshotLayout)(page), remaining, cancel: cancelBrowser, stage, signal: session?.signal });
     enter("screenshot");
     const image = await boundedPreviewOperation({ operation: () => (session?.operations?.screenshot ?? capturePreviewScreenshot)(context!, page), remaining, cancel: cancelBrowser, stage, signal: session?.signal });
