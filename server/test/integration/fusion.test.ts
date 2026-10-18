@@ -130,8 +130,8 @@ test("fresh migration is repeatable and decimal columns are NUMERIC", async () =
   );
   assert.equal(Number((await pool.query("SELECT count(*) FROM fusion_migrations")).rows[0].count), expectedMigrationCount);
 });
-test("migration 011 to 012 preserves existing monitors, baselines, and history", async () => {
-  const name = "fusion_upgrade_012_" + randomUUID().replaceAll("-", "");
+test("migration 012 to 013 preserves existing monitors, baselines, and history", async () => {
+  const name = "fusion_upgrade_013_" + randomUUID().replaceAll("-", "");
   const url = new URL(dbURL);
   url.pathname = "/" + name;
   const upgrade = makePool(url.href);
@@ -139,8 +139,8 @@ test("migration 011 to 012 preserves existing monitors, baselines, and history",
     await admin.query(`CREATE DATABASE ${name}`);
     await upgrade.query("CREATE TABLE fusion_migrations(name text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())");
     const migrationDir = path.resolve(import.meta.dirname, "../../migrations");
-    const migrations = (await readdir(migrationDir)).filter((file) => /^0(?:0[1-9]|1[01])_.+\.sql$/.test(file)).sort();
-    assert.equal(migrations.at(-1), "011_public_access_security.sql");
+    const migrations = (await readdir(migrationDir)).filter((file) => /^0(?:0[1-9]|1[0-2])_.+\.sql$/.test(file)).sort();
+    assert.equal(migrations.at(-1), "012_keyword_presence.sql");
     for (const migration of migrations) {
       const sql = await readFile(path.join(migrationDir, migration), "utf8");
       await upgrade.query("BEGIN");
@@ -162,16 +162,19 @@ test("migration 011 to 012 preserves existing monitors, baselines, and history",
     await upgrade.query("INSERT INTO fusion_events(monitor_id,after_id,status) VALUES($1,$2,'baseline')", [full.id, baseline]);
     await migrate(upgrade);
     await migrate(upgrade);
-    const rows = (await upgrade.query("SELECT id,extraction_mode,extraction_rule,keyword,baseline_id,latest_capture_id FROM fusion_monitors ORDER BY name")).rows;
+    const rows = (await upgrade.query("SELECT id,extraction_mode,extraction_rule,keyword,capture_area,baseline_id,latest_capture_id FROM fusion_monitors ORDER BY name")).rows;
     assert.equal(rows.length, 2);
     assert.deepEqual(rows.map((row) => row.extraction_mode).sort(), ["full_text", "selected_text"]);
     assert.ok(rows.every((row) => row.keyword === null));
+    assert.ok(rows.every((row) => row.capture_area === null));
     assert.equal(rows.find((row) => row.id === full.id)?.baseline_id, baseline);
     assert.equal(rows.find((row) => row.id === full.id)?.latest_capture_id, baseline);
     assert.equal(rows.find((row) => row.id === selected.id)?.extraction_rule.kind, "bounded_context");
     assert.equal((await upgrade.query("SELECT count(*) FROM fusion_events WHERE monitor_id=$1", [full.id])).rows[0].count, "1");
     assert.equal(Number((await upgrade.query("SELECT count(*) FROM fusion_migrations")).rows[0].count), expectedMigrationCount);
     await assert.rejects(() => upgrade.query("UPDATE fusion_monitors SET extraction_mode='keyword_presence',keyword=NULL WHERE id=$1", [full.id]));
+    await assert.rejects(() => upgrade.query("UPDATE fusion_monitors SET capture_area='{\"x\":0,\"y\":0,\"width\":20,\"height\":20}'::jsonb WHERE id=$1", [full.id]));
+    await assert.rejects(() => upgrade.query("UPDATE fusion_monitors SET capture_mode='selected_area',capture_area='{\"x\":1270,\"y\":0,\"width\":20,\"height\":20}'::jsonb WHERE id=$1", [full.id]));
   } finally {
     await upgrade.end();
     await admin.query(`DROP DATABASE IF EXISTS ${name}`);
@@ -1283,15 +1286,16 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     // deterministic without contacting a production or external website.
     const regionPreviewBodies: any[] = [];
     await page.route("**/api/v1/region-preview", async (route) => {
-      regionPreviewBodies.push(route.request().postDataJSON());
+      const requestBody = route.request().postDataJSON();
+      regionPreviewBodies.push(requestBody);
       await route.fulfill({
         contentType: "application/json",
         body: JSON.stringify({
-          session_id: "00000000-0000-4000-8000-000000000099",
+          session_id: requestBody.mode === "area" ? undefined : "00000000-0000-4000-8000-000000000099",
           image: previewImage().toString("base64"),
           width: 1280,
           height: 900,
-          selection: { selector: "#fixture-price", x: 160, y: 160, width: 360, height: 80 },
+          selection: requestBody.mode === "area" ? null : { selector: "#fixture-price", x: 160, y: 160, width: 360, height: 80 },
         }),
       });
     });
@@ -1414,22 +1418,30 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
         await page.getByRole("banner").locator("[data-allmy-theme-switch]").click();
         await page.waitForFunction((expected) => document.documentElement.dataset.theme === expected, theme);
       }
-      for (const width of [320, 360, 375, 390, 430, 768, 1280]) {
+      for (const width of [320, 360, 375, 390, 393, 430, 768, 1280]) {
         await waitForApplicationLayout(width, theme);
       const layout = await applicationMetadata.evaluate((card) => {
         const content = card.querySelector(".ant-card-body") ?? card;
         const contentBox = content.getBoundingClientRect();
-        const values = Array.from(card.querySelectorAll(".ant-descriptions-item-content, .application-metadata-value"))
+        const values = Array.from(card.querySelectorAll(".application-metadata-list dd"))
           .map((element) => {
             const box = element.getBoundingClientRect();
             return { left: box.left, right: box.right, width: box.width, scrollWidth: element.scrollWidth, clientWidth: element.clientWidth };
           })
           .filter((box) => box.width > 0);
         const branch = card.querySelector(".application-metadata-value:not(a)");
+        const tokens = Array.from(card.querySelectorAll(".application-metadata-token")).map((element) => ({
+          text: element.textContent,
+          lines: element.getClientRects().length,
+          width: element.getBoundingClientRect().width,
+          wordBreak: getComputedStyle(element).wordBreak,
+          whiteSpace: getComputedStyle(element).whiteSpace,
+        }));
         return {
           contentBox: { left: contentBox.left, right: contentBox.right },
           values,
           branch: branch ? { scrollWidth: branch.scrollWidth, clientWidth: branch.clientWidth } : null,
+          tokens,
           scrollWidth: Math.max(document.documentElement.scrollWidth, document.body.scrollWidth),
           viewportWidth: window.innerWidth,
         };
@@ -1438,6 +1450,7 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
         assert.ok(layout.values.every((value) => value.left >= layout.contentBox.left - 1 && value.right <= layout.contentBox.right + 1), `Application metadata values fit their card at ${width}px in ${theme} theme`);
         assert.ok(layout.values.every((value) => value.scrollWidth <= value.clientWidth + 1), `Application metadata values wrap without clipping at ${width}px in ${theme} theme`);
         assert.ok(!layout.branch || layout.branch.scrollWidth <= layout.branch.clientWidth + 1, `Application branch remains readable at ${width}px in ${theme} theme`);
+        assert.ok(layout.tokens.every((token) => token.lines === 1 && token.width > 20 && token.wordBreak === "normal" && token.whiteSpace === "nowrap"), `Application metadata tokens do not split character-by-character at ${width}px in ${theme} theme`);
       }
     }
     await page.getByRole("link", { name: /^Commit [0-9a-f]{40}$/i }).waitFor();
@@ -1773,6 +1786,60 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await page.locator('section[aria-label="Browser steps"]').screenshot({
       path: path.join(output, "browser-steps-mobile.png"),
     });
+    await page.getByRole("button", { name: "Remove step 1" }).click();
+    await captureMode.click();
+    await page.getByText("Selected area", { exact: true }).last().click();
+    await page.getByRole("button", { name: "Select area visually", exact: true }).click();
+    const areaPicker = page.locator('section[aria-label="Select screenshot area"]');
+    await areaPicker.waitFor();
+    const areaPreview = areaPicker.getByAltText("Secure selected area preview");
+    await areaPreview.waitFor();
+    assert.equal(regionPreviewBodies.at(-1).mode, "area");
+    for (const selectedTheme of ["light", "dark"] as const) {
+      if (await page.locator("html").getAttribute("data-theme") !== selectedTheme) {
+        await themeSwitch.click();
+        await page.waitForFunction((expected) => document.documentElement.dataset.theme === expected, selectedTheme);
+      }
+      for (const width of [320, 390, 430, 768]) {
+        await page.setViewportSize({ width, height: 844 });
+        const bounds = await areaPicker.locator(".mobile-region-picker-body").boundingBox();
+        assert.ok(bounds && bounds.x >= 0 && bounds.x + bounds.width <= width, `Selected area picker fits ${width}px in ${selectedTheme} mode`);
+        assert.ok(await areaPicker.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), `Selected area picker has no horizontal overflow at ${width}px in ${selectedTheme} mode`);
+      }
+    }
+    await page.setViewportSize({ width: 390, height: 844 });
+    const areaBounds = await areaPreview.boundingBox();
+    assert.ok(areaBounds);
+    await page.mouse.move(areaBounds.x + areaBounds.width * .1, areaBounds.y + areaBounds.height * .1);
+    await page.mouse.down();
+    await page.mouse.move(areaBounds.x + areaBounds.width * .35, areaBounds.y + areaBounds.height * .3, { steps: 5 });
+    await page.mouse.up();
+    assert.equal(await areaPicker.getByText("320 × 180 px", { exact: true }).count(), 1, "mouse drag stores intrinsic 1280x900 coordinates");
+    const areaBox = areaPicker.locator(".selected-area-box");
+    await areaBox.waitFor();
+    const handleBounds = await areaPicker.locator(".selected-area-handle").first().boundingBox();
+    assert.ok(handleBounds && handleBounds.width >= 28 && handleBounds.height >= 28, "mobile resize handles remain touch sized");
+    const selectedBeforePinch = await areaPicker.getByLabel("Selected area width").inputValue();
+    const areaCanvas = await areaPicker.locator(".selected-area-canvas").boundingBox();
+    assert.ok(areaCanvas);
+    const areaTouchX = areaCanvas.x + areaCanvas.width / 2, areaTouchY = areaCanvas.y + areaCanvas.height / 2;
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchStart", touchPoints: [
+      { x: areaTouchX - 25, y: areaTouchY, id: 1, radiusX: 1, radiusY: 1, force: 1 },
+      { x: areaTouchX + 25, y: areaTouchY, id: 2, radiusX: 1, radiusY: 1, force: 1 },
+    ] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchMove", touchPoints: [
+      { x: areaTouchX - 55, y: areaTouchY, id: 1, radiusX: 1, radiusY: 1, force: 1 },
+      { x: areaTouchX + 55, y: areaTouchY, id: 2, radiusX: 1, radiusY: 1, force: 1 },
+    ] });
+    await cdp.send("Input.dispatchTouchEvent", { type: "touchEnd", touchPoints: [] });
+    assert.equal(await areaPicker.getByLabel("Selected area width").inputValue(), selectedBeforePinch, "pinch zoom does not redraw the selected area");
+    await areaPicker.getByRole("button", { name: "Apply selected area", exact: true }).click();
+    await mobileEditor.waitFor();
+    await page.getByRole("button", { name: "Save monitor", exact: true }).click();
+    await page.getByRole("button", { name: "Dimension fixture", exact: true }).waitFor();
+    const savedArea = (await pool.query("SELECT capture_mode,capture_area FROM fusion_monitors WHERE name='Dimension fixture'")).rows[0];
+    assert.equal(savedArea.capture_mode, "selected_area");
+    assert.deepEqual(savedArea.capture_area, { x: 128, y: 90, width: 320, height: 180 });
     assert.deepEqual(errors, []);
   } finally {
     cfg.PUBLIC_URL = oldURL;
@@ -1897,7 +1964,7 @@ test("capture modes use one browser page for text and image; limits, selector er
     }
     res.setHeader("Content-Type", "text/html");
     res.end(
-      '<style>body{margin:0}#region{width:320px;height:240px;background:#fff}#tall{height:1800px}</style><main id="region">Hybrid region</main><div id="tall"></div>',
+      '<style>body{margin:0}#region{width:320px;height:240px;background:#fff}#bands{position:absolute;left:400px;top:0;width:200px;height:300px}#bands i{display:block;width:200px;height:100px}.red{background:#f00}.green{background:#0f0}.blue{background:#00f}#masked{position:absolute;left:20px;top:120px;width:20px;height:20px;background:#fff}#tall{height:1800px}</style><main id="region">Hybrid region</main><div id="bands"><i class="red"></i><i class="green"></i><i class="blue"></i><b id="masked"></b></div><div id="tall"></div>',
     );
   });
   await listenServer(fixture);
@@ -1935,6 +2002,24 @@ test("capture modes use one browser page for text and image; limits, selector er
         mode === "element" ? 240 : mode === "full_page" ? 2040 : 900,
       );
     }
+    const selectedArea = await capture(
+      { ...base, capture_mode: "selected_area", capture_area: { x: 400, y: 0, width: 200, height: 300 }, capture_selector: "" },
+      cfg,
+      policy,
+    );
+    const selectedPng = PNG.sync.read(selectedArea.screenshot!);
+    assert.deepEqual([selectedPng.width, selectedPng.height], [200, 300]);
+    const pixel = (x: number, y: number) => [...selectedPng.data.subarray((y * selectedPng.width + x) * 4, (y * selectedPng.width + x) * 4 + 4)];
+    assert.deepEqual(pixel(100, 50), [255, 0, 0, 255]);
+    assert.deepEqual(pixel(100, 150), [0, 255, 0, 255]);
+    assert.deepEqual(pixel(100, 250), [0, 0, 255, 255]);
+    const maskedArea = await capture(
+      { ...base, capture_mode: "selected_area", capture_area: { x: 400, y: 0, width: 200, height: 300 }, capture_selector: "", mask_selectors: ["#masked"] },
+      cfg,
+      policy,
+    );
+    const maskedPng = PNG.sync.read(maskedArea.screenshot!);
+    assert.deepEqual([...maskedPng.data.subarray((130 * maskedPng.width + 30) * 4, (130 * maskedPng.width + 30) * 4 + 4)], [255, 0, 255, 255]);
     await assert.rejects(
       capture(
         { ...base, capture_mode: "element", capture_selector: ".missing" },
@@ -2010,6 +2095,28 @@ test("capture modes use one browser page for text and image; limits, selector er
     .delete(`/api/v1/jobs/${m.id}`)
     .set("X-Fusion-Request", "1")
     .expect(200);
+  const area = { x: 100, y: 150, width: 320, height: 180 };
+  const areaMonitor = (await ownerAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({
+    name: "Selected area configuration", url: "https://example.com", kind: "browser", text_enabled: true,
+    visual_enabled: true, capture_mode: "selected_area", capture_area: area, channel_ids: [],
+  }).expect(201)).body;
+  assert.deepEqual(areaMonitor.capture_area, area);
+  assert.deepEqual((await ownerAgent.get(`/api/v1/jobs/${areaMonitor.id}`).expect(200)).body.capture_area, area);
+  const areaBaseline = randomUUID();
+  await pool.query("INSERT INTO fusion_captures(id,monitor_id,screenshot) VALUES($1,$2,$3)", [areaBaseline, areaMonitor.id, "synthetic-selected-area.png"]);
+  await pool.query("UPDATE fusion_monitors SET baseline_id=$2,latest_capture_id=$2 WHERE id=$1", [areaMonitor.id, areaBaseline]);
+  await ownerAgent.put(`/api/v1/jobs/${areaMonitor.id}`).set("X-Fusion-Request", "1").send({
+    name: "Selected area configuration", url: "https://example.com", kind: "browser", text_enabled: true,
+    visual_enabled: true, capture_mode: "selected_area", capture_area: { ...area, x: 200 }, channel_ids: [],
+  }).expect(200);
+  const updatedArea = (await ownerAgent.get(`/api/v1/jobs/${areaMonitor.id}`).expect(200)).body;
+  assert.equal(updatedArea.baseline_id, null);
+  assert.equal(updatedArea.latest_capture_id, areaBaseline, "configuration change preserves successful capture history");
+  assert.equal((await pool.query("SELECT count(*) FROM fusion_events WHERE monitor_id=$1 AND status='configuration_change'", [areaMonitor.id])).rows[0].count, "1");
+  for (const capture_area of [null, "not-an-object", { x: -1, y: 0, width: 20, height: 20 }, { x: 0.5, y: 0, width: 20, height: 20 }, { x: 1270, y: 0, width: 20, height: 20 }, { x: 0, y: 0, width: 15, height: 20 }, { x: 0, y: 0, width: 20, height: 20, extra: true }])
+    await ownerAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({ name: "Invalid area", url: "https://example.com", kind: "browser", text_enabled: false, visual_enabled: true, capture_mode: "selected_area", capture_area, channel_ids: [] }).expect(400);
+  await ownerAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({ name: "Invalid area source", url: "https://example.com", kind: "html", text_enabled: true, visual_enabled: false, capture_mode: "selected_area", capture_area: area, channel_ids: [] }).expect(400);
+  await ownerAgent.delete(`/api/v1/jobs/${areaMonitor.id}`).set("X-Fusion-Request", "1").expect(200);
 });
 
 test("worker concurrency follows configured browser limit and stopping prevents new captures", async () => {
@@ -3115,6 +3222,15 @@ test("visual region picker preview maps screenshot coordinates to a unique visib
     monitor: { url: `http://fixture.example:${port}/`, kind: "browser", visual_enabled: true, browser_steps: [] },
   }).expect(200);
   assert.match(draftPreview.body.session_id, /^[0-9a-f-]{36}$/);
+  const areaPreview = await pickerOwner.post("/api/v1/region-preview").set("X-Fusion-Request", "1").send({
+    mode: "area",
+    monitor: { url: `http://fixture.example:${port}/`, kind: "browser", visual_enabled: true, browser_steps: [] },
+  }).expect(200);
+  assert.equal(areaPreview.body.session_id, undefined);
+  assert.deepEqual([areaPreview.body.width, areaPreview.body.height], [1280, 900]);
+  const areaLease = await acquireChromiumLease(pool, { workload: "preview", slots: 1 });
+  assert.ok(areaLease, "selected-area preview closes Chromium before returning the client-side image");
+  await areaLease!.release();
   const requestsAfterPreview = previewRequests;
   const selectedDraft = await pickerOwner.post("/api/v1/region-preview").set("X-Fusion-Request", "1").send({
     session_id: draftPreview.body.session_id,
