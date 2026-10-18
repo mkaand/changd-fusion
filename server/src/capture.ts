@@ -107,6 +107,100 @@ async function cdpScreenshot(context: BrowserContext, page: Page, clip?: { x: nu
   } finally { await cdp.detach().catch(() => {}); }
 }
 
+export function isElementFullyInViewport(
+  bounds: { x: number; y: number; width: number; height: number } | null,
+  viewport: { width: number; height: number } | null,
+): boolean {
+  return Boolean(bounds && viewport &&
+    [bounds.x, bounds.y, bounds.width, bounds.height, viewport.width, viewport.height].every(Number.isFinite) &&
+    bounds.width > 0 && bounds.height > 0 &&
+    bounds.x >= 0 && bounds.y >= 0 &&
+    bounds.x + bounds.width <= viewport.width &&
+    bounds.y + bounds.height <= viewport.height);
+}
+
+type ElementBounds = { x: number; y: number; width: number; height: number };
+
+// A locator bounding box is relative to the viewport but does not include
+// clipping imposed by overflow ancestors. Keep this check in the page so an
+// unobscured document-space target is not mistaken for a clipped capture
+// region; CDP can still capture a valid target beyond the viewport.
+export async function elementCaptureViewportState(
+  region: Locator,
+): Promise<{ bounds: ElementBounds | null; needsScroll: boolean; clippedByAncestor: boolean; exceedsViewport: boolean }> {
+  return await region.evaluate((element) => {
+    const rect = element.getBoundingClientRect();
+    const bounds = { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+    const finite = [bounds.x, bounds.y, bounds.width, bounds.height].every(Number.isFinite);
+    if (
+      !finite ||
+      bounds.width <= 0 ||
+      bounds.height <= 0
+    )
+      return { bounds: finite ? bounds : null, needsScroll: true, clippedByAncestor: true, exceedsViewport: false };
+
+    // The client box is the area that descendants may paint into.  Check only
+    // axes that the ancestor actually clips; overflow:hidden remains eligible
+    // for native programmatic scrolling, while overflow:clip is revalidated
+    // after that attempt and deterministically rejected if it cannot reveal
+    // the entire target.
+    for (let ancestor = element.parentElement; ancestor; ancestor = ancestor.parentElement) {
+      const style = window.getComputedStyle(ancestor);
+      const clipsX = /^(?:auto|scroll|hidden|clip|overlay)$/.test(style.overflowX);
+      const clipsY = /^(?:auto|scroll|hidden|clip|overlay)$/.test(style.overflowY);
+      if (!clipsX && !clipsY) continue;
+      const container = ancestor.getBoundingClientRect();
+      const left = container.left + ancestor.clientLeft;
+      const top = container.top + ancestor.clientTop;
+      const right = left + ancestor.clientWidth;
+      const bottom = top + ancestor.clientHeight;
+      if (
+        (clipsX && (rect.left < left || rect.right > right)) ||
+        (clipsY && (rect.top < top || rect.bottom > bottom))
+      )
+        return { bounds, needsScroll: true, clippedByAncestor: true, exceedsViewport: false };
+    }
+    // CDP captures a document-space clip with captureBeyondViewport enabled.
+    // A target larger than the viewport is therefore valid when no overflow
+    // ancestor clips it. Keep scrolling for smaller offscreen elements (which
+    // may trigger lazy content), but do not require an impossible full fit.
+    const fitsViewport = bounds.width <= window.innerWidth && bounds.height <= window.innerHeight;
+    const withinViewport =
+      bounds.x >= 0 && bounds.y >= 0 &&
+      bounds.x + bounds.width <= window.innerWidth &&
+      bounds.y + bounds.height <= window.innerHeight;
+    return {
+      bounds,
+      needsScroll: fitsViewport && !withinViewport,
+      clippedByAncestor: false,
+      exceedsViewport: !fitsViewport,
+    };
+  });
+}
+
+export async function navigateForCapture(page: Page, url: string, deadline: number) {
+  // Inspect the final HTTP redirect response as soon as it commits. An error
+  // document must not spend the capture budget loading scripts before rejection.
+  // Successful documents still require DOMContentLoaded: commit alone is not
+  // evidence that parsing, deferred scripts or application initialization finished.
+  const response = await page.goto(url, {
+    waitUntil: "commit",
+    timeout: Math.max(1, deadline - Date.now()),
+  });
+  if (!response) throw Error("Capture navigation failed");
+  if (!response.ok())
+    throw (detectAttention(response.status(), new URL(page.url()).pathname, "", false, false) ??
+      new HttpError(422, "Website returned an unsuccessful HTTP response"));
+  await page.waitForLoadState("domcontentloaded", { timeout: Math.max(1, deadline - Date.now()) });
+}
+
+export async function scrollCaptureRegion(region: Locator) {
+  // Visibility and uniqueness are checked by the caller. Native instant scroll
+  // handles nested scroll containers without Playwright's redundant pre-scroll
+  // stability wait. The capture still requires stable bounds AFTER scrolling.
+  await region.evaluate((element) => element.scrollIntoView({ behavior: "instant", block: "center", inline: "center" }));
+}
+
 const boxIsClose = (a: { x: number; y: number; width: number; height: number }, b: { x: number; y: number; width: number; height: number }) =>
   Math.abs(a.x - b.x) <= 1 && Math.abs(a.y - b.y) <= 1 && Math.abs(a.width - b.width) <= 1 && Math.abs(a.height - b.height) <= 1;
 
@@ -114,8 +208,9 @@ export async function stableElementBounds(
   sample: () => Promise<{ x: number; y: number; width: number; height: number } | null>,
   nextFrame: () => Promise<void>,
   deadline: number,
+  initial?: { x: number; y: number; width: number; height: number } | null,
 ) {
-  let previous = await sample(), bounds = previous;
+  let previous = initial === undefined ? await sample() : initial, bounds = previous;
   for (let attempt = 0; attempt < 4 && Date.now() < deadline; attempt++) {
     await nextFrame();
     const current = await sample();
@@ -212,7 +307,11 @@ export async function capture(
     stageStarted = performance.now();
   };
   const finishTimings = () => {
-    timings[stage] = Math.round((timings[stage] ?? 0) + performance.now() - stageStarted);
+    const now = performance.now();
+    timings[stage] = Math.round((timings[stage] ?? 0) + now - stageStarted);
+    // catch/return records the active stage before finally enters cleanup.
+    // Advance the checkpoint so that transition cannot count this work twice.
+    stageStarted = now;
   };
   let proxy: Awaited<ReturnType<typeof browserProxy>> | undefined;
   let browser: Browser | undefined;
@@ -301,22 +400,7 @@ export async function capture(
       if (r.request().isNavigationRequest() && r.frame() === page.mainFrame())
         navigationStatus = r.status();
     });
-    const response = await page.goto(m.url, {
-      waitUntil: "domcontentloaded",
-      timeout: cfg.CAPTURE_TIMEOUT_MS,
-    });
-    if (!response) throw Error("Capture navigation failed");
-    if (!response.ok())
-      throw (
-        detectAttention(
-          response.status(),
-          new URL(page.url()).pathname,
-          "",
-          false,
-          false,
-        ) ??
-        new HttpError(422, "Website returned an unsuccessful HTTP response")
-      );
+    await navigateForCapture(page, m.url, deadline);
     enterStage("browser_steps");
     const warning = await runSteps(
       page,
@@ -325,16 +409,18 @@ export async function capture(
       privateValues,
     );
     enterStage("attention_detection");
+    // One bounded DOM round-trip instead of three independent title/locator calls.
+    const attentionSignals = await page.evaluate(() => ({
+      title: document.title,
+      password: Boolean(document.querySelector('input[type="password"]')),
+      challenge: Boolean(document.querySelector('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .cf-challenge, #challenge-running, [data-sitekey]')),
+    }));
     const attention = detectAttention(
       navigationStatus,
       new URL(page.url()).pathname,
-      await page.title(),
-      (await page.locator('input[type="password"]').count()) > 0,
-      (await page
-        .locator(
-          'iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .cf-challenge, #challenge-running, [data-sitekey]',
-        )
-        .count()) > 0,
+      attentionSignals.title,
+      attentionSignals.password,
+      attentionSignals.challenge,
     );
     if (attention) throw attention;
     // Font readiness can wait for third-party font downloads until the global
@@ -401,7 +487,17 @@ export async function capture(
         if (!(await region.isVisible()))
           throw new CaptureFailure("visibility_validation", "element_not_visible", "Capture region is not visible.");
         enterStage("scroll_into_view");
-        await region.scrollIntoViewIfNeeded();
+        // Playwright scroll actionability can be slow even when the element is
+        // fully on screen. Preserve the existing scroll for offscreen/lazy
+        // content, but avoid it when the current bounds are already visible.
+        const initial = await elementCaptureViewportState(region);
+        if (initial.needsScroll) await scrollCaptureRegion(region);
+        // scrollIntoView() may not be able to reveal a target inside
+        // overflow:clip.  Do not rasterize the clipping background as if it
+        // were a complete element screenshot.
+        const afterScroll = initial.needsScroll ? await elementCaptureViewportState(region) : initial;
+        if (afterScroll.clippedByAncestor)
+          throw new CaptureFailure("visibility_validation", "element_not_visible", "Capture region is clipped and cannot be fully revealed.");
         // locator.screenshot performs another potentially long actionability
         // wait. Resolve a stable, validated box and use the bounded page
         // screenshot path shared by the other capture modes instead.
@@ -413,6 +509,7 @@ export async function capture(
           () => region.boundingBox(),
           () => page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))),
           deadline,
+          afterScroll.bounds,
         );
         if (bounds === undefined) throw new CaptureFailure("element_stability", "element_not_visible", "Capture region is not visible.");
         if (bounds === null) throw new CaptureFailure("element_stability", "element_unstable", "Capture region did not become stable in the bounded sampling window.");
@@ -421,7 +518,14 @@ export async function capture(
           limits,
         );
         enterStage("screenshot_rasterization");
-        if (m.mask_selectors.length) screenshot = await page.screenshot({ ...options, clip: bounds });
+        // Chromium's direct CDP clipping is the lower-overhead path for normal
+        // element captures. Its direct clip and page.screenshot({ clip }) path
+        // truncate beyond the active viewport. Playwright's element screenshot
+        // path explicitly opts into captureBeyondViewport for an oversized
+        // target, so use it only after our own visibility/stability checks and
+        // only for that valid, already dimension-checked case.
+        if (afterScroll.exceedsViewport) screenshot = await region.screenshot(options);
+        else if (m.mask_selectors.length) screenshot = await page.screenshot({ ...options, clip: bounds });
         else {
           const scroll = await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
           screenshot = await cdpScreenshot(context, page, { x: bounds.x + scroll.x, y: bounds.y + scroll.y, width: bounds.width, height: bounds.height });

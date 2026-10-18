@@ -1,6 +1,6 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { ApiError, api } from "./api";
 import { Settings } from "./Settings";
 
@@ -11,7 +11,28 @@ vi.mock("./AccountSecurity", () => ({ AccountSecurity: () => null }));
 vi.mock("./AllMyThemeControls", () => ({ AllMyThemeControls: () => null }));
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
+beforeEach(() => { vi.mocked(api).mockResolvedValue({}); });
 const props = { channels: [], monitors: [], reload: vi.fn(), report: vi.fn(), admin: false, signedOut: vi.fn(), theme: { preference: "system", resolved: "light" } };
+
+it("shows validated build metadata with commit and source PR links", () => {
+  render(<Settings {...props} buildMetadata={{
+    version: "0.2.0",
+    commit: "a".repeat(40),
+    branch: "feature/chromium-targeted-optimizations-visual-compare",
+    sourcePr: 20,
+  }} />);
+  expect(screen.getByText("0.2.0", { exact: true })).toBeInTheDocument();
+  expect(screen.getByText("feature/chromium-targeted-optimizations-visual-compare", { exact: true })).toBeInTheDocument();
+  expect(screen.getByRole("link", { name: "Commit " + "a".repeat(40) })).toHaveAttribute("href", "https://github.com/mkaand/changd-fusion/commit/" + "a".repeat(40));
+  expect(screen.getByRole("link", { name: "#20" })).toHaveAttribute("href", "https://github.com/mkaand/changd-fusion/pull/20");
+});
+
+it("shows safe fallbacks when deployment metadata is unavailable", () => {
+  render(<Settings {...props} buildMetadata={{ version: "0.2.0", commit: "invalid", branch: "bad branch", sourcePr: -1 }} />);
+  expect(screen.getByText("0.2.0", { exact: true })).toBeInTheDocument();
+  expect(screen.getAllByText("Unavailable", { exact: true })).toHaveLength(3);
+  expect(screen.queryByRole("link", { name: /#/ })).not.toBeInTheDocument();
+});
 
 it("renders a safe retryable diagnostics error without leaving the loading indicator stuck", async () => {
   vi.mocked(api).mockImplementation((path: string) => path === "/system/diagnostics" ? Promise.reject(new ApiError("Proxy failure", { status: 502 })) : Promise.resolve({}));

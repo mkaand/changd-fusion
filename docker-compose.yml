@@ -76,7 +76,12 @@ services:
     restart: unless-stopped
     stop_grace_period: ${WORKER_STOP_GRACE:-180s}
   ui:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        APP_COMMIT: ${APP_COMMIT:-}
+        APP_BRANCH: ${APP_BRANCH:-}
+        APP_SOURCE_PR: ${APP_SOURCE_PR:-}
     ports: ["127.0.0.1:3000:8080"]
     depends_on:
       api: { condition: service_healthy }
