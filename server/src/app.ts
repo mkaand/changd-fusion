@@ -24,6 +24,7 @@ import pino from "pino";
 import { Decimal } from "decimal.js";
 import path from "node:path";
 import { acquireChromiumLease } from "./chromium-capacity.js";
+import { captureAreaSchema } from "./capture-area.js";
 const uuid = z.string().uuid();
 const threshold = z
   .union([
@@ -69,8 +70,9 @@ const monitorInput = z
     normalize_whitespace: z.boolean().default(true),
     ignore_case: z.boolean().default(false),
     capture_mode: z
-      .enum(["viewport", "full_page", "element"])
+      .enum(["viewport", "full_page", "element", "selected_area"])
       .default("viewport"),
+    capture_area: captureAreaSchema.nullable().default(null),
     capture_selector: z.string().max(1000).default(""),
     capture_selector_type: z.enum(["css", "xpath"]).default("css"),
     browser_steps: stepsSchema,
@@ -94,6 +96,15 @@ const monitorInput = z
   .strict()
   .refine((m) => m.capture_mode !== "element" || !!m.capture_selector.trim(), {
     message: "Element capture requires a selector",
+  })
+  .refine((m) => m.capture_mode !== "selected_area" || !!m.capture_area, {
+    message: "Selected area capture requires valid coordinates",
+  })
+  .refine((m) => m.capture_mode === "selected_area" || m.capture_area === null, {
+    message: "Selected area coordinates require selected area capture mode",
+  })
+  .refine((m) => m.capture_mode !== "selected_area" || (m.kind === "browser" && m.visual_enabled), {
+    message: "Selected area capture requires Browser visual detection",
   })
   .refine((m) => m.kind === "browser" || m.browser_steps.length === 0, {
     message: "Browser steps require a browser monitor",
@@ -129,6 +140,7 @@ const monitorInput = z
 const monitoringDefaults = z.object({
   interval_seconds: z.number().int().min(30).max(604800).optional(),
   text_enabled: z.boolean().optional(), visual_enabled: z.boolean().optional(),
+  // Selected area needs monitor-specific coordinates and cannot be a global default.
   capture_mode: z.enum(["viewport", "full_page", "element"]).optional(),
   visual_threshold: threshold.optional(), pixel_threshold: z.number().min(0).max(1).optional(),
   channel_ids: z.array(uuid).max(20).optional(), notification_enabled: z.boolean().optional(),
@@ -165,6 +177,7 @@ const regionPreviewInput = z
       .object({ x: z.number().finite(), y: z.number().finite() })
       .optional(),
     refresh: z.boolean().optional().default(false),
+    mode: z.enum(["element", "area"]).optional().default("element"),
   })
   .strict();
 const textPreviewInput = z.object({
@@ -565,7 +578,7 @@ export function createApp(
   app.post("/api/v1/region-preview", async (req, res) => {
     const body = regionPreviewInput.parse(req.body);
     if (body.monitor_id) await owner(body.monitor_id, res.locals.user.user_id);
-    await runRegionPreview(req, res, { ...body.monitor, id: body.monitor_id ?? "preview", browser_steps: body.monitor.browser_steps }, body.point, body.session_id, true, body.preview_request_id, body.refresh);
+    await runRegionPreview(req, res, { ...body.monitor, id: body.monitor_id ?? "preview", browser_steps: body.monitor.browser_steps }, body.point, body.session_id, body.mode === "element", body.preview_request_id, body.refresh);
   });
   app.delete("/api/v1/region-preview/:sessionId", async (req, res) => {
     const sessionId = uuid.parse(req.params.sessionId);

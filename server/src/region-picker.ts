@@ -295,7 +295,8 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
       ]);
     });
     stage = "screenshot";
-    await boundedPreviewOperation({ operation: () => (session?.operations?.snapshot ?? snapshotLayout)(page), remaining, cancel: cancelBrowser, stage, signal: session?.signal });
+    if (session?.retain)
+      await boundedPreviewOperation({ operation: () => (session?.operations?.snapshot ?? snapshotLayout)(page), remaining, cancel: cancelBrowser, stage, signal: session?.signal });
     enter("screenshot");
     const image = await boundedPreviewOperation({ operation: () => (session?.operations?.screenshot ?? capturePreviewScreenshot)(context!, page), remaining, cancel: cancelBrowser, stage, signal: session?.signal });
     pngDimensions(image, { width: cfg.MAX_CAPTURE_WIDTH, height: cfg.MAX_CAPTURE_HEIGHT, pixels: cfg.MAX_CAPTURE_PIXELS });
