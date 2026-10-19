@@ -182,6 +182,13 @@ test("migration 012 to 013 preserves existing monitors, baselines, and history",
 });
 test("JWT, admin checks, CSRF, disabled registration and removed scheduler endpoint", async () => {
   await request(app).get("/api/v1/jobs").expect(401);
+  await request(app).get("/api/v1/system/diagnostics").expect(401);
+  await ownerAgent.get("/api/v1/system/diagnostics").expect(200, {
+    api: "ok",
+    monitoring: { active: 0, total: 0, attention: 0 },
+    deliveries: { pending: 0, failed: 0 },
+    retention_days: cfg.HISTORY_DAYS,
+  });
   await ownerAgent.get("/api/v1/users").expect(403);
   const user = (await ownerAgent.get("/api/v1/users/me").expect(200)).body;
   const forged = jwt.sign({ sub: user.user_id, admin: true }, cfg.JWT_SECRET, {
@@ -318,6 +325,52 @@ test("monitor validation rejects private URLs, injection, foreign channels; all 
     .set("X-Fusion-Request", "1")
     .send({})
     .expect(404);
+});
+test("system diagnostics uses owner-scoped monitor and delivery states", async (t) => {
+  const ownerId = (await pool.query("SELECT user_id FROM users WHERE email='owner@example.com'"))
+    .rows[0].user_id;
+  const otherId = (await pool.query("SELECT user_id FROM users WHERE email='other@example.com'"))
+    .rows[0].user_id;
+  const ownerAttention = (
+    await pool.query(
+      "INSERT INTO fusion_monitors(user_id,name,url,kind,text_enabled,visual_enabled,monitor_state,last_error) VALUES($1,$2,$3,'browser',true,false,'persistent_failure','Synthetic failure') RETURNING id",
+      [ownerId, "Diagnostics attention", "https://example.com/diagnostics-owner"],
+    )
+  ).rows[0].id;
+  const otherAttention = (
+    await pool.query(
+      "INSERT INTO fusion_monitors(user_id,name,url,kind,text_enabled,visual_enabled,monitor_state,last_error) VALUES($1,$2,$3,'browser',true,false,'challenge_detected','Synthetic failure') RETURNING id",
+      [otherId, "Other diagnostics attention", "https://example.com/diagnostics-other"],
+    )
+  ).rows[0].id;
+  t.after(async () => {
+    await pool.query("DELETE FROM fusion_monitors WHERE id=ANY($1::uuid[])", [[ownerAttention, otherAttention]]);
+  });
+  const otherChannel = (await pool.query("SELECT id FROM fusion_channels WHERE user_id=$1 LIMIT 1", [otherId])).rows[0];
+  assert.ok(otherChannel, "fixture must provide the other owner's channel");
+  const ownerEvents = await pool.query(
+    "INSERT INTO fusion_events(monitor_id,status) VALUES($1,'failed'),($1,'failed'),($1,'failed') RETURNING id",
+    [ownerAttention],
+  );
+  await pool.query(
+    "INSERT INTO fusion_outbox(event_id,channel_id,status) VALUES($1,$2,'pending'),($3,$2,'sending'),($4,$2,'failed')",
+    [ownerEvents.rows[0].id, channelId, ownerEvents.rows[1].id, ownerEvents.rows[2].id],
+  );
+  const otherEvent = (await pool.query("INSERT INTO fusion_events(monitor_id,status) VALUES($1,'failed') RETURNING id", [otherAttention])).rows[0];
+  await pool.query("INSERT INTO fusion_outbox(event_id,channel_id,status) VALUES($1,$2,'pending')", [otherEvent.id, otherChannel.id]);
+
+  await ownerAgent.get("/api/v1/system/diagnostics").expect(200, {
+    api: "ok",
+    monitoring: { active: 1, total: 2, attention: 1 },
+    deliveries: { pending: 2, failed: 1 },
+    retention_days: cfg.HISTORY_DAYS,
+  });
+  await otherAgent.get("/api/v1/system/diagnostics").expect(200, {
+    api: "ok",
+    monitoring: { active: 0, total: 1, attention: 1 },
+    deliveries: { pending: 1, failed: 0 },
+    retention_days: cfg.HISTORY_DAYS,
+  });
 });
 test("owner-scoped timeline and analytics filter event history without exposing another owner", async () => {
   await pool.query(
@@ -1938,6 +1991,7 @@ test("public access requires owner credentials to establish a revocable account-
   const visitor = request.agent(publicApp);
   await visitor.get("/api/v1/users/me").expect(200, { user_id: null, firstname: "Public", lastname: "Access", email: null, user_type: 0, public_access: true });
   await visitor.get("/api/v1/account/public-access").expect(403);
+  await visitor.get("/api/v1/system/diagnostics").expect(403);
   await visitor
     .post("/api/v1/security/verify")
     .set("X-Fusion-Request", "1")
