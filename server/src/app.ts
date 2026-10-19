@@ -409,6 +409,46 @@ export function createApp(
     if (!r.rowCount) throw new HttpError(404, "Channel not found");
     return r.rows[0];
   };
+  app.get("/api/v1/system/diagnostics", requireAccountSession, async (_req, res) => {
+    const userId = res.locals.user.user_id;
+    const [monitoring, deliveries] = await Promise.all([
+      pool.query(
+        `SELECT
+           count(*) FILTER (WHERE enabled AND NOT paused AND last_error IS NULL) AS active,
+           count(*) AS total,
+           count(*) FILTER (WHERE monitor_state IN ('persistent_failure','authentication_required','challenge_detected')) AS attention
+         FROM fusion_monitors
+         WHERE user_id=$1`,
+        [userId],
+      ),
+      pool.query(
+        `SELECT
+           count(*) FILTER (WHERE o.status IN ('pending','sending')) AS pending,
+           count(*) FILTER (WHERE o.status='failed') AS failed
+         FROM fusion_outbox o
+         JOIN fusion_events e ON e.id=o.event_id
+         JOIN fusion_monitors m ON m.id=e.monitor_id
+         JOIN fusion_channels ch ON ch.id=o.channel_id
+         WHERE m.user_id=$1 AND ch.user_id=$1`,
+        [userId],
+      ),
+    ]);
+    const monitors = monitoring.rows[0] ?? {};
+    const queue = deliveries.rows[0] ?? {};
+    res.json({
+      api: "ok",
+      monitoring: {
+        active: Number(monitors.active ?? 0),
+        total: Number(monitors.total ?? 0),
+        attention: Number(monitors.attention ?? 0),
+      },
+      deliveries: {
+        pending: Number(queue.pending ?? 0),
+        failed: Number(queue.failed ?? 0),
+      },
+      retention_days: cfg.HISTORY_DAYS,
+    });
+  });
   const replaceChannels = async (
     c: any,
     id: string,

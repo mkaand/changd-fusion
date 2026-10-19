@@ -39,6 +39,22 @@ it("shows safe fallbacks when deployment metadata is unavailable", () => {
   for (const fallback of screen.getAllByText("Unavailable", { exact: true })) expect(fallback).toHaveClass("application-metadata-token");
 });
 
+it("renders authenticated system diagnostics from the API contract", async () => {
+  vi.mocked(api).mockImplementation((path: string) => path === "/system/diagnostics"
+    ? Promise.resolve({
+        api: "ok",
+        monitoring: { active: 1, total: 2, attention: 1 },
+        deliveries: { pending: 2, failed: 1 },
+        retention_days: 90,
+      })
+    : Promise.resolve({}));
+  render(<Settings {...props} />);
+  await userEvent.setup().click(screen.getByText("System & Diagnostics", { exact: true }));
+  expect(await screen.findByText("1/2 active · 1 need attention")).toBeInTheDocument();
+  expect(screen.getByText("2 pending · 1 failed")).toBeInTheDocument();
+  expect(screen.getByText("90 days")).toBeInTheDocument();
+});
+
 it("renders a safe retryable diagnostics error without leaving the loading indicator stuck", async () => {
   vi.mocked(api).mockImplementation((path: string) => path === "/system/diagnostics" ? Promise.reject(new ApiError("Proxy failure", { status: 502 })) : Promise.resolve({}));
   render(<Settings {...props} />);
