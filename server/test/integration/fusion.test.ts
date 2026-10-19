@@ -1846,7 +1846,7 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await mobileEditor.waitFor();
     await page.getByRole("button", { name: "Save monitor", exact: true }).click();
     await page.getByRole("button", { name: "Dimension fixture", exact: true }).waitFor();
-    const savedArea = (await pool.query("SELECT capture_mode,capture_area FROM fusion_monitors WHERE name='Dimension fixture'")).rows[0];
+    const savedArea = (await pool.query("SELECT id,capture_mode,capture_area FROM fusion_monitors WHERE name='Dimension fixture'")).rows[0];
     assert.equal(savedArea.capture_mode, "selected_area");
     assert.deepEqual(savedArea.capture_area, { x: 128, y: 90, width: 320, height: 180 });
     // Saving the selected area correctly makes a monitor due immediately. Keep
@@ -3244,15 +3244,6 @@ test("visual region picker preview maps screenshot coordinates to a unique visib
     monitor: { url: `http://fixture.example:${port}/`, kind: "browser", visual_enabled: true, browser_steps: [] },
   }).expect(200);
   assert.match(draftPreview.body.session_id, /^[0-9a-f-]{36}$/);
-  const areaPreview = await pickerOwner.post("/api/v1/region-preview").set("X-Fusion-Request", "1").send({
-    mode: "area",
-    monitor: { url: `http://fixture.example:${port}/`, kind: "browser", visual_enabled: true, browser_steps: [] },
-  }).expect(200);
-  assert.equal(areaPreview.body.session_id, undefined);
-  assert.deepEqual([areaPreview.body.width, areaPreview.body.height], [1280, 900]);
-  const areaLease = await acquireChromiumLease(pool, { workload: "preview", slots: 1 });
-  assert.ok(areaLease, "selected-area preview closes Chromium before returning the client-side image");
-  await areaLease!.release();
   const requestsAfterPreview = previewRequests;
   const selectedDraft = await pickerOwner.post("/api/v1/region-preview").set("X-Fusion-Request", "1").send({
     session_id: draftPreview.body.session_id,
@@ -3269,6 +3260,15 @@ test("visual region picker preview maps screenshot coordinates to a unique visib
   const releasedLease = await acquireChromiumLease(pool, { workload: "preview", slots: 1 });
   assert.ok(releasedLease, "the owner release promptly frees the global Chromium slot");
   await releasedLease!.release();
+  const areaPreview = await pickerOwner.post("/api/v1/region-preview").set("X-Fusion-Request", "1").send({
+    mode: "area",
+    monitor: { url: `http://fixture.example:${port}/`, kind: "browser", visual_enabled: true, browser_steps: [] },
+  }).expect(200);
+  assert.equal(areaPreview.body.session_id, undefined);
+  assert.deepEqual([areaPreview.body.width, areaPreview.body.height], [1280, 900]);
+  const areaLease = await acquireChromiumLease(pool, { workload: "preview", slots: 1 });
+  assert.ok(areaLease, "selected-area preview closes Chromium before returning the client-side image");
+  await areaLease!.release();
 
   const denied = await pickerOwner.post("/api/v1/region-preview").set("X-Fusion-Request", "1").send({
     monitor: { url: "http://127.0.0.1/?synthetic_secret=must-not-leak", kind: "browser", visual_enabled: true, browser_steps: [] },
