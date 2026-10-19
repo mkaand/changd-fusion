@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, type PointerEvent as ReactPointerEvent } from "react";
+import { useState, useEffect, useRef, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent as ReactPointerEvent } from "react";
 import {
   Alert,
   Card,
@@ -7,7 +7,6 @@ import {
   Space,
   Tag,
   Typography,
-  Slider,
   Spin,
   Pagination,
   Button,
@@ -42,6 +41,20 @@ export function ImageComparison({
     activePointer.current = null;
     if (event.currentTarget.hasPointerCapture?.(event.pointerId))
       event.currentTarget.releasePointerCapture?.(event.pointerId);
+  };
+  const moveWithKeyboard = (event: ReactKeyboardEvent<HTMLDivElement>) => {
+    const next = event.key === "Home"
+      ? 0
+      : event.key === "End"
+        ? 100
+        : event.key === "ArrowLeft" || event.key === "ArrowDown"
+          ? position - 1
+          : event.key === "ArrowRight" || event.key === "ArrowUp"
+            ? position + 1
+            : null;
+    if (next === null) return;
+    event.preventDefault();
+    setPosition(Math.max(0, Math.min(100, next)));
   };
   const imageProps = {
     loading: "lazy" as const,
@@ -88,12 +101,18 @@ export function ImageComparison({
       )}
       <div
         className="compare"
-        role="group"
+        role="slider"
+        tabIndex={0}
         aria-label="Drag to compare before and after"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={position}
+        aria-valuetext={`${position}% before, ${100 - position}% after`}
         onPointerDown={beginDrag}
         onPointerMove={(event) => { if (activePointer.current === event.pointerId) moveDivider(event); }}
         onPointerUp={endDrag}
         onPointerCancel={endDrag}
+        onKeyDown={moveWithKeyboard}
       >
         <img {...imageProps} src={url(before)} alt="Before capture" draggable={false} />
         <img
@@ -110,15 +129,7 @@ export function ImageComparison({
           <span className="comparison-handle">↔</span>
         </div>
       </div>
-      <Slider
-        ariaLabelForHandle="Before / After comparison"
-        ariaValueTextFormatterForHandle={(value) =>
-          `${value}% before, ${100 - value}% after`
-        }
-        value={position}
-        onChange={setPosition}
-      />
-      <Typography.Text type="secondary">Drag the divider on the image, or use the keyboard-accessible slider.</Typography.Text>
+      <Typography.Text type="secondary">Drag the divider, or focus the comparison and use the arrow keys.</Typography.Text>
     </>
   );
 }

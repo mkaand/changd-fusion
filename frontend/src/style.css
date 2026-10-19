@@ -161,12 +161,19 @@ html, body, #root {
 }
 .compare {
   position: relative;
+  width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
   max-width: 900px;
   margin-top: 16px;
   overflow: hidden;
   touch-action: pan-y;
   user-select: none;
   cursor: ew-resize;
+}
+.compare:focus-visible {
+  outline: 3px solid #1677ff;
+  outline-offset: 3px;
 }
 .compare img {
   display: block;
