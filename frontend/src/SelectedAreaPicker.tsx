@@ -31,38 +31,47 @@ export function SelectedAreaPicker({ monitorId, getDraft, onApply, mobilePage = 
   onBackMobile?: () => void;
 }) {
   const [compact, setCompact] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches);
-  const [open, setOpen] = useState(false), [preview, setPreview] = useState<Preview>(), [loading, setLoading] = useState(false), [error, setError] = useState(""), [zoom, setZoom] = useState(1), [tool, setTool] = useState<Tool>("draw"), [area, setArea] = useState<CaptureArea>(), [progress, setProgress] = useState("target_validation");
-  const canvas = useRef<HTMLDivElement>(null), image = useRef<HTMLImageElement>(null), controller = useRef<AbortController | undefined>(undefined), pointers = useRef(new Map<number, { x: number; y: number }>()), interaction = useRef<Interaction | undefined>(undefined);
+  const [open, setOpen] = useState(false), [preview, setPreview] = useState<Preview | undefined>(undefined), [loading, setLoading] = useState(false), [error, setError] = useState(""), [refreshFailed, setRefreshFailed] = useState(false), [zoom, setZoom] = useState(1), [tool, setTool] = useState<Tool>("draw"), [area, setArea] = useState<CaptureArea>(), [progress, setProgress] = useState("target_validation");
+  const canvas = useRef<HTMLDivElement>(null), image = useRef<HTMLImageElement>(null), controller = useRef<AbortController | undefined>(undefined), requestVersion = useRef(0), previewRef = useRef<Preview | undefined>(undefined), mounted = useRef(true), pointers = useRef(new Map<number, { x: number; y: number }>()), interaction = useRef<Interaction | undefined>(undefined);
 
   useEffect(() => { const media = window.matchMedia("(max-width: 767px)"); const update = () => setCompact(media.matches); update(); media.addEventListener("change", update); return () => media.removeEventListener("change", update); }, []);
-  const release = useCallback(() => { controller.current?.abort(); controller.current = undefined; pointers.current.clear(); interaction.current = undefined; setPreview(undefined); setLoading(false); }, []);
-  useEffect(() => () => release(), [release]);
+  const setCurrentPreview = useCallback((value: Preview | undefined) => { previewRef.current = value; setPreview(value); }, []);
+  const abortRequest = useCallback(() => { requestVersion.current++; controller.current?.abort(); controller.current = undefined; }, []);
+  const release = useCallback(() => { abortRequest(); pointers.current.clear(); interaction.current = undefined; setCurrentPreview(undefined); setLoading(false); setRefreshFailed(false); }, [abortRequest, setCurrentPreview]);
+  useEffect(() => {
+    mounted.current = true;
+    return () => { mounted.current = false; abortRequest(); };
+  }, [abortRequest]);
 
-  const load = useCallback(async () => {
+  const load = useCallback(async (reason: "initialize" | "refresh" | "retry" = "initialize") => {
     if (controller.current) return;
     const draft = getDraft();
     if (!draft.url || draft.kind !== "browser" || !draft.visual_enabled) { setError("Enter a valid Browser URL and enable Visual detection before selecting an area."); return; }
-    const pending = new AbortController(); controller.current = pending; setLoading(true); setError(""); setProgress("target_validation");
-    setArea(isValidCaptureArea(draft.capture_area) ? draft.capture_area : undefined);
+    if (reason === "initialize") setArea(isValidCaptureArea(draft.capture_area) ? draft.capture_area : undefined);
+    const pending = new AbortController(), version = ++requestVersion.current;
+    controller.current = pending; setLoading(true); setError(""); setRefreshFailed(false); setProgress("target_validation");
     const previewRequestId = crypto.randomUUID();
-    const timer = window.setInterval(() => void api<{ stage: string }>(`/region-preview/status/${previewRequestId}`).then((value) => setProgress(value.stage)).catch(() => undefined), 1000);
+    const isCurrent = () => mounted.current && requestVersion.current === version && controller.current === pending;
+    const timer = window.setInterval(() => void api<{ stage: string }>(`/region-preview/status/${previewRequestId}`).then((value) => { if (isCurrent()) setProgress(value.stage); }).catch(() => undefined), 1000);
     try {
       const result = await api<Preview>("/region-preview", "POST", {
         mode: "area", preview_request_id: previewRequestId, monitor_id: monitorId,
         monitor: { url: draft.url, kind: "browser", visual_enabled: true, browser_steps: draft.browser_steps ?? [] },
       }, { timeoutMs: PREVIEW_REQUEST_TIMEOUT_MS, signal: pending.signal });
       if (result.width !== CAPTURE_VIEWPORT_WIDTH || result.height !== CAPTURE_VIEWPORT_HEIGHT) throw new Error("Preview dimensions do not match the 1280x900 capture viewport.");
-      setPreview(result); setProgress("ready");
+      if (isCurrent()) { setCurrentPreview(result); setProgress("ready"); }
     } catch (cause) {
-      if (!pending.signal.aborted) setError(cause instanceof ApiError ? cause.message : cause instanceof Error ? cause.message : "Website preview failed. Retry.");
+      if (!pending.signal.aborted && isCurrent()) {
+        setError(cause instanceof ApiError ? cause.message : "Website preview failed. Retry preview.");
+        setRefreshFailed(Boolean(previewRef.current));
+      }
     } finally {
       window.clearInterval(timer);
-      if (controller.current === pending) controller.current = undefined;
-      setLoading(false);
+      if (isCurrent()) { controller.current = undefined; setLoading(false); }
     }
-  }, [getDraft, monitorId]);
+  }, [getDraft, monitorId, setCurrentPreview]);
 
-  useEffect(() => { if (mobilePage) void load(); }, [mobilePage, load]);
+  useEffect(() => { if (mobilePage) void load("initialize"); }, [mobilePage, load]);
   const point = (clientX: number, clientY: number) => image.current ? capturePoint(clientX, clientY, image.current.getBoundingClientRect()) : { x: 0, y: 0 };
   const updateInteraction = (current: { x: number; y: number }) => {
     const active = interaction.current; if (!active) return;
@@ -127,12 +136,15 @@ export function SelectedAreaPicker({ monitorId, getDraft, onApply, mobilePage = 
   const body = <div className="selected-area-picker">
     <Typography.Paragraph>Draw a fixed rectangle on the 1280 × 900 reference viewport. This area does not follow moving DOM elements; use Selected element for that.</Typography.Paragraph>
     {error && <Alert type="error" showIcon title={error} />}
+    {refreshFailed && preview && <Alert type="info" showIcon title="The previous preview is still shown. Retry preview to refresh it." />}
     {loading && !preview && <div className="region-preview-loading" role="status"><Spin /><strong>{progressLabels[progress] ?? "Preparing preview"}</strong></div>}
+    {loading && preview && <div className="region-preview-updating" role="status"><Spin size="small" /><span>{progressLabels[progress] ?? "Refreshing preview"}</span></div>}
+    {!preview && error && <div className="selected-area-actions"><Button type="primary" onClick={() => void load("retry")} disabled={loading}>Retry preview</Button></div>}
     {preview && <>
       <div className="region-preview-toolbar selected-area-toolbar">
         <Radio.Group value={tool} onChange={(event) => setTool(event.target.value)} aria-label="Selected area interaction mode" optionType="button" options={[{ value: "draw", label: "Draw" }, { value: "pan", label: "Pan" }]} />
         <Button aria-label="Zoom out" onClick={() => setZoom((value) => clampZoom(value - ZOOM_STEP))}>−</Button><output>{Math.round(zoom * 100)}%</output><Button aria-label="Zoom in" onClick={() => setZoom((value) => clampZoom(value + ZOOM_STEP))}>+</Button>
-        <Button onClick={resetView}>Fit / Reset</Button><Button onClick={() => void load()} disabled={loading}>Refresh preview</Button>
+        <Button onClick={resetView}>Fit / Reset</Button><Button onClick={() => void load(error ? "retry" : "refresh")} disabled={loading}>{error ? "Retry preview" : "Refresh preview"}</Button>
       </div>
       <div ref={canvas} className={`region-preview-canvas selected-area-canvas tool-${tool}`}>
         <div className="region-preview-stage selected-area-stage" style={{ width: `${zoom * 100}%` }} onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerEnd} onPointerCancel={pointerEnd}>
@@ -151,5 +163,5 @@ export function SelectedAreaPicker({ monitorId, getDraft, onApply, mobilePage = 
   </div>;
 
   if (mobilePage) return <section className="mobile-region-picker-page" aria-label="Select screenshot area"><div className="mobile-editor-header"><Button type="text" onClick={() => { cancel(); onBackMobile?.(); }}>← Back</Button><Typography.Title level={4}>Select screenshot area</Typography.Title></div><div className="mobile-region-picker-body">{body}</div></section>;
-  return <><Button onClick={() => { if (compact && onRequestMobile) return onRequestMobile(); setOpen(true); resetView(); void load(); }}>Select area visually</Button>{!compact && <Modal className="region-preview-modal selected-area-modal" title="Select screenshot area" open={open} onCancel={cancel} footer={null} width={960} destroyOnHidden>{body}</Modal>}</>;
+  return <><Button onClick={() => { if (compact && onRequestMobile) return onRequestMobile(); setOpen(true); resetView(); void load("initialize"); }}>Select area visually</Button>{!compact && <Modal className="region-preview-modal selected-area-modal" title="Select screenshot area" open={open} onCancel={cancel} footer={null} width={960} destroyOnHidden>{body}</Modal>}</>;
 }
