@@ -50,6 +50,8 @@ export const captureFailureCodes = [
   "element_unstable",
   "screenshot_timeout",
   "capacity_busy",
+  "capacity_wait_timeout",
+  "capacity_queue_full",
   "resource_limit",
   "capture_failed",
   "cleanup_timeout",

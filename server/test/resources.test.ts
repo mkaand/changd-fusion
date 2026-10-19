@@ -5,6 +5,7 @@ import { randomBytes } from "node:crypto";
 import { closeServer } from "./helpers/server.js";
 import { readConfig } from "../src/config.js";
 import { stableElementBounds } from "../src/capture.js";
+import { PREVIEW_REQUEST_BUDGET_MS, previewCapacityWaitBudget } from "../src/region-picker.js";
 test("fixture cleanup closes active keep-alive sockets even when responses never end", async () => {
   const server = http.createServer((_req, res) => {
     res.writeHead(200);
@@ -35,6 +36,7 @@ test("resource configuration is bounded and defaults to a single Chromium captur
     CHANNEL_KEY: randomBytes(32).toString("hex"),
   };
   assert.equal(readConfig(env).CHROMIUM_CONCURRENCY, 1);
+  assert.equal(readConfig(env).PREVIEW_CAPACITY_WAIT_MS, 45_000);
   for (const [key, value] of [
     ["CHROMIUM_CONCURRENCY", "4"],
     ["MAX_CAPTURE_PIXELS", "16000001"],
@@ -43,6 +45,12 @@ test("resource configuration is bounded and defaults to a single Chromium captur
   ]) {
     assert.throws(() => readConfig({ ...env, [key]: value }));
   }
+});
+
+test("preview admission has a separate bounded budget from browser execution", () => {
+  assert.equal(previewCapacityWaitBudget({ CAPTURE_TIMEOUT_MS: 30_000, PREVIEW_CAPACITY_WAIT_MS: 45_000 }), 45_000);
+  assert.equal(previewCapacityWaitBudget({ CAPTURE_TIMEOUT_MS: 90_000, PREVIEW_CAPACITY_WAIT_MS: 60_000 }), 30_000);
+  assert.equal(previewCapacityWaitBudget({ CAPTURE_TIMEOUT_MS: PREVIEW_REQUEST_BUDGET_MS, PREVIEW_CAPACITY_WAIT_MS: 45_000 }), 0);
 });
 
 test("element stability accepts a settled transient and rejects continuous movement within a bounded window", async () => {

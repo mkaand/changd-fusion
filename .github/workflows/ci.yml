@@ -6,6 +6,7 @@ env:
   APP_COMMIT: ${{ github.sha }}
   APP_BRANCH: ${{ github.head_ref || github.ref_name }}
   APP_SOURCE_PR: ${{ github.event.pull_request.number || '' }}
+  APP_SOURCE_PR_COMMIT: ${{ github.event.pull_request.head.sha || '' }}
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -48,6 +49,9 @@ jobs:
         timeout-minutes: 2
       - name: Private Codespaces configuration and credential safeguards
         run: node --test --test-timeout=30000 scripts/preview.test.mjs
+        timeout-minutes: 1
+      - name: Build provenance helper safeguards
+        run: node --test scripts/prepare-build-metadata.test.mjs
         timeout-minutes: 1
       - name: Private production SSH access safeguards
         run: python3 scripts/production-access.test.py
