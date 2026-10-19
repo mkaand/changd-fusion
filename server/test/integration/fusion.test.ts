@@ -1169,7 +1169,16 @@ test("dimension events persist explicit sizes, preserve both images, advance bas
 test("browser smoke: sign in, monitor history, decimal display, image comparison and mobile layout", async (t) => {
   const { chromium } = await import("playwright");
   const { readFile } = await import("node:fs/promises");
-  const apiServer = app.listen(0, "127.0.0.1");
+  // The browser smoke generates many authenticated synthetic requests. Give it
+  // an independent production-equivalent limiter so it cannot affect API tests
+  // that deliberately assert their own authorization outcomes later in this file.
+  const smokeApp = createApp(
+    pool,
+    cfg,
+    new EgressPolicy(async () => [{ address: "8.8.8.8", family: 4 }]),
+    { telegramValidate: async () => ({ first_name: "Fixture Bot", username: "fixture_bot" }) },
+  );
+  const apiServer = smokeApp.listen(0, "127.0.0.1");
   t.after(() => closeServer(apiServer));
   await new Promise<void>((r) => apiServer.once("listening", r));
   const apiPort = (apiServer.address() as AddressInfo).port;
@@ -1840,6 +1849,9 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     const savedArea = (await pool.query("SELECT capture_mode,capture_area FROM fusion_monitors WHERE name='Dimension fixture'")).rows[0];
     assert.equal(savedArea.capture_mode, "selected_area");
     assert.deepEqual(savedArea.capture_area, { x: 128, y: 90, width: 320, height: 180 });
+    // Saving the selected area correctly makes a monitor due immediately. Keep
+    // this UI fixture out of the independent scheduler test that follows.
+    await pool.query("UPDATE fusion_monitors SET next_run=now()+interval '1 hour' WHERE id=$1", [savedArea.id]);
     assert.deepEqual(errors, []);
   } finally {
     cfg.PUBLIC_URL = oldURL;
