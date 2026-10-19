@@ -5,12 +5,17 @@ const commitPattern = /^[0-9a-f]{40}$/i;
 const branchPattern = /^(?![/.])(?!.*(?:\.\.|@\{|[~^:?*\\[\]{}\s]))[A-Za-z0-9._/-]{1,255}(?<![/.])$/;
 const prPattern = /^[1-9]\d*$/;
 
-function verifiedBranch(git) {
-  // `git symbolic-ref --quiet HEAD` deliberately exits 1 for a detached
-  // checkout. That is valid deployment provenance: retain the verified
-  // commit, but do not invent a branch name.
-  try { return git(["symbolic-ref", "--quiet", "--short", "HEAD"]).trim(); }
-  catch { return ""; }
+function verifiedBranch(env, git, commit) {
+  // A checked-out symbolic ref is local Git evidence and takes precedence.
+  try {
+    const branch = git(["symbolic-ref", "--quiet", "--short", "HEAD"]).trim();
+    if (branchPattern.test(branch)) return branch;
+  } catch {}
+  // Deployment controllers may use a detached, immutable checkout. They may
+  // supply the branch only when they bind it to this exact verified commit.
+  const branch = (env.APP_BRANCH_REF ?? "").trim();
+  const branchCommit = (env.APP_BRANCH_COMMIT ?? "").trim().toLowerCase();
+  return branchPattern.test(branch) && branchCommit === commit ? branch : "";
 }
 
 function shellQuote(value) {
@@ -20,7 +25,7 @@ function shellQuote(value) {
 export function verifiedBuildMetadata(env, git) {
   const commit = git(["rev-parse", "--verify", "HEAD^{commit}"]).trim().toLowerCase();
   if (!commitPattern.test(commit)) throw Error("The build checkout does not have a verified commit SHA.");
-  const branch = verifiedBranch(git);
+  const branch = verifiedBranch(env, git, commit);
   const sourcePr = env.APP_SOURCE_PR ?? "";
   const sourcePrCommit = (env.APP_SOURCE_PR_COMMIT ?? "").trim().toLowerCase();
   return {
