@@ -13,13 +13,13 @@ import {
 
 const PREVIEW_REQUEST_TIMEOUT_MS = 125000;
 const MIN_ZOOM = .5, MAX_ZOOM = 3, ZOOM_STEP = .25;
-type Draft = { url?: string; kind?: string; visual_enabled?: boolean; browser_steps?: unknown[]; capture_area?: unknown };
+type Draft = { url?: string; kind?: string; visual_enabled?: boolean; browser_steps?: unknown[]; step_budget_ms?: number; capture_area?: unknown };
 type Preview = { image: string; width: number; height: number; timings?: Record<string, number> };
 type Tool = "draw" | "pan";
 type Action = "draw" | "pan" | "move" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw" | "pinch";
 type Interaction = { action: Action; start: { x: number; y: number }; original?: CaptureArea; left: number; top: number; zoom: number; distance?: number };
 
-const progressLabels: Record<string, string> = { target_validation: "Connecting to website", proxy_initialization: "Preparing secure connection", browser_launch: "Starting secure browser", browser_context: "Preparing isolated page", navigation: "Loading page", dom_ready: "Page content loaded", rendering_preparation: "Preparing preview", screenshot: "Rendering screenshot", serialization: "Transferring preview", ready: "Preview ready" };
+const progressLabels: Record<string, string> = { target_validation: "Connecting to website", capacity_wait: "Waiting for available browser capacity", proxy_initialization: "Preparing secure connection", browser_launch: "Starting secure browser", browser_context: "Preparing isolated page", navigation: "Loading page", dom_ready: "Page content loaded", browser_steps: "Applying browser steps", rendering_preparation: "Preparing preview", screenshot: "Rendering screenshot", serialization: "Transferring preview", ready: "Preview ready" };
 const clampZoom = (value: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
 
 export function SelectedAreaPicker({ monitorId, getDraft, onApply, mobilePage = false, onRequestMobile, onBackMobile }: {
@@ -56,7 +56,7 @@ export function SelectedAreaPicker({ monitorId, getDraft, onApply, mobilePage = 
     try {
       const result = await api<Preview>("/region-preview", "POST", {
         mode: "area", preview_request_id: previewRequestId, monitor_id: monitorId,
-        monitor: { url: draft.url, kind: "browser", visual_enabled: true, browser_steps: draft.browser_steps ?? [] },
+        monitor: { url: draft.url, kind: "browser", visual_enabled: true, browser_steps: draft.browser_steps ?? [], step_budget_ms: draft.step_budget_ms ?? 20_000 },
       }, { timeoutMs: PREVIEW_REQUEST_TIMEOUT_MS, signal: pending.signal });
       if (result.width !== CAPTURE_VIEWPORT_WIDTH || result.height !== CAPTURE_VIEWPORT_HEIGHT) throw new Error("Preview dimensions do not match the 1280x900 capture viewport.");
       if (isCurrent()) { setCurrentPreview(result); setProgress("ready"); }

@@ -28,7 +28,7 @@ it("uses unsaved draft monitor settings without persisting them", async () => {
   await waitFor(() => expect(api).toHaveBeenCalledWith(
     "/region-preview",
     "POST",
-    expect.objectContaining({ session_id: undefined, monitor_id: undefined, monitor: { ...draft }, point: undefined, preview_request_id: expect.any(String) }),
+    expect.objectContaining({ session_id: undefined, monitor_id: undefined, monitor: { ...draft, step_budget_ms: 20_000 }, point: undefined, preview_request_id: expect.any(String) }),
     expect.objectContaining({ timeoutMs: 125000 }),
   ));
   expect(screen.getByAltText("Secure monitor preview")).toBeInTheDocument();

@@ -3362,6 +3362,30 @@ test("PostgreSQL Chromium admission coordinates preview and scheduled capture le
   await recovered!.release();
 });
 
+test("waiting previews release PostgreSQL clients between probes and acquire after scheduled work", async () => {
+  const capture = await acquireChromiumLease(pool, { workload: "capture", slots: 1, waitMs: 0 });
+  assert.ok(capture);
+  const controller = new AbortController();
+  let waits = 0;
+  const queued = acquireChromiumLease(pool, {
+    workload: "preview", slots: 1, waitMs: 1_000, signal: controller.signal,
+    onWait: () => { waits++; },
+  });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.ok(waits > 0, "preview reports bounded capacity waiting without starting Chromium");
+  await capture!.release();
+  const preview = await queued;
+  assert.ok(preview, "preview acquires the released slot automatically");
+  await preview!.release();
+
+  const held = await acquireChromiumLease(pool, { workload: "capture", slots: 1, waitMs: 0 });
+  assert.ok(held);
+  const cancelled = acquireChromiumLease(pool, { workload: "preview", slots: 1, waitMs: 1_000, signal: controller.signal });
+  controller.abort();
+  assert.equal(await cancelled, null, "cancelled preview waiting does not retain a lease");
+  await held!.release();
+});
+
 test("preview sessions have an absolute lifetime despite repeated selections and free scheduled capture capacity", async (t) => {
   await closeRegionPreviewSessions();
   const fixture = managedServer(t, (_req, res) => res.end("<!doctype html><main id='preview-target' style='position:absolute;left:100px;top:100px;width:200px;height:80px'>Bounded session</main>"));
@@ -3436,6 +3460,22 @@ test("region preview bounds slow resources, resolves deep DOM selectors and reje
   await new Promise((resolve) => setTimeout(resolve, 2200));
   const stillAccurate = await previewRegion(monitorFor("/ancestor-drift"), cfg, { x: 130, y: 150 }, policy, { ownerId: "ancestor-drift-owner", id: ancestor.session_id, retain: true });
   assert.ok(stillAccurate.selection?.selector, "unrelated ancestor resizing does not invalidate the unchanged exact target");
+  await closeRegionPreviewSessions();
+});
+
+test("region preview applies the validated browser workflow before its screenshot", async (t) => {
+  await closeRegionPreviewSessions();
+  const fixture = managedServer(t, (_req, res) => res.end(`<!doctype html><style>#cookie{position:fixed;inset:0;background:#000;color:#fff}#target{position:absolute;left:100px;top:120px;width:240px;height:80px;background:#0f0}</style><div id="cookie">Cookie notice <button id="dismiss" onclick="document.querySelector('#cookie').remove()">Dismiss</button></div><main id="target">Visible product</main>`));
+  await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
+  const port = (fixture.address() as AddressInfo).port;
+  const policy = new EgressPolicy(async () => [{ address: "127.0.0.1", family: 4 }], () => true, new Set([port]));
+  const monitored = {
+    id: randomUUID(), url: `http://preview-steps.example:${port}/`, kind: "browser", text_enabled: false, visual_enabled: true,
+    browser_steps: [{ action: "dismiss_cookie", selector: "#dismiss", selector_type: "css", timeout_ms: 1_000, continue_on_error: false }], step_budget_ms: 2_000,
+  } as any;
+  const preview = await previewRegion(monitored, cfg, { x: 200, y: 150 }, policy, { ownerId: "preview-steps-owner", retain: true });
+  assert.equal(preview.selection?.selector, "#target", "preview selection sees the post-step DOM rather than the cookie overlay");
+  assert.ok((preview.timings?.browser_steps ?? 0) >= 0, "workflow timing is separate from navigation timing");
   await closeRegionPreviewSessions();
 });
 

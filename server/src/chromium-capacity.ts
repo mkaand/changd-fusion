@@ -17,6 +17,12 @@ export type ChromiumLease = {
 };
 
 const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+const waitForCapacityPoll = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve) => {
+  let timer: NodeJS.Timeout | undefined;
+  const finish = () => { if (timer) clearTimeout(timer); signal?.removeEventListener("abort", finish); resolve(); };
+  timer = setTimeout(finish, ms);
+  signal?.addEventListener("abort", finish, { once: true });
+});
 
 async function tryLock(client: pg.PoolClient, shared: boolean, slot: number) {
   const fn = shared ? "pg_try_advisory_lock_shared" : "pg_try_advisory_lock";
@@ -53,11 +59,26 @@ function lease(client: pg.PoolClient, workload: ChromiumWorkload, slot: number):
  */
 export async function acquireChromiumLease(
   pool: Pool,
-  options: { workload: ChromiumWorkload; slots: number; waitMs?: number; signal?: AbortSignal },
+  options: { workload: ChromiumWorkload; slots: number; waitMs?: number; signal?: AbortSignal; onWait?: () => void },
 ): Promise<ChromiumLease | null> {
   const slots = Math.max(1, Math.min(3, Math.trunc(options.slots)));
-  const waitMs = options.workload === "capture" ? Math.max(0, options.waitMs ?? 1_000) : 0;
+  const waitMs = Math.max(0, options.waitMs ?? (options.workload === "capture" ? 1_000 : 0));
   const deadline = Date.now() + waitMs;
+  // Preview waiters must not pin PostgreSQL pool connections while another
+  // process owns Chromium. Each probe releases its client before a bounded,
+  // abortable pause. Capture admission intentionally retains its exclusive
+  // priority gate, so scheduled work cannot be starved by previews.
+  if (options.workload === "preview" && waitMs > 0) {
+    do {
+      if (options.signal?.aborted) return null;
+      const acquired = await acquireChromiumLease(pool, { ...options, waitMs: 0, onWait: undefined });
+      if (acquired) return acquired;
+      if (Date.now() >= deadline) return null;
+      options.onWait?.();
+      await waitForCapacityPoll(Math.min(POLL_MS, Math.max(1, deadline - Date.now())), options.signal);
+    } while (Date.now() < deadline);
+    return null;
+  }
   const client = await pool.connect();
   let gateHeld = false;
   let clean = true;
@@ -67,7 +88,7 @@ export async function acquireChromiumLease(
       if (options.signal?.aborted) return null;
       if (!gateHeld) gateHeld = await tryLock(client, options.workload === "preview", PRIORITY_GATE);
       if (!gateHeld) {
-        if (options.workload === "preview" || Date.now() >= deadline) return null;
+        if (Date.now() >= deadline) return null;
         await delay(Math.min(POLL_MS, Math.max(1, deadline - Date.now())));
         continue;
       }

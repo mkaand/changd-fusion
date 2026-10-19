@@ -6,11 +6,12 @@ import { CaptureFailure, HttpError, captureFailure, type CaptureFailureCode, typ
 import { checkDimensions, pngDimensions } from "./image.js";
 import type { Monitor } from "./capture.js";
 import type { ChromiumLease } from "./chromium-capacity.js";
+import { runSteps } from "./browser-steps.js";
 
 type RegionPreviewCode = CaptureFailureCode | "session_expired" | "stale_preview" | "ambiguous_selection";
 export type RegionPreviewFailure = { stage: CaptureStage; failure_code: RegionPreviewCode; status: number; message: string };
 type Selection = { selector: string; label: string; visible: boolean; x: number; y: number; width: number; height: number };
-export type PreviewStage = "target_validation" | "proxy_initialization" | "browser_launch" | "browser_context" | "navigation" | "dom_ready" | "rendering_preparation" | "screenshot" | "serialization" | "ready";
+export type PreviewStage = "target_validation" | "capacity_wait" | "proxy_initialization" | "browser_launch" | "browser_context" | "navigation" | "dom_ready" | "browser_steps" | "rendering_preparation" | "screenshot" | "serialization" | "ready";
 type PreviewTimings = Partial<Record<PreviewStage, number>>;
 type Session = { id: string; ownerId: string; createdAt: number; expiresAt: number; expiryTimer?: NodeJS.Timeout; closing?: Promise<void>; browser: Browser; context: BrowserContext; page: Page; proxy: Awaited<ReturnType<typeof browserProxy>>; capacity?: ChromiumLease; image: Buffer; timings: PreviewTimings };
 type PreviewOperations = {
@@ -73,6 +74,8 @@ function previewMessage(stage: CaptureStage, code: RegionPreviewCode) {
   if (code === "ambiguous_selection") return "The selected point does not identify one stable visible element. Try a nearby point.";
   if (code === "timeout") return "Preview timed out. Retry, or use viewport capture instead.";
   if (code === "capacity_busy") return "Preview capacity is busy. Retry shortly.";
+  if (code === "capacity_wait_timeout") return "No browser capacity became available in time. Retry shortly.";
+  if (code === "capacity_queue_full") return "Preview capacity is busy. Retry shortly.";
   if (code === "egress_denied") return "Preview destination is not permitted.";
   if (code === "selector_failed") return "The selected region is not a unique visible element.";
   if (stage === "navigation") return "Website preview could not be loaded. Check the URL and try again.";
@@ -83,7 +86,7 @@ export function regionPreviewFailure(error: unknown, stage: CaptureStage): Regio
   const safe = captureFailure(error, stage);
   const validation = error instanceof HttpError && error.status >= 400 && error.status < 500;
   const code: RegionPreviewCode = error instanceof HttpError && error.status === 410 ? "session_expired" : error instanceof HttpError && error.status === 409 ? "stale_preview" : error instanceof HttpError && /unique visible/i.test(error.message) ? "ambiguous_selection" : safe.code === "unknown" && stage === "text_extraction" ? "selector_failed" : safe.code;
-  return { stage: safe.stage, failure_code: code, status: safe.code === "timeout" ? 504 : safe.code === "capacity_busy" ? 429 : validation ? error.status : 422, message: previewMessage(safe.stage, code) };
+  return { stage: safe.stage, failure_code: code, status: safe.code === "timeout" ? 504 : ["capacity_busy", "capacity_wait_timeout", "capacity_queue_full"].includes(safe.code) ? 429 : validation ? error.status : 422, message: previewMessage(safe.stage, code) };
 }
 
 export async function snapshotLayout(page: Page) {
@@ -216,7 +219,7 @@ export async function selectionAt(page: Page, point: { x: number; y: number }): 
   return { selection, candidates };
 }
 
-export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number; y: number }, policy = new EgressPolicy(), session?: { ownerId: string; id?: string; retain?: boolean; captureLayout?: boolean; refresh?: boolean; progress?: (stage: PreviewStage) => void; signal?: AbortSignal; operations?: PreviewOperations; acquireCapacity?: () => Promise<ChromiumLease | null> }) {
+export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number; y: number }, policy = new EgressPolicy(), session?: { ownerId: string; id?: string; retain?: boolean; captureLayout?: boolean; refresh?: boolean; progress?: (stage: PreviewStage) => void; signal?: AbortSignal; operations?: PreviewOperations; acquireCapacity?: (onWait: () => void) => Promise<ChromiumLease | null> }) {
   let stage: CaptureStage = "target_validation";
   await purgeExpired();
   if (session?.id) {
@@ -264,12 +267,14 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
     session?.signal?.addEventListener("abort", abortBrowser, { once: true });
     session?.progress?.("target_validation");
     await policy.target(m.url);
-    reservation = reserveSession(session?.ownerId ?? randomUUID(), Boolean(session?.retain));
-    if (reservation.existing) await closeSession(reservation.existing);
+    const existing = session?.retain ? [...sessions.values()].find((entry) => entry.ownerId === session.ownerId) : undefined;
+    if (existing) await closeSession(existing);
     if (session?.acquireCapacity) {
-      capacity = await session.acquireCapacity() ?? undefined;
-      if (!capacity) throw new CaptureFailure("browser_launch", "capacity_busy", "Preview capacity is busy. Retry shortly.");
+      enter("capacity_wait");
+      capacity = await session.acquireCapacity(() => session.progress?.("capacity_wait")) ?? undefined;
+      if (!capacity) throw new CaptureFailure("browser_launch", "capacity_wait_timeout", "No browser capacity became available in time. Retry shortly.");
     }
+    reservation = reserveSession(session?.ownerId ?? randomUUID(), false);
     enter("proxy_initialization");
     proxy = await browserProxy(policy);
     enter("browser_launch");
@@ -286,6 +291,9 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
     if (!response?.ok()) throw new HttpError(422, `HTTP ${response?.status() ?? 0}`);
     enter("dom_ready");
     await page.addStyleTag({ content: "* { animation:none !important; transition:none !important; caret-color:transparent !important; }" });
+    stage = "browser_steps";
+    enter("browser_steps");
+    await runSteps(page, m.browser_steps ?? [], Math.min(deadline, Date.now() + (m.step_budget_ms ?? 20_000)));
     enter("rendering_preparation");
     stage = "font_wait";
     await page.evaluate(async () => {

@@ -10,7 +10,7 @@ import { hash, compare } from "bcryptjs";
 import { z } from "zod";
 import { type Pool, transaction } from "./db.js";
 import type { Config } from "./config.js";
-import { HttpError } from "./errors.js";
+import { CaptureFailure, HttpError } from "./errors.js";
 import { EgressPolicy } from "./egress.js";
 import { encrypt, decrypt } from "./crypto.js";
 import { smtpSchema, telegramSchema, telegramValidate, telegramSummary, type TelegramValidate } from "./notifications.js";
@@ -171,6 +171,7 @@ const regionPreviewInput = z
         kind: z.literal("browser"),
         visual_enabled: z.literal(true),
         browser_steps: stepsSchema.optional().default([]),
+        step_budget_ms: z.number().int().min(100).max(60_000).default(20_000),
       })
       .strict(),
     point: z
@@ -206,6 +207,8 @@ export function createApp(
 ) {
   const app = express();
   const log = pino({ level: cfg.LOG_LEVEL });
+  let previewWaiters = 0;
+  const maxPreviewWaiters = 4;
   const previewProgress = new Map<string, { ownerId: string; stage: PreviewStage; updatedAt: number }>();
   const updatePreviewProgress = (id: string, ownerId: string, stage: PreviewStage) => {
     if (previewProgress.size > 100) for (const [key, value] of previewProgress) if (Date.now() - value.updatedAt > 120_000) previewProgress.delete(key);
@@ -557,7 +560,20 @@ export function createApp(
           refresh,
           signal: cancellation.signal,
           progress: previewRequestId ? (stage) => updatePreviewProgress(previewRequestId, res.locals.user.user_id, stage) : undefined,
-          acquireCapacity: () => acquireChromiumLease(pool, { workload: "preview", slots: cfg.CHROMIUM_CONCURRENCY, signal: cancellation.signal }),
+          acquireCapacity: async (onWait) => {
+            if (previewWaiters >= maxPreviewWaiters)
+              throw new CaptureFailure("browser_launch", "capacity_queue_full", "Preview capacity is busy. Retry shortly.");
+            previewWaiters++;
+            try {
+              return await acquireChromiumLease(pool, {
+                workload: "preview",
+                slots: cfg.CHROMIUM_CONCURRENCY,
+                waitMs: Math.min(cfg.PREVIEW_CAPACITY_WAIT_MS, Math.max(0, cfg.CAPTURE_TIMEOUT_MS - 1_000)),
+                signal: cancellation.signal,
+                onWait,
+              });
+            } finally { previewWaiters--; }
+          },
         },
       );
       if (previewRequestId) updatePreviewProgress(previewRequestId, res.locals.user.user_id, "ready");
@@ -579,7 +595,7 @@ export function createApp(
   app.post("/api/v1/region-preview", async (req, res) => {
     const body = regionPreviewInput.parse(req.body);
     if (body.monitor_id) await owner(body.monitor_id, res.locals.user.user_id);
-    await runRegionPreview(req, res, { ...body.monitor, id: body.monitor_id ?? "preview", browser_steps: body.monitor.browser_steps }, body.point, body.session_id, body.mode === "element", body.preview_request_id, body.refresh, body.mode === "element");
+    await runRegionPreview(req, res, { ...body.monitor, id: body.monitor_id ?? "preview", browser_steps: body.monitor.browser_steps, step_budget_ms: body.monitor.step_budget_ms }, body.point, body.session_id, body.mode === "element", body.preview_request_id, body.refresh, body.mode === "element");
   });
   app.delete("/api/v1/region-preview/:sessionId", async (req, res) => {
     const sessionId = uuid.parse(req.params.sessionId);

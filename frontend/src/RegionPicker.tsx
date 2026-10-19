@@ -3,10 +3,10 @@ import { Alert, Button, Modal, Spin, Typography } from "antd";
 import { ApiError, api } from "./api";
 const PREVIEW_REQUEST_TIMEOUT_MS = 125000;
 const MIN_ZOOM = .5, MAX_ZOOM = 3, ZOOM_STEP = .25;
-type Draft = { url?: string; kind?: string; visual_enabled?: boolean; browser_steps?: unknown[] };
+type Draft = { url?: string; kind?: string; visual_enabled?: boolean; browser_steps?: unknown[]; step_budget_ms?: number };
 type Selection = { selector: string; label?: string; x: number; y: number; width: number; height: number };
 type Preview = { session_id?: string; image: string; width: number; height: number; selection?: Selection | null; candidates?: Selection[]; timings?: Record<string, number>; reused?: boolean };
-const progressLabels: Record<string, string> = { target_validation: "Connecting to website", proxy_initialization: "Preparing secure connection", browser_launch: "Starting secure browser", browser_context: "Preparing isolated page", navigation: "Loading page", dom_ready: "Page content loaded", rendering_preparation: "Preparing preview", screenshot: "Rendering screenshot", serialization: "Transferring preview", ready: "Preview ready" };
+const progressLabels: Record<string, string> = { target_validation: "Connecting to website", capacity_wait: "Waiting for available browser capacity", proxy_initialization: "Preparing secure connection", browser_launch: "Starting secure browser", browser_context: "Preparing isolated page", navigation: "Loading page", dom_ready: "Page content loaded", browser_steps: "Applying browser steps", rendering_preparation: "Preparing preview", screenshot: "Rendering screenshot", serialization: "Transferring preview", ready: "Preview ready" };
 export const clampZoom = (value: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
 export const previewPoint = (clientX: number, clientY: number, rect: Pick<DOMRect, "left" | "top" | "width" | "height">) => ({
   x: Math.round((clientX - rect.left) * 1280 / rect.width),
@@ -62,7 +62,7 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
         refresh: refreshSession,
         preview_request_id: previewRequestId,
         monitor_id: monitorId,
-        monitor: { url: draft.url, kind: "browser", visual_enabled: true, browser_steps: draft.browser_steps ?? [] },
+        monitor: { url: draft.url, kind: "browser", visual_enabled: true, browser_steps: draft.browser_steps ?? [], step_budget_ms: draft.step_budget_ms ?? 20_000 },
         point,
       }, { timeoutMs: PREVIEW_REQUEST_TIMEOUT_MS, signal: controller.signal }) as Preview;
       sessionId.current = result.session_id;
