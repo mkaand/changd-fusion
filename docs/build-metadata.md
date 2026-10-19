@@ -10,13 +10,21 @@ The Settings > General > Application card displays only build-time metadata embe
 | `APP_BRANCH` | Branch | Safe Git branch-name subset |
 | `APP_SOURCE_PR` | Source PR | Positive integer |
 
-For a verified source build, use the fail-closed wrapper from the same checkout that is used as the Docker build context:
+For a verified source build, use the fail-closed wrapper from the same checkout that is used as the Docker build context. It accepts normal Docker Compose arguments after `--`:
+
+```sh
+node scripts/build-ui-with-metadata.mjs -- up -d --build
+```
+
+With no arguments, it retains the focused UI-build default:
 
 ```sh
 node scripts/build-ui-with-metadata.mjs
 ```
 
-The wrapper runs the helper as a child process, checks its actual exit code, validates its structured output, removes inherited `APP_COMMIT`, `APP_BRANCH`, and `APP_SOURCE_PR` values, and only then starts Docker Compose with the newly verified values. If commit verification or output validation fails, Docker Compose is not started. The helper obtains `APP_COMMIT` and `APP_BRANCH` from the local checked-out repository. A detached checkout still produces its verified commit SHA, but deliberately leaves `APP_BRANCH` empty. It accepts `APP_SOURCE_PR` only if the controller also supplies `APP_SOURCE_PR_COMMIT` with the exact same 40-character checkout SHA. It does not query GitHub, infer a PR, or accept an unbound PR number.
+The wrapper runs the helper as a child process, checks its actual exit code, validates its structured output, removes inherited `APP_COMMIT`, `APP_BRANCH`, and `APP_SOURCE_PR` values, and only then starts Docker Compose with the newly verified values. If commit verification or output validation fails, Docker Compose is not started. The helper obtains `APP_COMMIT` and `APP_BRANCH` from the local checked-out repository. A detached checkout still produces its verified commit SHA. A controller may provide `APP_BRANCH_REF` only when it also provides `APP_BRANCH_COMMIT` with the exact same SHA. Otherwise Branch remains unavailable. It accepts `APP_SOURCE_PR` only if the controller also supplies `APP_SOURCE_PR_COMMIT` with the exact same 40-character checkout SHA. It does not query GitHub, infer a PR, or accept an unbound PR number.
+
+Raw `docker compose` remains supported but cannot run Git verification or invoke this wrapper. It therefore retains safe `Unavailable` fallbacks for metadata that is not explicitly supplied. The wrapper is the documented standard installation entrypoint for verified metadata.
 
 ## Production controller contract
 

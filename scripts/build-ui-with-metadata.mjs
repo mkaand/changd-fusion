@@ -30,8 +30,13 @@ export function prepareUiBuildEnvironment(env = process.env, run = spawnSync) {
   return { ...composeEnv, ...metadata };
 }
 
+export function composeCommandArgs(argv = []) {
+  const args = argv[0] === "--" ? argv.slice(1) : argv;
+  return ["compose", ...(args.length ? args : ["build", "ui"])];
+}
+
 if (import.meta.main) {
   const env = prepareUiBuildEnvironment();
-  const result = spawnSync("docker", ["compose", "build", "ui"], { env, stdio: "inherit" });
+  const result = spawnSync("docker", composeCommandArgs(process.argv.slice(2)), { env, stdio: "inherit" });
   if (result.error || result.status !== 0) process.exitCode = result.status ?? 1;
 }
