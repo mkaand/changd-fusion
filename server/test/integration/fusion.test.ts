@@ -1547,12 +1547,15 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     assert.ok(await page.getByAltText("Before capture").count());
     assert.ok(await page.getByAltText("After capture").count());
     const slider = page
-      .getByRole("slider", { name: "Before / After comparison" })
+      .getByRole("slider", { name: "Drag to compare before and after" })
       .first();
+    assert.equal(await page.locator(".ant-slider").count(), 0, "the on-image comparison is the only slider control");
     await slider.focus();
     await slider.press("ArrowRight");
     assert.equal(await slider.getAttribute("aria-valuenow"), "51");
-    const comparisonImage = page.getByRole("group", { name: "Drag to compare before and after" }).first();
+    await slider.press("End");
+    assert.equal(await slider.getAttribute("aria-valuenow"), "100");
+    const comparisonImage = slider;
     await comparisonImage.scrollIntoViewIfNeeded();
     const comparisonBounds = await comparisonImage.boundingBox();
     assert.ok(comparisonBounds);

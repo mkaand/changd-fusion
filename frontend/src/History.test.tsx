@@ -10,29 +10,39 @@ afterEach(() => {
   cleanup();
   vi.clearAllMocks();
 });
-it("comparison slider has a keyboard-accessible label and changes the image overlay", () => {
+it("comparison surface is the only keyboard-accessible slider and changes the image overlay", () => {
   render(<ImageComparison before="before.png" after="after.png" />);
   const slider = screen.getByRole("slider", {
-    name: "Before / After comparison",
+    name: "Drag to compare before and after",
   });
+  expect(screen.getAllByRole("slider")).toHaveLength(1);
+  expect(document.querySelector(".ant-slider")).toBeNull();
+  slider.focus();
+  expect(slider).toHaveFocus();
   expect(slider).toHaveAttribute("aria-valuenow", "50");
+  expect(slider).toHaveAttribute("aria-valuetext", "50% before, 50% after");
   fireEvent.keyDown(slider, { key: "ArrowRight", keyCode: 39 });
   expect(slider).toHaveAttribute("aria-valuenow", "51");
+  expect(slider).toHaveAttribute("aria-valuetext", "51% before, 49% after");
   expect(screen.getByAltText("After capture")).toHaveStyle({
     clipPath: "inset(0 0 0 51%)",
   });
+  fireEvent.keyDown(slider, { key: "Home" });
+  expect(slider).toHaveAttribute("aria-valuenow", "0");
+  fireEvent.keyDown(slider, { key: "End" });
+  expect(slider).toHaveAttribute("aria-valuenow", "100");
 });
 it("dragging directly over a screenshot updates and clamps the comparison, with safe pointer release", () => {
   render(<ImageComparison before="before.png" after="after.png" />);
-  const image = screen.getByRole("group", { name: "Drag to compare before and after" });
+  const image = screen.getByRole("slider", { name: "Drag to compare before and after" });
   vi.spyOn(image, "getBoundingClientRect").mockReturnValue({ left: 10, width: 200 } as DOMRect);
   fireEvent.pointerDown(image, { pointerId: 7, pointerType: "touch", clientX: 160 });
-  expect(screen.getByRole("slider")).toHaveAttribute("aria-valuenow", "75");
+  expect(image).toHaveAttribute("aria-valuenow", "75");
   fireEvent.pointerMove(image, { pointerId: 7, pointerType: "touch", clientX: 290 });
-  expect(screen.getByRole("slider")).toHaveAttribute("aria-valuenow", "100");
+  expect(image).toHaveAttribute("aria-valuenow", "100");
   fireEvent.pointerUp(image, { pointerId: 7, pointerType: "touch", clientX: 290 });
   fireEvent.pointerMove(image, { pointerId: 7, pointerType: "touch", clientX: 30 });
-  expect(screen.getByRole("slider")).toHaveAttribute("aria-valuenow", "100");
+  expect(image).toHaveAttribute("aria-valuenow", "100");
 });
 
 it("dimension changes show separate images rather than overlaying incompatible sizes", () => {
