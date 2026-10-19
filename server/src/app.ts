@@ -18,7 +18,7 @@ import { Storage } from "./storage.js";
 import { stepsSchema } from "./browser-steps.js";
 import { vaultSchema, sealValues } from "./vault.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { previewRegion, releaseRegionPreviewSession, type PreviewStage, type RegionPreviewFailure } from "./region-picker.js";
+import { previewCapacityWaitBudget, previewRegion, releaseRegionPreviewSession, type PreviewStage, type RegionPreviewFailure } from "./region-picker.js";
 import { previewJinaText } from "./text-picker.js";
 import pino from "pino";
 import { Decimal } from "decimal.js";
@@ -568,7 +568,7 @@ export function createApp(
               return await acquireChromiumLease(pool, {
                 workload: "preview",
                 slots: cfg.CHROMIUM_CONCURRENCY,
-                waitMs: Math.min(cfg.PREVIEW_CAPACITY_WAIT_MS, Math.max(0, cfg.CAPTURE_TIMEOUT_MS - 1_000)),
+                waitMs: previewCapacityWaitBudget(cfg),
                 signal: cancellation.signal,
                 onWait,
               });

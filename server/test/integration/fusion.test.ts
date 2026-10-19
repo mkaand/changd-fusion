@@ -3368,7 +3368,9 @@ test("waiting previews release PostgreSQL clients between probes and acquire aft
   const controller = new AbortController();
   let waits = 0;
   const queued = acquireChromiumLease(pool, {
-    workload: "preview", slots: 1, waitMs: 1_000, signal: controller.signal,
+    // The configured admission window is long enough for a representative
+    // scheduled capture; this controlled release keeps the CI test bounded.
+    workload: "preview", slots: 1, waitMs: 45_000, signal: controller.signal,
     onWait: () => { waits++; },
   });
   await new Promise((resolve) => setTimeout(resolve, 100));
@@ -3384,6 +3386,26 @@ test("waiting previews release PostgreSQL clients between probes and acquire aft
   controller.abort();
   assert.equal(await cancelled, null, "cancelled preview waiting does not retain a lease");
   await held!.release();
+});
+
+test("preview browser execution receives its full deadline after bounded admission", async (t) => {
+  await closeRegionPreviewSessions();
+  const fixture = managedServer(t, (_req, res) => res.end("<!doctype html><main id='preview-target'>Admission budget fixture</main>"));
+  await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
+  const port = (fixture.address() as AddressInfo).port;
+  const policy = new EgressPolicy(async () => [{ address: "127.0.0.1", family: 4 }], () => true, new Set([port]));
+  const delayedAdmissionMs = 3_500;
+  const executionCfg = { ...cfg, CAPTURE_TIMEOUT_MS: 4_000 };
+  const monitor = { id: randomUUID(), url: `http://preview-budget.example:${port}/`, kind: "browser", text_enabled: false, visual_enabled: true, browser_steps: [] } as any;
+  const preview = await previewRegion(monitor, executionCfg, undefined, policy, {
+    ownerId: "execution-budget-owner",
+    acquireCapacity: async () => {
+      await new Promise((resolve) => setTimeout(resolve, delayedAdmissionMs));
+      return acquireChromiumLease(pool, { workload: "preview", slots: 1 });
+    },
+  });
+  assert.ok(preview.image.length > 100, "browser work succeeds with its complete post-admission deadline");
+  await closeRegionPreviewSessions();
 });
 
 test("preview sessions have an absolute lifetime despite repeated selections and free scheduled capture capacity", async (t) => {

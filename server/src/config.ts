@@ -19,9 +19,9 @@ const schema = z.object({
     .max(120000)
     .default(30000),
   CHROMIUM_CONCURRENCY: z.coerce.number().int().min(1).max(3).default(1),
-  // Optional previews may wait briefly for the existing shared Chromium slot,
-  // but their admission budget must remain distinct from browser execution.
-  PREVIEW_CAPACITY_WAIT_MS: z.coerce.number().int().min(0).max(60_000).default(15_000),
+  // Optional previews may wait for the existing shared Chromium slot, but
+  // this admission budget remains distinct from browser execution.
+  PREVIEW_CAPACITY_WAIT_MS: z.coerce.number().int().min(0).max(60_000).default(45_000),
   MAX_CAPTURE_WIDTH: z.coerce.number().int().min(1280).max(4096).default(4096),
   MAX_CAPTURE_HEIGHT: z.coerce.number().int().min(900).max(8192).default(8192),
   MAX_CAPTURE_PIXELS: z.coerce

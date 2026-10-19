@@ -19,6 +19,13 @@ type PreviewOperations = {
   screenshot?: (context: BrowserContext, page: Page) => Promise<Buffer>;
 };
 export const REGION_PREVIEW_MAX_LIFETIME_MS = 45_000;
+// Keep admission plus browser work below the frontend's 125-second request
+// timeout, leaving a small transport margin. Chromium still receives exactly
+// CAPTURE_TIMEOUT_MS after it acquires capacity.
+export const PREVIEW_REQUEST_BUDGET_MS = 120_000;
+export function previewCapacityWaitBudget(cfg: Pick<Config, "CAPTURE_TIMEOUT_MS" | "PREVIEW_CAPACITY_WAIT_MS">) {
+  return Math.min(cfg.PREVIEW_CAPACITY_WAIT_MS, Math.max(0, PREVIEW_REQUEST_BUDGET_MS - cfg.CAPTURE_TIMEOUT_MS));
+}
 const MAX_SESSIONS = 4;
 const sessions = new Map<string, Session>();
 const reservations = new Map<string, string>();
@@ -246,7 +253,8 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
   }
   if (m.kind !== "browser" || !m.visual_enabled) throw new HttpError(422, "Visual browser capture is required");
   if ((m.browser_steps ?? []).some((step) => step.action === "fill_private")) throw new HttpError(422, "Region preview does not use private values");
-  const deadline = Date.now() + cfg.CAPTURE_TIMEOUT_MS;
+  // Admission does not consume the configured browser execution budget.
+  let deadline = 0;
   const remaining = () => { const value = deadline - Date.now(); if (value <= 0) throw new HttpError(504, "Preview timed out"); return value; };
   let proxy: Awaited<ReturnType<typeof browserProxy>> | undefined;
   let browser: Browser | undefined;
@@ -272,8 +280,11 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
     if (session?.acquireCapacity) {
       enter("capacity_wait");
       capacity = await session.acquireCapacity(() => session.progress?.("capacity_wait")) ?? undefined;
+      if (session.signal?.aborted) throw new HttpError(499, "Preview request was cancelled");
       if (!capacity) throw new CaptureFailure("browser_launch", "capacity_wait_timeout", "No browser capacity became available in time. Retry shortly.");
     }
+    if (session?.signal?.aborted) throw new HttpError(499, "Preview request was cancelled");
+    deadline = Date.now() + cfg.CAPTURE_TIMEOUT_MS;
     reservation = reserveSession(session?.ownerId ?? randomUUID(), false);
     enter("proxy_initialization");
     proxy = await browserProxy(policy);
