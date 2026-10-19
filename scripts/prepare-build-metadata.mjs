@@ -39,5 +39,7 @@ export function buildMetadataExports(metadata) {
 if (import.meta.main) {
   const git = (args) => execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
   const metadata = verifiedBuildMetadata(process.env, git);
-  console.log(buildMetadataExports(metadata));
+  if (process.argv[2] === "--json") console.log(JSON.stringify(metadata));
+  else if (!process.argv[2]) console.log(buildMetadataExports(metadata));
+  else throw Error("Unsupported build metadata output format");
 }
