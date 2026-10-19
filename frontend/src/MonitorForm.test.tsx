@@ -47,6 +47,23 @@ it("HTML/API selection returns to text-only viewport configuration", async () =>
     screen.getByRole("switch", { name: "Visual detection" }),
   ).toBeDisabled();
 });
+it("keeps Selected area distinct from element capture and validates its applied rectangle", async () => {
+  const user = userEvent.setup();
+  render(<Fixture />);
+  await user.click(screen.getByRole("switch", { name: "Visual detection" }));
+  await user.click(screen.getByText("Advanced settings", { exact: true }));
+  await user.click(screen.getByLabelText("Screenshot capture mode"));
+  await user.click(screen.getByText("Selected area", { exact: true }));
+  expect(screen.getByRole("button", { name: "Select area visually" })).toBeInTheDocument();
+  expect(screen.queryByLabelText("Screenshot region selector")).not.toBeInTheDocument();
+  current.setFieldsValue({ name: "Area monitor", url: "https://example.com", capture_area: { x: 100, y: 150, width: 320, height: 180 } });
+  const payload = await current.validateFields() as any;
+  expect(payload.capture_mode).toBe("selected_area");
+  expect(payload.capture_area).toEqual({ x: 100, y: 150, width: 320, height: 180 });
+  await user.click(screen.getByLabelText("Screenshot capture mode"));
+  await user.click(screen.getByText("Viewport (default)", { exact: true }));
+  expect(current.getFieldValue("capture_area")).toBeNull();
+});
 it("offers focused Jina extraction modes and hides incompatible browser controls", async () => {
   const user = userEvent.setup();
   render(<Fixture />);

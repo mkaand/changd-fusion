@@ -15,6 +15,7 @@ import { checkDimensions, pngDimensions } from "./image.js";
 import type { Config } from "./config.js";
 import { jinaReaderText } from "./jina-reader.js";
 import { applySelectedTextRule, readableJinaLines, type SelectedTextRule } from "./selected-text.js";
+import { captureAreaSchema, cropCaptureArea, type CaptureArea } from "./capture-area.js";
 export type Monitor = {
   id: string;
   user_id: string;
@@ -35,7 +36,8 @@ export type Monitor = {
   ignore_text: string[];
   normalize_whitespace: boolean;
   ignore_case: boolean;
-  capture_mode: "viewport" | "full_page" | "element";
+  capture_mode: "viewport" | "full_page" | "element" | "selected_area";
+  capture_area?: CaptureArea | null;
   capture_selector: string;
   capture_selector_type?: "css" | "xpath";
   browser_steps?: BrowserStep[];
@@ -548,9 +550,14 @@ export async function capture(
             : { width: 1280, height: 900 };
         checkDimensions(size, limits);
         enterStage("screenshot_rasterization");
-        screenshot = m.capture_mode === "viewport" && !m.mask_selectors.length
+        screenshot = (m.capture_mode === "viewport" || m.capture_mode === "selected_area") && !m.mask_selectors.length
           ? await cdpScreenshot(context, page)
           : await page.screenshot({ ...options, fullPage: m.capture_mode === "full_page" });
+        if (m.capture_mode === "selected_area") {
+          enterStage("image_validation");
+          const area = captureAreaSchema.parse(m.capture_area);
+          screenshot = cropCaptureArea(screenshot, area, limits);
+        }
       }
       enterStage("image_validation");
       pngDimensions(screenshot, limits);

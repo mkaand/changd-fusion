@@ -123,3 +123,53 @@ it("returns from RegionPicker without applying a selection and keeps the initial
   await user.click(screen.getByRole("button", { name: "Save monitor" }));
   await waitFor(() => expect(mockedApi).toHaveBeenCalledWith(`/jobs/${existing.id}`, "PUT", expect.objectContaining({ capture_selector: "#old-price" })));
 }, 20_000);
+
+it("uses the real mobile SelectedAreaPicker and sends the applied area unchanged in PUT", async () => {
+  setupApi(existing);
+  const user = userEvent.setup({ pointerEventsCheck: PointerEventsCheckLevel.Never });
+  render(<AntApp><FusionApp /></AntApp>);
+  await user.click(await screen.findByRole("button", { name: "Edit" }));
+  fireEvent.change(screen.getByLabelText("Monitor name"), { target: { value: "Unsaved area monitor" } });
+  await user.click(screen.getByText("Advanced settings", { exact: true }));
+  await user.click(screen.getByLabelText("Screenshot capture mode"));
+  await user.click(screen.getByText("Selected area", { exact: true }));
+  await user.click(screen.getByRole("button", { name: "Select area visually" }));
+  const image = await screen.findByAltText("Secure selected area preview");
+  Object.defineProperty(image, "getBoundingClientRect", { value: () => ({ left: 10, top: 20, width: 640, height: 450 }) });
+  const stage = image.closest(".selected-area-stage")!;
+  fireEvent.pointerDown(stage, { pointerId: 10, pointerType: "touch", clientX: 60, clientY: 70 });
+  fireEvent.pointerMove(stage, { pointerId: 10, pointerType: "touch", clientX: 220, clientY: 160 });
+  fireEvent.pointerUp(stage, { pointerId: 10, pointerType: "touch", clientX: 220, clientY: 160 });
+  await user.click(screen.getByRole("button", { name: "Apply selected area" }));
+  expect(await screen.findByLabelText("Monitor name")).toHaveValue("Unsaved area monitor");
+  await user.click(screen.getByRole("button", { name: "Save monitor" }));
+  await waitFor(() => expect(mockedApi).toHaveBeenCalledWith(`/jobs/${existing.id}`, "PUT", expect.objectContaining({
+    name: "Unsaved area monitor", capture_mode: "selected_area", capture_area: { x: 100, y: 100, width: 320, height: 180 },
+  })));
+  expect(mockedApi.mock.calls.some(([path]) => String(path).endsWith("/reset"))).toBe(false);
+}, 20_000);
+
+it("sends a newly applied selected area in a new-monitor POST while preserving draft fields", async () => {
+  const user = userEvent.setup({ pointerEventsCheck: PointerEventsCheckLevel.Never });
+  render(<AntApp><FusionApp /></AntApp>);
+  await user.click(await screen.findByText("New monitor", { exact: true }));
+  fireEvent.change(screen.getByLabelText("Monitor name"), { target: { value: "New selected area" } });
+  fireEvent.change(screen.getByLabelText("URL"), { target: { value: "https://example.com/new-area" } });
+  await user.click(screen.getByRole("switch", { name: "Visual detection" }));
+  await user.click(screen.getByText("Advanced settings", { exact: true }));
+  await user.click(screen.getByLabelText("Screenshot capture mode"));
+  await user.click(screen.getByText("Selected area", { exact: true }));
+  await user.click(screen.getByRole("button", { name: "Select area visually" }));
+  const image = await screen.findByAltText("Secure selected area preview");
+  Object.defineProperty(image, "getBoundingClientRect", { value: () => ({ left: 0, top: 0, width: 1280, height: 900 }) });
+  const stage = image.closest(".selected-area-stage")!;
+  fireEvent.pointerDown(stage, { pointerId: 20, pointerType: "mouse", button: 0, clientX: 50, clientY: 60 });
+  fireEvent.pointerMove(stage, { pointerId: 20, pointerType: "mouse", clientX: 250, clientY: 160 });
+  fireEvent.pointerUp(stage, { pointerId: 20, pointerType: "mouse", clientX: 250, clientY: 160 });
+  await user.click(screen.getByRole("button", { name: "Apply selected area" }));
+  expect(await screen.findByLabelText("Monitor name")).toHaveValue("New selected area");
+  await user.click(screen.getByRole("button", { name: "Save monitor" }));
+  await waitFor(() => expect(mockedApi).toHaveBeenCalledWith("/jobs", "POST", expect.objectContaining({
+    name: "New selected area", url: "https://example.com/new-area", capture_mode: "selected_area", capture_area: { x: 50, y: 60, width: 200, height: 100 },
+  })));
+}, 20_000);

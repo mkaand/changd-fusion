@@ -38,6 +38,8 @@ import { Login } from "./Login";
 import { MonitorForm, defaults, isValidSelectedTextRule } from "./MonitorForm";
 import { RegionPicker } from "./RegionPicker";
 import { TextPicker } from "./TextPicker";
+import { SelectedAreaPicker } from "./SelectedAreaPicker";
+import { isValidCaptureArea } from "./capture-area";
 import { MonitorUrlActions } from "./MonitorUrlActions";
 const History = lazy(() =>
   import("./History").then((m) => ({ default: m.History })),
@@ -81,8 +83,8 @@ function useCompactLayout() {
 }
 
 type RefreshKind = "initial" | "silent" | "manual" | "mutation";
-type PickerValues = Partial<Pick<Record<string, unknown>, "capture_mode" | "capture_selector" | "capture_selector_type" | "extraction_mode" | "extraction_rule">>;
-const pickerValueKeys = new Set(["capture_mode", "capture_selector", "capture_selector_type", "extraction_mode", "extraction_rule"]);
+type PickerValues = Partial<Pick<Record<string, unknown>, "capture_mode" | "capture_selector" | "capture_selector_type" | "capture_area" | "extraction_mode" | "extraction_rule">>;
+const pickerValueKeys = new Set(["capture_mode", "capture_selector", "capture_selector_type", "capture_area", "extraction_mode", "extraction_rule"]);
 
 function retainUnchanged<T extends { id: string }>(previous: T[], next: T[]) {
   const known = new Map(previous.map((item) => [item.id, item]));
@@ -218,6 +220,8 @@ export default function FusionApp() {
     form.setFieldsValue(draft);
     if (Object.hasOwn(draft, "extraction_rule"))
       form.setFieldValue("extraction_rule", draft.extraction_rule);
+    if (Object.hasOwn(draft, "capture_area"))
+      form.setFieldValue("capture_area", draft.capture_area);
   };
   const returnToEditor = (appliedValues?: PickerValues) => {
     const restoredDraft = editorDraftRef.current ?? form.getFieldsValue(true);
@@ -230,12 +234,13 @@ export default function FusionApp() {
     editorDraftRef.current = nextDraft;
     restoreEditorDraft(nextDraft);
     setPage("editor");
-    if (["/jobs/editor/region-picker", "/jobs/editor/text-picker"].includes(location.pathname) && history.length > 1) history.back();
+    if (["/jobs/editor/region-picker", "/jobs/editor/area-picker", "/jobs/editor/text-picker"].includes(location.pathname) && history.length > 1) history.back();
     else history.replaceState(null, "", "/jobs/editor");
   };
   useEffect(() => {
     const restore = () => {
       if (location.pathname === "/jobs/editor/region-picker" && open) setPage("region-picker");
+      else if (location.pathname === "/jobs/editor/area-picker" && open) setPage("area-picker");
       else if (location.pathname === "/jobs/editor/text-picker" && open) setPage("text-picker");
       else if (location.pathname === "/jobs/editor" && open) setPage("editor");
       else if (location.pathname.startsWith("/jobs/editor")) { setPage("jobs"); history.replaceState(null, "", "/jobs"); }
@@ -274,6 +279,8 @@ export default function FusionApp() {
       const b = await form.validateFields();
       if (!b.text_enabled && !b.visual_enabled)
         throw Error("Enable at least one detection method");
+      if (b.capture_mode === "selected_area" && (!b.visual_enabled || !isValidCaptureArea(b.capture_area)))
+        throw Error("Enable Visual detection, then select and apply a valid screenshot area before saving.");
       if (
         b.text_source === "jina" &&
         b.extraction_mode === "selected_text" &&
@@ -454,11 +461,13 @@ export default function FusionApp() {
             {page === "editor" && compactLayout && open ? (
               <section className="mobile-monitor-editor" aria-label={editing ? "Edit monitor" : "New monitor"}>
                 <div className="mobile-editor-header"><Button type="text" onClick={() => { setOpen(false); navigate("jobs"); }}>← Back</Button><Typography.Title level={3}>{editing ? "Edit monitor" : "New monitor"}</Typography.Title></div>
-                <MonitorForm form={form} channels={channels} monitorId={editing?.id} advancedOpen={advancedOpen} setAdvancedOpen={setAdvancedOpen} useDefaults={false} onOpenMobileRegion={() => { editorDraftRef.current = form.getFieldsValue(true); setPage("region-picker"); history.pushState(null, "", "/jobs/editor/region-picker"); }} onOpenMobileText={() => { editorDraftRef.current = form.getFieldsValue(true); setPage("text-picker"); history.pushState(null, "", "/jobs/editor/text-picker"); }} />
+                <MonitorForm form={form} channels={channels} monitorId={editing?.id} advancedOpen={advancedOpen} setAdvancedOpen={setAdvancedOpen} useDefaults={false} onOpenMobileRegion={() => { editorDraftRef.current = form.getFieldsValue(true); setPage("region-picker"); history.pushState(null, "", "/jobs/editor/region-picker"); }} onOpenMobileArea={() => { editorDraftRef.current = form.getFieldsValue(true); setPage("area-picker"); history.pushState(null, "", "/jobs/editor/area-picker"); }} onOpenMobileText={() => { editorDraftRef.current = form.getFieldsValue(true); setPage("text-picker"); history.pushState(null, "", "/jobs/editor/text-picker"); }} />
                 <div className="mobile-editor-actions"><Button onClick={() => { setOpen(false); navigate("jobs"); }}>Cancel</Button><Button type="primary" loading={saving} onClick={save}>Save monitor</Button></div>
               </section>
             ) : page === "region-picker" && compactLayout && open ? (
-              <RegionPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onSelect={(selector) => returnToEditor({ capture_selector_type: "css", capture_selector: selector })} onUseViewport={() => returnToEditor({ capture_mode: "viewport", capture_selector: "" })} onBackMobile={returnToEditor} />
+              <RegionPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onSelect={(selector) => returnToEditor({ capture_selector_type: "css", capture_selector: selector })} onUseViewport={() => returnToEditor({ capture_mode: "viewport", capture_selector: "" })} onBackMobile={() => returnToEditor()} />
+            ) : page === "area-picker" && compactLayout && open ? (
+              <SelectedAreaPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onApply={(capture_area) => { returnToEditor({ capture_mode: "selected_area", capture_area }); void message.success("Area applied to the editor. Save the monitor to persist it."); }} onBackMobile={() => returnToEditor()} />
             ) : page === "text-picker" && compactLayout && open ? (
               <TextPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onApply={(rule) => { returnToEditor({ extraction_mode: "selected_text", extraction_rule: rule }); void message.success("Selection applied to the editor. Save the monitor to persist it."); }} onBackMobile={() => returnToEditor()} />
             ) : page === "timeline" ? (

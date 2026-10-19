@@ -25,6 +25,10 @@ it("shows validated build metadata with commit and source PR links", () => {
   expect(screen.getByText("feature/chromium-targeted-optimizations-visual-compare", { exact: true })).toBeInTheDocument();
   expect(screen.getByRole("link", { name: "Commit " + "a".repeat(40) })).toHaveAttribute("href", "https://github.com/mkaand/changd-fusion/commit/" + "a".repeat(40));
   expect(screen.getByRole("link", { name: "#20" })).toHaveAttribute("href", "https://github.com/mkaand/changd-fusion/pull/20");
+  const list = screen.getByText("Application").closest(".ant-card")!.querySelector("dl");
+  expect(list).toHaveClass("application-metadata-list");
+  expect(list?.querySelector("table")).toBeNull();
+  expect(list?.querySelectorAll("dt")).toHaveLength(5);
 });
 
 it("shows safe fallbacks when deployment metadata is unavailable", () => {
@@ -32,6 +36,7 @@ it("shows safe fallbacks when deployment metadata is unavailable", () => {
   expect(screen.getByText("0.2.0", { exact: true })).toBeInTheDocument();
   expect(screen.getAllByText("Unavailable", { exact: true })).toHaveLength(3);
   expect(screen.queryByRole("link", { name: /#/ })).not.toBeInTheDocument();
+  for (const fallback of screen.getAllByText("Unavailable", { exact: true })) expect(fallback).toHaveClass("application-metadata-token");
 });
 
 it("renders a safe retryable diagnostics error without leaving the loading indicator stuck", async () => {

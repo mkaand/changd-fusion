@@ -55,13 +55,13 @@ export function Settings({ channels, monitors, reload, report, admin, signedOut,
     ]} />
     {section === "general" && <Space direction="vertical" size="middle" className="settings-stack">
       <Card title="Appearance"><Space wrap><AllMyThemeControls adapter={theme as ThemeAdapter} /><span>Theme: {theme.preference} ({theme.resolved})</span></Space></Card>
-      <Card title="Application" className="application-metadata"><Descriptions column={1} items={[
-        { key: "version", label: "Version", children: metadata.version ?? "Unavailable" },
-        { key: "branch", label: "Branch", children: <span className="application-metadata-value">{metadata.branch ?? "Unavailable"}</span> },
-        { key: "commit", label: "Commit HEAD", children: metadata.commit ? <Typography.Link className="application-metadata-value" href={commitUrl(metadata.commit)} target="_blank" rel="noreferrer" title={metadata.commit} aria-label={`Commit ${metadata.commit}`}>{metadata.commit.slice(0, 12)}</Typography.Link> : "Unavailable" },
-        { key: "pr", label: "Source PR", children: metadata.sourcePr ? <Typography.Link href={pullRequestUrl(metadata.sourcePr)} target="_blank" rel="noreferrer">#{metadata.sourcePr}</Typography.Link> : "Unavailable" },
-        { key: "time", label: "Display timezone", children: "Browser locale" },
-      ]} /></Card>
+      <Card title="Application" className="application-metadata"><dl className="application-metadata-list">
+        <div><dt>Version</dt><dd><span className="application-metadata-token">{metadata.version ?? "Unavailable"}</span></dd></div>
+        <div><dt>Branch</dt><dd><span className={metadata.branch ? "application-metadata-value" : "application-metadata-token"}>{metadata.branch ?? "Unavailable"}</span></dd></div>
+        <div><dt>Commit HEAD</dt><dd>{metadata.commit ? <Typography.Link className="application-metadata-value" href={commitUrl(metadata.commit)} target="_blank" rel="noreferrer" title={metadata.commit} aria-label={`Commit ${metadata.commit}`}>{metadata.commit.slice(0, 12)}</Typography.Link> : <span className="application-metadata-token">Unavailable</span>}</dd></div>
+        <div><dt>Source PR</dt><dd>{metadata.sourcePr ? <Typography.Link href={pullRequestUrl(metadata.sourcePr)} target="_blank" rel="noreferrer">#{metadata.sourcePr}</Typography.Link> : <span className="application-metadata-token">Unavailable</span>}</dd></div>
+        <div><dt>Display timezone</dt><dd><span className="application-metadata-token">Browser locale</span></dd></div>
+      </dl></Card>
     </Space>}
     {section === "notifications" && <><Channels channels={channels} monitors={monitors} reload={reload} report={report} /><Deliveries admin={admin} /></>}
     {section === "monitoring" && <Space direction="vertical" className="settings-stack" size="middle">
