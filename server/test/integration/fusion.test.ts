@@ -2107,23 +2107,26 @@ test("capture modes use one browser page for text and image; limits, selector er
     name: "Selected area configuration", url: "https://example.com", kind: "browser", text_enabled: true,
     visual_enabled: true, capture_mode: "selected_area", capture_area: area, channel_ids: [],
   }).expect(201)).body;
-  assert.deepEqual(areaMonitor.capture_area, area);
-  assert.deepEqual((await areaAgent.get(`/api/v1/jobs/${areaMonitor.id}`).expect(200)).body.capture_area, area);
-  const areaBaseline = randomUUID();
-  await pool.query("INSERT INTO fusion_captures(id,monitor_id,screenshot) VALUES($1,$2,$3)", [areaBaseline, areaMonitor.id, "synthetic-selected-area.png"]);
-  await pool.query("UPDATE fusion_monitors SET baseline_id=$2,latest_capture_id=$2 WHERE id=$1", [areaMonitor.id, areaBaseline]);
-  await areaAgent.put(`/api/v1/jobs/${areaMonitor.id}`).set("X-Fusion-Request", "1").send({
-    name: "Selected area configuration", url: "https://example.com", kind: "browser", text_enabled: true,
-    visual_enabled: true, capture_mode: "selected_area", capture_area: { ...area, x: 200 }, channel_ids: [],
-  }).expect(200);
-  const updatedArea = (await areaAgent.get(`/api/v1/jobs/${areaMonitor.id}`).expect(200)).body;
-  assert.equal(updatedArea.baseline_id, null);
-  assert.equal(updatedArea.latest_capture_id, areaBaseline, "configuration change preserves successful capture history");
-  assert.equal((await pool.query("SELECT count(*) FROM fusion_events WHERE monitor_id=$1 AND status='configuration_change'", [areaMonitor.id])).rows[0].count, "1");
-  for (const capture_area of [null, "not-an-object", { x: -1, y: 0, width: 20, height: 20 }, { x: 0.5, y: 0, width: 20, height: 20 }, { x: 1270, y: 0, width: 20, height: 20 }, { x: 0, y: 0, width: 15, height: 20 }, { x: 0, y: 0, width: 20, height: 20, extra: true }])
-    await areaAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({ name: "Invalid area", url: "https://example.com", kind: "browser", text_enabled: false, visual_enabled: true, capture_mode: "selected_area", capture_area, channel_ids: [] }).expect(400);
-  await areaAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({ name: "Invalid area source", url: "https://example.com", kind: "html", text_enabled: true, visual_enabled: false, capture_mode: "selected_area", capture_area: area, channel_ids: [] }).expect(400);
-  await areaAgent.delete(`/api/v1/jobs/${areaMonitor.id}`).set("X-Fusion-Request", "1").expect(200);
+  try {
+    assert.deepEqual(areaMonitor.capture_area, area);
+    assert.deepEqual((await areaAgent.get(`/api/v1/jobs/${areaMonitor.id}`).expect(200)).body.capture_area, area);
+    const areaBaseline = randomUUID();
+    await pool.query("INSERT INTO fusion_captures(id,monitor_id,screenshot) VALUES($1,$2,$3)", [areaBaseline, areaMonitor.id, "synthetic-selected-area.png"]);
+    await pool.query("UPDATE fusion_monitors SET baseline_id=$2,latest_capture_id=$2 WHERE id=$1", [areaMonitor.id, areaBaseline]);
+    await areaAgent.put(`/api/v1/jobs/${areaMonitor.id}`).set("X-Fusion-Request", "1").send({
+      name: "Selected area configuration", url: "https://example.com", kind: "browser", text_enabled: true,
+      visual_enabled: true, capture_mode: "selected_area", capture_area: { ...area, x: 200 }, channel_ids: [],
+    }).expect(200);
+    const updatedArea = (await areaAgent.get(`/api/v1/jobs/${areaMonitor.id}`).expect(200)).body;
+    assert.equal(updatedArea.baseline_id, null);
+    assert.equal(updatedArea.latest_capture_id, areaBaseline, "configuration change preserves successful capture history");
+    assert.equal((await pool.query("SELECT count(*) FROM fusion_events WHERE monitor_id=$1 AND status='reset' AND configuration_changed=true", [areaMonitor.id])).rows[0].count, "1");
+    for (const capture_area of [null, "not-an-object", { x: -1, y: 0, width: 20, height: 20 }, { x: 0.5, y: 0, width: 20, height: 20 }, { x: 1270, y: 0, width: 20, height: 20 }, { x: 0, y: 0, width: 15, height: 20 }, { x: 0, y: 0, width: 20, height: 20, extra: true }])
+      await areaAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({ name: "Invalid area", url: "https://example.com", kind: "browser", text_enabled: false, visual_enabled: true, capture_mode: "selected_area", capture_area, channel_ids: [] }).expect(400);
+    await areaAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({ name: "Invalid area source", url: "https://example.com", kind: "html", text_enabled: true, visual_enabled: false, capture_mode: "selected_area", capture_area: area, channel_ids: [] }).expect(400);
+  } finally {
+    await pool.query("DELETE FROM fusion_monitors WHERE id=$1", [areaMonitor.id]);
+  }
 });
 
 test("worker concurrency follows configured browser limit and stopping prevents new captures", async () => {
