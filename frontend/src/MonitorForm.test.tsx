@@ -10,6 +10,21 @@ function Fixture() {
   return <MonitorForm form={form} channels={[]} />;
 }
 afterEach(cleanup);
+
+it("uses the 60-second Browser capture timeout default and allows bounded overrides", async () => {
+  const user = userEvent.setup();
+  render(<Fixture />);
+  await user.click(screen.getByText("Advanced settings", { exact: true }));
+  const timeout = screen.getByLabelText("Capture timeout");
+  expect(current.getFieldValue("capture_timeout_ms")).toBe(60000);
+  await user.click(timeout);
+  await user.click(screen.getByText("90 seconds", { exact: true }));
+  expect(current.getFieldValue("capture_timeout_ms")).toBe(90000);
+  await user.click(timeout);
+  await user.click(screen.getByText("Use legacy server fallback", { exact: true }));
+  expect(current.getFieldValue("capture_timeout_ms")).toBeNull();
+});
+
 it("text and visual settings share one form with independent region and text selectors", async () => {
   const user = userEvent.setup();
   render(<Fixture />);

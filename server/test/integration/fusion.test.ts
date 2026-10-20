@@ -130,8 +130,8 @@ test("fresh migration is repeatable and decimal columns are NUMERIC", async () =
   );
   assert.equal(Number((await pool.query("SELECT count(*) FROM fusion_migrations")).rows[0].count), expectedMigrationCount);
 });
-test("migration 012 to 013 preserves existing monitors, baselines, and history", async () => {
-  const name = "fusion_upgrade_013_" + randomUUID().replaceAll("-", "");
+test("migration 013 to 014 preserves existing monitors, baselines, and history", async () => {
+  const name = "fusion_upgrade_014_" + randomUUID().replaceAll("-", "");
   const url = new URL(dbURL);
   url.pathname = "/" + name;
   const upgrade = makePool(url.href);
@@ -139,8 +139,8 @@ test("migration 012 to 013 preserves existing monitors, baselines, and history",
     await admin.query(`CREATE DATABASE ${name}`);
     await upgrade.query("CREATE TABLE fusion_migrations(name text PRIMARY KEY, checksum text NOT NULL, applied_at timestamptz NOT NULL DEFAULT now())");
     const migrationDir = path.resolve(import.meta.dirname, "../../migrations");
-    const migrations = (await readdir(migrationDir)).filter((file) => /^0(?:0[1-9]|1[0-2])_.+\.sql$/.test(file)).sort();
-    assert.equal(migrations.at(-1), "012_keyword_presence.sql");
+    const migrations = (await readdir(migrationDir)).filter((file) => /^0(?:0[1-9]|1[0-3])_.+\.sql$/.test(file)).sort();
+    assert.equal(migrations.at(-1), "013_selected_area_capture.sql");
     for (const migration of migrations) {
       const sql = await readFile(path.join(migrationDir, migration), "utf8");
       await upgrade.query("BEGIN");
@@ -162,11 +162,12 @@ test("migration 012 to 013 preserves existing monitors, baselines, and history",
     await upgrade.query("INSERT INTO fusion_events(monitor_id,after_id,status) VALUES($1,$2,'baseline')", [full.id, baseline]);
     await migrate(upgrade);
     await migrate(upgrade);
-    const rows = (await upgrade.query("SELECT id,extraction_mode,extraction_rule,keyword,capture_area,baseline_id,latest_capture_id FROM fusion_monitors ORDER BY name")).rows;
+    const rows = (await upgrade.query("SELECT id,extraction_mode,extraction_rule,keyword,capture_area,capture_timeout_ms,baseline_id,latest_capture_id FROM fusion_monitors ORDER BY name")).rows;
     assert.equal(rows.length, 2);
     assert.deepEqual(rows.map((row) => row.extraction_mode).sort(), ["full_text", "selected_text"]);
     assert.ok(rows.every((row) => row.keyword === null));
     assert.ok(rows.every((row) => row.capture_area === null));
+    assert.ok(rows.every((row) => row.capture_timeout_ms === null));
     assert.equal(rows.find((row) => row.id === full.id)?.baseline_id, baseline);
     assert.equal(rows.find((row) => row.id === full.id)?.latest_capture_id, baseline);
     assert.equal(rows.find((row) => row.id === selected.id)?.extraction_rule.kind, "bounded_context");
@@ -175,6 +176,7 @@ test("migration 012 to 013 preserves existing monitors, baselines, and history",
     await assert.rejects(() => upgrade.query("UPDATE fusion_monitors SET extraction_mode='keyword_presence',keyword=NULL WHERE id=$1", [full.id]));
     await assert.rejects(() => upgrade.query("UPDATE fusion_monitors SET capture_area='{\"x\":0,\"y\":0,\"width\":20,\"height\":20}'::jsonb WHERE id=$1", [full.id]));
     await assert.rejects(() => upgrade.query("UPDATE fusion_monitors SET capture_mode='selected_area',capture_area='{\"x\":1270,\"y\":0,\"width\":20,\"height\":20}'::jsonb WHERE id=$1", [full.id]));
+    await assert.rejects(() => upgrade.query("UPDATE fusion_monitors SET capture_timeout_ms=60001 WHERE id=$1", [full.id]));
   } finally {
     await upgrade.end();
     await admin.query(`DROP DATABASE IF EXISTS ${name}`);
@@ -2116,7 +2118,9 @@ test("capture modes use one browser page for text and image; limits, selector er
     const started = Date.now();
     await assert.rejects(
       capture(
-        { ...base, url: `http://fixture.test:${port}/slow` },
+        // Explicit NULL models an unchanged pre-migration monitor, which still
+        // uses the configured legacy fallback rather than a new override.
+        { ...base, url: `http://fixture.test:${port}/slow`, capture_timeout_ms: null },
         { ...cfg, CAPTURE_TIMEOUT_MS: 1500 },
         policy,
       ),
@@ -3263,9 +3267,37 @@ test("monitoring defaults and bulk channel assignment are owner-scoped and trans
   const bulkApp = createApp(pool, cfg, new EgressPolicy(async () => [{ address: "8.8.8.8", family: 4 }]));
   const bulkOwner = request.agent(bulkApp), bulkOther = request.agent(bulkApp);
   for (const [agent, email] of [[bulkOwner, "owner@example.com"], [bulkOther, "other@example.com"]] as const) await agent.post("/api/v1/login").set("X-Fusion-Request", "1").send({ email, password }).expect(200);
-  const defaults = { interval_seconds: 900, capture_mode: "viewport", notification_mode: "digest", notification_cooldown_seconds: 900, channel_ids: [channelId] };
+  const freshMonitor = (await bulkOther.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({ name: "Fresh timeout fixture", url: "https://example.com/fresh-timeout", kind: "browser", text_enabled: true, visual_enabled: false, channel_ids: [] }).expect(201)).body;
+  assert.equal(freshMonitor.capture_timeout_ms, 60000);
+  const explicitLegacyMonitor = (await bulkOther.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({ name: "Explicit legacy timeout fixture", url: "https://example.com/explicit-legacy-timeout", kind: "browser", text_enabled: true, visual_enabled: false, capture_timeout_ms: null, channel_ids: [] }).expect(201)).body;
+  assert.equal(explicitLegacyMonitor.capture_timeout_ms, null);
+  const defaults = { interval_seconds: 900, capture_timeout_ms: 90000, capture_mode: "viewport", notification_mode: "digest", notification_cooldown_seconds: 900, channel_ids: [channelId] };
   await bulkOwner.put("/api/v1/preferences/monitoring").set("X-Fusion-Request", "1").send(defaults).expect(200);
-  assert.equal((await bulkOwner.get("/api/v1/preferences/monitoring").expect(200)).body.notification_mode, "digest");
+  const savedDefaults = (await bulkOwner.get("/api/v1/preferences/monitoring").expect(200)).body;
+  assert.equal(savedDefaults.notification_mode, "digest");
+  assert.equal(savedDefaults.capture_timeout_ms, 90000);
+  const timeoutMonitor = (await bulkOwner.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({ name: "Timeout default fixture", url: "https://example.com/timeout-default", kind: "browser", text_enabled: true, visual_enabled: false, channel_ids: [] }).expect(201)).body;
+  assert.equal(timeoutMonitor.capture_timeout_ms, 90000);
+  const overrideMonitor = (await bulkOwner.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({ name: "Timeout override fixture", url: "https://example.com/timeout-override", kind: "browser", text_enabled: true, visual_enabled: false, capture_timeout_ms: 90000, channel_ids: [] }).expect(201)).body;
+  assert.equal(overrideMonitor.capture_timeout_ms, 90000);
+  const preservedCapture = randomUUID();
+  await pool.query("INSERT INTO fusion_captures(id,monitor_id,text_content) VALUES($1,$2,'timeout-history')", [preservedCapture, overrideMonitor.id]);
+  await pool.query("UPDATE fusion_monitors SET baseline_id=$2,latest_capture_id=$2 WHERE id=$1", [overrideMonitor.id, preservedCapture]);
+  await pool.query("INSERT INTO fusion_events(monitor_id,after_id,status) VALUES($1,$2,'baseline')", [overrideMonitor.id, preservedCapture]);
+  const updateBody = { name: "Timeout override fixture", url: "https://example.com/timeout-override", kind: "browser", text_enabled: true, visual_enabled: false, channel_ids: [] };
+  const omittedTimeout = (await bulkOwner.put(`/api/v1/jobs/${overrideMonitor.id}`).set("X-Fusion-Request", "1").send(updateBody).expect(200)).body;
+  assert.equal(omittedTimeout.capture_timeout_ms, 90000);
+  const afterOmission = (await pool.query("SELECT baseline_id,latest_capture_id FROM fusion_monitors WHERE id=$1", [overrideMonitor.id])).rows[0];
+  assert.equal(afterOmission.baseline_id, preservedCapture);
+  assert.equal(afterOmission.latest_capture_id, preservedCapture);
+  const legacyTimeout = (await bulkOwner.put(`/api/v1/jobs/${overrideMonitor.id}`).set("X-Fusion-Request", "1").send({ ...updateBody, capture_timeout_ms: null }).expect(200)).body;
+  assert.equal(legacyTimeout.capture_timeout_ms, null);
+  const afterLegacy = (await pool.query("SELECT baseline_id,latest_capture_id FROM fusion_monitors WHERE id=$1", [overrideMonitor.id])).rows[0];
+  assert.equal(afterLegacy.baseline_id, preservedCapture);
+  assert.equal(afterLegacy.latest_capture_id, preservedCapture);
+  assert.equal(Number((await pool.query("SELECT count(*)::int AS count FROM fusion_events WHERE monitor_id=$1", [overrideMonitor.id])).rows[0].count), 1);
+  assert.equal((await bulkOwner.get(`/api/v1/jobs/${overrideMonitor.id}`).expect(200)).body.capture_timeout_ms, null);
+  await bulkOwner.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({ name: "Invalid timeout fixture", url: "https://example.com/timeout-invalid", kind: "browser", text_enabled: true, visual_enabled: false, capture_timeout_ms: 60001, channel_ids: [] }).expect(400);
   await bulkOther.put("/api/v1/preferences/monitoring").set("X-Fusion-Request", "1").send({ channel_ids: [channelId] }).expect(404);
   await bulkOwner.post("/api/v1/monitors/notification-channels/bulk").set("X-Fusion-Request", "1").send({ monitor_ids: [monitor.id], channel_id: channelId, action: "add", confirm: true }).expect(204);
   await bulkOther.post("/api/v1/monitors/notification-channels/bulk").set("X-Fusion-Request", "1").send({ monitor_ids: [monitor.id], channel_id: channelId, action: "remove", confirm: true }).expect(404);

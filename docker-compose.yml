@@ -48,6 +48,10 @@ services:
     # Region previews launch the same rootless sandboxed Chromium as the worker.
     # Keep this service scoped to Changd Fusion's checked-in syscall profile.
     security_opt: ["seccomp=./docker/chromium-seccomp.json"]
+    cpus: ${API_CPUS:-0.75}
+    mem_limit: ${API_MEMORY:-640m}
+    pids_limit: ${API_PIDS:-192}
+    shm_size: ${API_SHM:-64mb}
     depends_on:
       migrate: { condition: service_completed_successfully }
     healthcheck:

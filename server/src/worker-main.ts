@@ -1,4 +1,5 @@
 import { readConfig } from "./config.js";
+import { MAX_MONITOR_CAPTURE_TIMEOUT_MS } from "./capture-timeout.js";
 import { makePool } from "./db.js";
 import { retainHistory } from "./engine.js";
 import { workerCycle } from "./worker.js";
@@ -19,7 +20,7 @@ function stop() {
       "Graceful shutdown exceeded deadline",
     );
     process.exit(1);
-  }, cfg.CAPTURE_TIMEOUT_MS + 30000).unref();
+  }, Math.max(cfg.CAPTURE_TIMEOUT_MS, MAX_MONITOR_CAPTURE_TIMEOUT_MS) + 30000).unref();
 }
 process.on("SIGTERM", () => {
   stop();

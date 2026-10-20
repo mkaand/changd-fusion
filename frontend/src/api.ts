@@ -2,6 +2,8 @@ export class ApiError extends Error {
   requestId?: string;
   previewStage?: string;
   failureCode?: string;
+  previewStep?: number;
+  previewAction?: string;
   durationMs?: number;
   status?: number;
   constructor(message: string, details: Record<string, unknown> = {}) {
@@ -11,6 +13,8 @@ export class ApiError extends Error {
       requestId: details.request_id,
       previewStage: details.preview_stage,
       failureCode: details.failure_code,
+      previewStep: details.step,
+      previewAction: details.action,
       durationMs: details.duration_ms,
       status: details.status,
     });

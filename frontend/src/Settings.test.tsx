@@ -39,6 +39,13 @@ it("shows safe fallbacks when deployment metadata is unavailable", () => {
   for (const fallback of screen.getAllByText("Unavailable", { exact: true })) expect(fallback).toHaveClass("application-metadata-token");
 });
 
+
+it("offers the bounded 60-second default capture timeout in Monitoring defaults", async () => {
+  render(<Settings {...props} />);
+  await userEvent.setup().click(screen.getByText("Monitoring", { exact: true }));
+  expect(await screen.findByText("60 seconds (default)")).toBeInTheDocument();
+});
+
 it("renders authenticated system diagnostics from the API contract", async () => {
   vi.mocked(api).mockImplementation((path: string) => path === "/system/diagnostics"
     ? Promise.resolve({

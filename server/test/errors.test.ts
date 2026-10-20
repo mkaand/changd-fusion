@@ -6,6 +6,8 @@ import {
   captureFailure,
   publicFailure,
 } from "../src/errors.js";
+import { StepFailure } from "../src/browser-steps.js";
+import { regionPreviewFailure } from "../src/region-picker.js";
 
 test("capture failure diagnostics classify only safe signals", () => {
   const secret = "bot-token=123456:secret cookie=private url=https://example.test/?secret=hidden";
@@ -67,8 +69,6 @@ test("public capture failures never expose raw causes", () => {
   );
 });
 
-import { regionPreviewFailure } from "../src/region-picker.js";
-
 test("region preview telemetry exposes only safe stage and code", () => {
   const raw = new Error("Timeout token=synthetic-token cookie=synthetic-cookie https://fixture.example/?private=value");
   const failure = regionPreviewFailure(raw, "navigation");
@@ -92,4 +92,14 @@ test("region preview capacity failures are safe and retryable", () => {
     status: 429,
     message: "Preview capacity is busy. Retry shortly.",
   });
+});
+
+
+test("required browser steps return only safe step metadata", () => {
+  const failure = regionPreviewFailure(new StepFailure(2, "click"), "browser_steps");
+  assert.deepEqual(
+    { stage: failure.stage, code: failure.failure_code, status: failure.status, step: failure.step, action: failure.action },
+    { stage: "browser_steps", code: "capture_failed", status: 422, step: 2, action: "click" },
+  );
+  assert.equal(failure.message, "A required browser step failed. Check its action and timeout.");
 });

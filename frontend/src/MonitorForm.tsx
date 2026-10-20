@@ -10,7 +10,7 @@ const HiddenObjectField = (_: { value?: unknown }) => null;
 export const defaults = {
   kind: "browser", text_enabled: true, visual_enabled: false, selector_type: "css",
   visual_threshold: "0.35", capture_mode: "viewport", capture_selector: "", capture_selector_type: "css", capture_area: null,
-  browser_steps: [], step_budget_ms: 20000, paused: false, notify_failures: false, notify_attention: false,
+  browser_steps: [], step_budget_ms: 20000, capture_timeout_ms: 60000, paused: false, notify_failures: false, notify_attention: false,
   notification_enabled: true, notification_cooldown_seconds: 0, notification_mode: "immediate", digest_window_seconds: 3600,
   pixel_threshold: 0.1, interval_seconds: 300, normalize_whitespace: true, ignore_case: false, enabled: true,
   text_direction: "both", text_source: "direct", extraction_mode: "full_text", keyword: null, extraction_rule: null,
@@ -39,8 +39,9 @@ export function MonitorForm({ form, channels, monitorId, onOpenMobileRegion, onO
       <Form.Item name="channel_ids" label="Notification channels"><Select mode="multiple" options={channels.map((c) => ({ value: c.id, label: c.name }))} /></Form.Item>
     </section>
     <Collapse className="monitor-editor-advanced" activeKey={isAdvancedOpen ? ["advanced"] : []} onChange={(keys) => updateAdvanced((keys as string[]).includes("advanced"))} items={[{ key: "advanced", label: "Advanced settings", children: <>
-      <Form.Item name="kind" label="Source"><Select options={[{ value: "browser", label: "Browser — Text and Visual" }, { value: "api", label: "API / JSON" }, { value: "html", label: "HTML source" }]} onChange={(value) => { if (value !== "browser") form.setFieldsValue({ text_enabled: true, visual_enabled: false, capture_mode: "viewport", capture_selector: "", capture_area: null, browser_steps: [] }); }} /></Form.Item>
+      <Form.Item name="kind" label="Source"><Select options={[{ value: "browser", label: "Browser — Text and Visual" }, { value: "api", label: "API / JSON" }, { value: "html", label: "HTML source" }]} onChange={(value) => { if (value !== "browser") form.setFieldsValue({ text_enabled: true, visual_enabled: false, capture_mode: "viewport", capture_selector: "", capture_area: null, browser_steps: [], capture_timeout_ms: null }); }} /></Form.Item>
       <div className="form-row"><Form.Item name="enabled" label="Active" valuePropName="checked"><Switch /></Form.Item><Form.Item name="paused" label="Pause schedule" valuePropName="checked"><Switch /></Form.Item></div>
+      {kind === "browser" && <Form.Item name="capture_timeout_ms" label="Capture timeout" extra="Applies to scheduled capture and draft visual previews. Existing legacy monitors can retain the server fallback."><Select aria-label="Capture timeout" options={[{ value: null, label: "Use legacy server fallback" }, { value: 30000, label: "30 seconds" }, { value: 45000, label: "45 seconds" }, { value: 60000, label: "60 seconds (default)" }, { value: 75000, label: "75 seconds" }, { value: 90000, label: "90 seconds" }]} /></Form.Item>}
       {kind === "browser" && textSource === "direct" && <BrowserStepsEditor form={form} />}
       {kind === "browser" && text && <section className="text-monitoring-controls" aria-label="Text monitoring settings">
         <Form.Item name="text_source" label="Text content source"><Select options={[{ value: "direct", label: "Direct browser content (default)" }, { value: "jina", label: "Jina Reader — sends the URL to a third party" }]} onChange={(value) => {

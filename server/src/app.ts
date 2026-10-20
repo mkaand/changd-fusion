@@ -25,6 +25,7 @@ import { Decimal } from "decimal.js";
 import path from "node:path";
 import { acquireChromiumLease } from "./chromium-capacity.js";
 import { captureAreaSchema } from "./capture-area.js";
+import { captureTimeoutSchema, DEFAULT_NEW_MONITOR_CAPTURE_TIMEOUT_MS, previewExecutionTimeout } from "./capture-timeout.js";
 const uuid = z.string().uuid();
 const threshold = z
   .union([
@@ -77,6 +78,7 @@ const monitorInput = z
     capture_selector_type: z.enum(["css", "xpath"]).default("css"),
     browser_steps: stepsSchema,
     step_budget_ms: z.number().int().min(100).max(60000).default(20000),
+    capture_timeout_ms: captureTimeoutSchema.nullable().optional(),
     paused: z.boolean().default(false),
     notify_failures: z.boolean().default(false),
     notify_attention: z.boolean().default(false),
@@ -146,6 +148,7 @@ const monitoringDefaults = z.object({
   channel_ids: z.array(uuid).max(20).optional(), notification_enabled: z.boolean().optional(),
   notification_cooldown_seconds: z.union([z.literal(0), z.literal(300), z.literal(900), z.literal(1800), z.literal(3600), z.literal(21600), z.literal(86400)]).optional(),
   notification_mode: z.enum(["immediate", "digest"]).optional(),
+  capture_timeout_ms: captureTimeoutSchema.optional(),
 }).strict();
 const credentials = z
   .object({
@@ -172,6 +175,7 @@ const regionPreviewInput = z
         visual_enabled: z.literal(true),
         browser_steps: stepsSchema.optional().default([]),
         step_budget_ms: z.number().int().min(100).max(60_000).default(20_000),
+        capture_timeout_ms: captureTimeoutSchema.nullable().optional(),
       })
       .strict(),
     point: z
@@ -545,8 +549,27 @@ export function createApp(
   app.post("/api/v1/jobs", async (req, res) => {
     const b = monitorInput.parse(req.body);
     await policy.target(b.url);
-    const { channel_ids, ...fields } = b;
+    const { channel_ids, ...inputFields } = b;
     const result = await transaction(pool, async (c) => {
+      const preference = await c.query(
+        "SELECT monitoring_defaults FROM fusion_user_preferences WHERE user_id=$1",
+        [res.locals.user.user_id],
+      );
+      const parsedDefaults = monitoringDefaults.safeParse(preference.rows[0]?.monitoring_defaults);
+      // Malformed historical preferences never influence monitor creation.
+      const preferred = parsedDefaults.success ? parsedDefaults.data : {};
+      // API clients that do not yet send the new field still receive the
+      // user's creation default. An explicit null remains the intentional
+      // legacy fallback, and existing monitor rows are never rewritten.
+      const timeoutWasProvided = Object.hasOwn(inputFields, "capture_timeout_ms");
+      const fields = {
+        ...inputFields,
+        capture_timeout_ms: inputFields.kind === "browser"
+          ? timeoutWasProvided
+            ? inputFields.capture_timeout_ms
+            : preferred?.capture_timeout_ms ?? DEFAULT_NEW_MONITOR_CAPTURE_TIMEOUT_MS
+          : null,
+      };
       const names = Object.keys(fields);
       const values = Object.values(fields).map((v) =>
         Array.isArray(v) ? JSON.stringify(v) : v,
@@ -608,7 +631,7 @@ export function createApp(
               return await acquireChromiumLease(pool, {
                 workload: "preview",
                 slots: cfg.CHROMIUM_CONCURRENCY,
-                waitMs: previewCapacityWaitBudget(cfg),
+                waitMs: previewCapacityWaitBudget(cfg, previewExecutionTimeout(monitor, cfg)),
                 signal: cancellation.signal,
                 onWait,
               });
@@ -622,12 +645,13 @@ export function createApp(
       const failure = error as RegionPreviewFailure;
       const duration = Math.max(0, Math.round(performance.now() - started));
       // Deliberately structured and minimal: URL, query text, page content, selectors and raw errors stay out of logs.
-      log.warn({ code: "region_preview_failed", stage: failure.stage, failure_code: failure.failure_code, duration_ms: duration, request_id: res.locals.requestId }, "Region preview failed");
+      log.warn({ code: "region_preview_failed", stage: failure.stage, failure_code: failure.failure_code, step: failure.step, action: failure.action, duration_ms: duration, request_id: res.locals.requestId }, "Region preview failed");
       res.status(failure.status ?? 422).json({
         error: failure.message ?? "Website preview failed. Retry, or use viewport capture instead.",
         request_id: res.locals.requestId,
         preview_stage: failure.stage ?? "unknown",
         failure_code: failure.failure_code ?? "unknown",
+        ...(failure.step ? { step: failure.step, action: failure.action } : {}),
         duration_ms: duration,
       });
     } finally { req.off("aborted", cancelled); res.off("close", cancelled); }
@@ -687,9 +711,21 @@ export function createApp(
           "visual_threshold",
           "pixel_threshold",
           "step_budget_ms",
+          "capture_timeout_ms",
           "text_direction",
         ]);
-        const configurationChanged = Object.entries(fields).some(
+        // A timeout changes scheduling bounds only. It deliberately preserves
+        // the existing capture baseline and History.
+        // Omission preserves an existing monitor's value. An explicit null is
+        // the user's intentional switch back to the legacy server fallback.
+        const timeoutWasProvided = Object.hasOwn(fields, "capture_timeout_ms");
+        const fieldsWithTimeout = {
+          ...fields,
+          capture_timeout_ms: fields.kind === "browser"
+            ? timeoutWasProvided ? fields.capture_timeout_ms : previous.capture_timeout_ms ?? null
+            : null,
+        };
+        const configurationChanged = Object.entries(fieldsWithTimeout).some(
           ([k, v]) =>
             !harmless.has(k) &&
             JSON.stringify(previous[k]) !== JSON.stringify(v),
@@ -704,8 +740,8 @@ export function createApp(
             "INSERT INTO fusion_events(monitor_id,status,configuration_changed) VALUES($1,'reset',true)",
             [id],
           );
-        const names = Object.keys(fields);
-        const values = Object.values(fields).map((v) =>
+        const names = Object.keys(fieldsWithTimeout);
+        const values = Object.values(fieldsWithTimeout).map((v) =>
           Array.isArray(v) ? JSON.stringify(v) : v,
         );
         const r = await c.query(
