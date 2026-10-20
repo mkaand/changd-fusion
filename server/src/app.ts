@@ -555,7 +555,9 @@ export function createApp(
         "SELECT monitoring_defaults FROM fusion_user_preferences WHERE user_id=$1",
         [res.locals.user.user_id],
       );
-      const preferred = monitoringDefaults.safeParse(preference.rows[0]?.monitoring_defaults).data;
+      const parsedDefaults = monitoringDefaults.safeParse(preference.rows[0]?.monitoring_defaults);
+      // Malformed historical preferences never influence monitor creation.
+      const preferred = parsedDefaults.success ? parsedDefaults.data : {};
       // API clients that do not yet send the new field still receive the
       // user's creation default. Existing monitor rows are never rewritten.
       const fields = {
