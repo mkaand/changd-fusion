@@ -79,6 +79,12 @@ const monitorInput = z
     browser_steps: stepsSchema,
     step_budget_ms: z.number().int().min(100).max(60000).default(20000),
     capture_timeout_ms: captureTimeoutSchema.nullable().optional(),
+    monitor_http_error_pages: z.boolean().default(false),
+    disable_javascript: z.boolean().default(false),
+    block_ads_trackers: z.boolean().default(false),
+    cookie_banner_handling: z.boolean().default(false),
+    wait_before_capture_ms: z.union([z.literal(0), z.literal(2000), z.literal(5000), z.literal(10000)]).default(0),
+    mobile_view: z.boolean().default(false),
     paused: z.boolean().default(false),
     notify_failures: z.boolean().default(false),
     notify_attention: z.boolean().default(false),
@@ -98,6 +104,9 @@ const monitorInput = z
   .strict()
   .refine((m) => m.capture_mode !== "element" || !!m.capture_selector.trim(), {
     message: "Element capture requires a selector",
+  })
+  .refine((m) => !m.mobile_view || m.capture_mode !== "selected_area", {
+    message: "Selected area is not available in mobile view",
   })
   .refine((m) => m.capture_mode !== "selected_area" || !!m.capture_area, {
     message: "Selected area capture requires valid coordinates",
@@ -176,6 +185,12 @@ const regionPreviewInput = z
         browser_steps: stepsSchema.optional().default([]),
         step_budget_ms: z.number().int().min(100).max(60_000).default(20_000),
         capture_timeout_ms: captureTimeoutSchema.nullable().optional(),
+        monitor_http_error_pages: z.boolean().optional(),
+        disable_javascript: z.boolean().optional(),
+        block_ads_trackers: z.boolean().optional(),
+        cookie_banner_handling: z.boolean().optional(),
+        wait_before_capture_ms: z.union([z.literal(0), z.literal(2000), z.literal(5000), z.literal(10000)]).optional(),
+        mobile_view: z.boolean().optional(),
       })
       .strict(),
     point: z

@@ -192,6 +192,7 @@ export async function runMonitor(
         m.text_enabled &&
         Number(m.browser_text_extraction_version ?? 1) <
           VISIBLE_BROWSER_TEXT_EXTRACTION_VERSION;
+      const httpStatusChanged = Boolean(before && m.monitor_http_error_pages && before.http_status !== current.http_status);
       const text =
         before && m.text_enabled && !extractionTransition
           ? m.extraction_mode === "keyword_presence" && m.keyword
@@ -223,7 +224,7 @@ export async function runMonitor(
           ? "baseline"
           : extractionTransition
             ? "extraction_transition"
-            : text.changed || visual?.changed
+            : text.changed || visual?.changed || httpStatusChanged
               ? "changed"
               : "unchanged";
       const advancesExtractionVersion =
@@ -234,11 +235,11 @@ export async function runMonitor(
       await c.query("BEGIN");
       try {
         await c.query(
-          "INSERT INTO fusion_captures(id,monitor_id,text_content,screenshot) VALUES($1,$2,$3,$4)",
-          [captureId, id, current.text, image],
+          "INSERT INTO fusion_captures(id,monitor_id,text_content,screenshot,http_status) VALUES($1,$2,$3,$4,$5)",
+          [captureId, id, current.text, image, current.http_status ?? null],
         );
         const event = await c.query(
-          "INSERT INTO fusion_events(monitor_id,before_id,after_id,text_changed,visual_changed,visual_percent,diff_screenshot,text_diff,status,dimension_changed,before_dimensions,after_dimensions,execution_ms,warning_code,capture_timings) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id",
+          "INSERT INTO fusion_events(monitor_id,before_id,after_id,text_changed,visual_changed,visual_percent,diff_screenshot,text_diff,status,dimension_changed,before_dimensions,after_dimensions,execution_ms,warning_code,capture_timings,http_status,http_status_changed) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id",
           [
             id,
             before?.id ?? null,
@@ -255,10 +256,12 @@ export async function runMonitor(
             Date.now() - started,
             current.warning ?? null,
             JSON.stringify(safeTimings(current.timings)),
+            current.http_status ?? null,
+            extractionTransition ? false : httpStatusChanged,
           ],
         );
         await c.query(
-          "UPDATE fusion_monitors SET latest_capture_id=$2,baseline_id=CASE WHEN $3 THEN $2 ELSE baseline_id END,last_percent=$4,last_dimension_change=$5,last_run=now(),next_run=now()+interval_seconds*interval '1 second',failure_count=0,last_error=null,failure_stage=null,failure_code=null,last_success_at=now(),last_change_at=CASE WHEN $6='changed' THEN now() ELSE last_change_at END,monitor_state=$6,execution_ms=$7,warning_code=$8,browser_text_extraction_version=CASE WHEN $9 THEN $10 ELSE browser_text_extraction_version END,last_capture_timings=$11::jsonb WHERE id=$1",
+          "UPDATE fusion_monitors SET latest_capture_id=$2,baseline_id=CASE WHEN $3 THEN $2 ELSE baseline_id END,last_percent=$4,last_dimension_change=$5,last_run=now(),next_run=now()+interval_seconds*interval '1 second',failure_count=0,last_error=null,failure_stage=null,failure_code=null,last_success_at=now(),last_change_at=CASE WHEN $6='changed' THEN now() ELSE last_change_at END,monitor_state=$6,execution_ms=$7,warning_code=$8,browser_text_extraction_version=CASE WHEN $9 THEN $10 ELSE browser_text_extraction_version END,last_capture_timings=$11::jsonb,last_http_status=$12 WHERE id=$1",
           [
             id,
             captureId,
@@ -273,6 +276,7 @@ export async function runMonitor(
             advancesExtractionVersion,
             VISIBLE_BROWSER_TEXT_EXTRACTION_VERSION,
             JSON.stringify(safeTimings(current.timings)),
+            current.http_status ?? null,
           ],
         );
         if (status === "changed") {

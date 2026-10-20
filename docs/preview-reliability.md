@@ -10,3 +10,9 @@ Selected element keeps one owner-bound 45-second session after its first preview
 
 
 A preview request carries the unsaved Browser monitor `capture_timeout_ms` value. It accepts only 30, 45, 60, 75, or 90 seconds. Structured failures expose only the safe `preview_stage`, `failure_code`, duration, and request ID. Optional Browser Step failures remain warnings; required Browser Step failures retain their `browser_steps` stage and are never mislabeled as an element-selection ambiguity.
+
+## Browser experience controls
+
+Browser monitors can opt in to error-page monitoring. When enabled, an HTTP error document is captured as page content instead of being converted into a capture transport failure. The observed status is recorded as bounded numeric metadata; an error-page status transition is compared independently from pixels and text. DNS, TLS, SSRF, browser-launch, and challenge failures remain failures. The feature never attempts to bypass a WAF, CAPTCHA, or rate limit.
+
+The editor also provides opt-in JavaScript disabling, a fixed local tracker-host blocklist, reject-only cookie-banner handling, a deadline-bounded post-step wait, and an isolated mobile browser profile. These choices apply to scheduled captures and draft previews. They can change rendered output, so editing them follows the normal non-destructive baseline reset policy. Selected-area coordinates remain desktop-only and are rejected for a mobile profile rather than converted silently.

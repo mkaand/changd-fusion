@@ -94,3 +94,7 @@ Remote SMTP and Telegram delivery is at-least-once: a provider can accept a mess
 Changd Fusion retains the [MIT License](LICENSE) and acknowledges the original Changd project and its author, Paul Aschmann. Project decisions, validation and maintenance remain the repository owner's responsibility. This project is not affiliated with or endorsed by OpenAI, ChatGPT or Codex.
 
 Material UI changes must update the relevant README screenshots in the same development change.
+
+### Browser experience controls
+
+Advanced Browser settings are opt-in. **Monitor HTTP error pages** records a numeric observed HTTP status and captures an error document for comparison; it does not turn DNS, TLS, SSRF, browser crashes, WAF challenges, or CAPTCHA interstitials into healthy results. Status transitions are changes even if pixels match. **Disable JavaScript**, **Block ads & trackers**, **Dismiss cookie banners**, **Wait before capture**, and **Mobile view** use the same isolated browser configuration for a scheduled capture and its unsaved preview. Cookie handling only attempts fixed reject/dismiss controls and never accepts consent. The tracker filter is local and fixed, not a remote subscription. Mobile profiles do not support Selected Area because desktop coordinates are never silently remapped.

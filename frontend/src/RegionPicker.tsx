@@ -3,7 +3,7 @@ import { Alert, Button, Modal, Spin, Typography } from "antd";
 import { ApiError, api } from "./api";
 const PREVIEW_REQUEST_TIMEOUT_MS = 125000;
 const MIN_ZOOM = .5, MAX_ZOOM = 3, ZOOM_STEP = .25;
-type Draft = { url?: string; kind?: string; visual_enabled?: boolean; browser_steps?: unknown[]; step_budget_ms?: number; capture_timeout_ms?: number | null };
+type Draft = { url?: string; kind?: string; visual_enabled?: boolean; browser_steps?: unknown[]; step_budget_ms?: number; capture_timeout_ms?: number | null; monitor_http_error_pages?: boolean; disable_javascript?: boolean; block_ads_trackers?: boolean; cookie_banner_handling?: boolean; wait_before_capture_ms?: 0 | 2000 | 5000 | 10000; mobile_view?: boolean };
 type Selection = { selector: string; label?: string; x: number; y: number; width: number; height: number };
 type Preview = { session_id?: string; image: string; width: number; height: number; selection?: Selection | null; candidates?: Selection[]; timings?: Record<string, number>; warning?: string; reused?: boolean };
 const progressLabels: Record<string, string> = { target_validation: "Connecting to website", capacity_wait: "Waiting for available browser capacity", proxy_initialization: "Preparing secure connection", browser_launch: "Starting secure browser", browser_context: "Preparing isolated page", navigation: "Loading page", dom_ready: "Page content loaded", browser_steps: "Applying browser steps", rendering_preparation: "Preparing preview", screenshot: "Rendering screenshot", serialization: "Transferring preview", ready: "Preview ready" };
@@ -62,7 +62,7 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
         refresh: refreshSession,
         preview_request_id: previewRequestId,
         monitor_id: monitorId,
-        monitor: { url: draft.url, kind: "browser", visual_enabled: true, browser_steps: draft.browser_steps ?? [], step_budget_ms: draft.step_budget_ms ?? 20_000, capture_timeout_ms: draft.capture_timeout_ms ?? undefined },
+        monitor: { url: draft.url, kind: "browser", visual_enabled: true, browser_steps: draft.browser_steps ?? [], step_budget_ms: draft.step_budget_ms ?? 20_000, capture_timeout_ms: draft.capture_timeout_ms ?? undefined, monitor_http_error_pages: draft.monitor_http_error_pages, disable_javascript: draft.disable_javascript, block_ads_trackers: draft.block_ads_trackers, cookie_banner_handling: draft.cookie_banner_handling, wait_before_capture_ms: draft.wait_before_capture_ms, mobile_view: draft.mobile_view },
         point,
       }, { timeoutMs: PREVIEW_REQUEST_TIMEOUT_MS, signal: controller.signal }) as Preview;
       sessionId.current = result.session_id;

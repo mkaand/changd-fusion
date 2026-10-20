@@ -306,18 +306,26 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
     browser = await chromium.launch({ headless: true, chromiumSandbox: true, executablePath: cfg.PLAYWRIGHT_EXECUTABLE_PATH, proxy: { server: proxy.url, bypass: "<-loopback>" }, timeout: remaining() });
     stage = "browser_context";
     enter("browser_context");
-    context = await browser.newContext({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1, locale: "en-US", timezoneId: "UTC", serviceWorkers: "block", ignoreHTTPSErrors: false });
+    const viewport = m.mobile_view ? { width: 390, height: 844 } : { width: 1280, height: 900 };
+    context = await browser.newContext({ viewport, deviceScaleFactor: 1, javaScriptEnabled: !m.disable_javascript, isMobile: Boolean(m.mobile_view), hasTouch: Boolean(m.mobile_view), userAgent: m.mobile_view ? "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" : undefined, locale: "en-US", timezoneId: "UTC", serviceWorkers: "block", ignoreHTTPSErrors: false });
+    if (m.block_ads_trackers) await context.route("**/*", async (route) => {
+      const host = new URL(route.request().url()).hostname.toLowerCase();
+      if (/(?:doubleclick|google-analytics|googletagmanager|facebook\.net|hotjar|segment\.io|mixpanel|adsystem)/.test(host)) await route.abort("blockedbyclient");
+      else await route.continue();
+    });
     await context.routeWebSocket("**/*", (socket) => socket.close());
     const page = await context.newPage();
     stage = "navigation";
     enter("navigation");
     const response = await page.goto(m.url, { waitUntil: "domcontentloaded", timeout: remaining() });
-    if (!response?.ok()) throw new HttpError(422, `HTTP ${response?.status() ?? 0}`);
+    if (!response?.ok() && !m.monitor_http_error_pages) throw new HttpError(422, `HTTP ${response?.status() ?? 0}`);
     enter("dom_ready");
     await page.addStyleTag({ content: "* { animation:none !important; transition:none !important; caret-color:transparent !important; }" });
+    if (m.cookie_banner_handling) await page.locator('[id*="reject" i], [class*="reject" i], [aria-label*="reject" i], [data-testid*="reject" i]').first().click({ timeout: Math.min(1500, remaining()) }).catch(() => {});
     stage = "browser_steps";
     enter("browser_steps");
     const warning = await runSteps(page, m.browser_steps ?? [], Math.min(deadline, Date.now() + (m.step_budget_ms ?? 20_000)));
+    if (m.wait_before_capture_ms) await page.waitForTimeout(Math.min(m.wait_before_capture_ms, remaining()));
     enter("rendering_preparation");
     stage = "font_wait";
     await page.evaluate(async () => {
