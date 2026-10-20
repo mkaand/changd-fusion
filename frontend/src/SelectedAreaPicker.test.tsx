@@ -7,7 +7,7 @@ import { SelectedAreaPicker } from "./SelectedAreaPicker";
 vi.mock("./api", async () => ({ ...(await vi.importActual<typeof import("./api")>("./api")), api: vi.fn() }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
-const draft = { url: "https://fixture.example/product", kind: "browser", visual_enabled: true, browser_steps: [], name: "Unsaved name" };
+const draft = { url: "https://fixture.example/product", kind: "browser", visual_enabled: true, browser_steps: [], capture_timeout_ms: 90_000, name: "Unsaved name" };
 const preview = { image: "iVBORw0KGgo=", width: 1280, height: 900 };
 const mockPreview = () => vi.mocked(api).mockImplementation((path: string) => Promise.resolve(path.startsWith("/region-preview/status/") ? { stage: "screenshot" } : preview));
 
@@ -39,7 +39,7 @@ it("draws and applies fixed viewport coordinates with the real mobile picker", a
   expect(screen.getByText("320 × 180 px")).toBeInTheDocument();
   await userEvent.setup().click(screen.getByRole("button", { name: "Apply selected area" }));
   expect(apply).toHaveBeenCalledWith({ x: 100, y: 100, width: 320, height: 180 });
-  expect(api).toHaveBeenCalledWith("/region-preview", "POST", expect.objectContaining({ mode: "area" }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
+  expect(api).toHaveBeenCalledWith("/region-preview", "POST", expect.objectContaining({ mode: "area", monitor: expect.objectContaining({ capture_timeout_ms: 90_000 }) }), expect.objectContaining({ signal: expect.any(AbortSignal) }));
   expect(vi.mocked(api).mock.calls[0][2]).not.toHaveProperty("session_id");
 });
 

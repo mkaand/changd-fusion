@@ -3,9 +3,9 @@ import { Alert, Button, Modal, Spin, Typography } from "antd";
 import { ApiError, api } from "./api";
 const PREVIEW_REQUEST_TIMEOUT_MS = 125000;
 const MIN_ZOOM = .5, MAX_ZOOM = 3, ZOOM_STEP = .25;
-type Draft = { url?: string; kind?: string; visual_enabled?: boolean; browser_steps?: unknown[]; step_budget_ms?: number };
+type Draft = { url?: string; kind?: string; visual_enabled?: boolean; browser_steps?: unknown[]; step_budget_ms?: number; capture_timeout_ms?: number | null };
 type Selection = { selector: string; label?: string; x: number; y: number; width: number; height: number };
-type Preview = { session_id?: string; image: string; width: number; height: number; selection?: Selection | null; candidates?: Selection[]; timings?: Record<string, number>; reused?: boolean };
+type Preview = { session_id?: string; image: string; width: number; height: number; selection?: Selection | null; candidates?: Selection[]; timings?: Record<string, number>; warning?: string; reused?: boolean };
 const progressLabels: Record<string, string> = { target_validation: "Connecting to website", capacity_wait: "Waiting for available browser capacity", proxy_initialization: "Preparing secure connection", browser_launch: "Starting secure browser", browser_context: "Preparing isolated page", navigation: "Loading page", dom_ready: "Page content loaded", browser_steps: "Applying browser steps", rendering_preparation: "Preparing preview", screenshot: "Rendering screenshot", serialization: "Transferring preview", ready: "Preview ready" };
 export const clampZoom = (value: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
 export const previewPoint = (clientX: number, clientY: number, rect: Pick<DOMRect, "left" | "top" | "width" | "height">) => ({
@@ -62,7 +62,7 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
         refresh: refreshSession,
         preview_request_id: previewRequestId,
         monitor_id: monitorId,
-        monitor: { url: draft.url, kind: "browser", visual_enabled: true, browser_steps: draft.browser_steps ?? [], step_budget_ms: draft.step_budget_ms ?? 20_000 },
+        monitor: { url: draft.url, kind: "browser", visual_enabled: true, browser_steps: draft.browser_steps ?? [], step_budget_ms: draft.step_budget_ms ?? 20_000, capture_timeout_ms: draft.capture_timeout_ms ?? undefined },
         point,
       }, { timeoutMs: PREVIEW_REQUEST_TIMEOUT_MS, signal: controller.signal }) as Preview;
       sessionId.current = result.session_id;
@@ -129,9 +129,10 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
   };
   const reset = () => { setZoom(1); if (canvas.current) { canvas.current.scrollLeft = 0; canvas.current.scrollTop = 0; } };
   const previewBody = <>
-    {error && <div className="region-preview-error" role="alert" aria-live="assertive"><strong>{error.message}</strong><p>{error.failureCode ? `${error.previewStage ?? "preview"} · ${error.failureCode}` : "The preview could not be completed."}</p><div className="region-preview-error-actions">{preview?.session_id && lastPoint.current && error.status !== 410 && <Button onClick={() => void load(lastPoint.current, error.failureCode === "stale_preview")}>Retry selection</Button>}<Button onClick={() => void load()}>Refresh preview</Button><Button onClick={() => { onUseViewport(); releaseSession(); setOpen(false); }}>Use viewport instead</Button></div>{error.requestId && <details><summary>Technical details</summary><code>Request ID: {error.requestId}</code></details>}</div>}
+    {error && <div className="region-preview-error" role="alert" aria-live="assertive"><strong>{error.message}</strong><p>{error.failureCode ? `${error.previewStage ?? "preview"} · ${error.failureCode}${error.previewStep ? ` · step ${error.previewStep}${error.previewAction ? ` (${error.previewAction})` : ""}` : ""}` : "The preview could not be completed."}</p><div className="region-preview-error-actions">{preview?.session_id && lastPoint.current && error.status !== 410 && <Button onClick={() => void load(lastPoint.current, error.failureCode === "stale_preview")}>Retry selection</Button>}<Button onClick={() => void load()}>Refresh preview</Button><Button onClick={() => { onUseViewport(); releaseSession(); setOpen(false); }}>Use viewport instead</Button></div>{error.requestId && <details><summary>Technical details</summary><code>Request ID: {error.requestId}</code></details>}</div>}
     {loading && !preview && <div className="region-preview-loading" role="status" aria-label="Loading region preview"><Spin /><strong>{progressLabels[progress] ?? "Preparing preview"}</strong></div>}
     {preview && <>
+      {preview.warning && <Alert type="warning" showIcon title="An optional browser step did not complete. The preview continued." />}
       <Typography.Paragraph>Use +/− or pinch to zoom. Drag to pan while zoomed, then click or tap a visible element. The preview uses the current form URL through the normal SSRF, TLS, and sandbox restrictions.</Typography.Paragraph>
       <div className="region-preview-toolbar" aria-label="Preview zoom controls">
         <Button aria-label="Zoom out" onClick={() => changeZoom(zoom - ZOOM_STEP)} disabled={zoom <= MIN_ZOOM}>−</Button>

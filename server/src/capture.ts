@@ -13,6 +13,7 @@ import {
 } from "./errors.js";
 import { checkDimensions, pngDimensions } from "./image.js";
 import type { Config } from "./config.js";
+import { effectiveCaptureTimeout } from "./capture-timeout.js";
 import { jinaReaderText } from "./jina-reader.js";
 import { applySelectedTextRule, readableJinaLines, type SelectedTextRule } from "./selected-text.js";
 import { captureAreaSchema, cropCaptureArea, type CaptureArea } from "./capture-area.js";
@@ -59,6 +60,7 @@ export type Monitor = {
   latest_capture_id: string | null;
   browser_text_extraction_version?: number;
   failure_count: number;
+  capture_timeout_ms?: number | null;
 };
 export type Capture = {
   text: string | null;
@@ -299,7 +301,8 @@ export async function capture(
   cfg: Config,
   policy = new EgressPolicy(),
 ): Promise<Capture> {
-  const deadline = Date.now() + cfg.CAPTURE_TIMEOUT_MS;
+  const captureTimeoutMs = effectiveCaptureTimeout(m, cfg);
+  const deadline = Date.now() + captureTimeoutMs;
   let stage: CaptureStage = "target_validation";
   const timings: CaptureTimings = {};
   let stageStarted = performance.now();
@@ -324,8 +327,8 @@ export async function capture(
     if (m.kind !== "browser") {
       enterStage("navigation");
       const response = m.text_source === "jina"
-        ? await fetchJinaReader(m, policy, cfg.CAPTURE_TIMEOUT_MS)
-        : await safeFetch(m.url, policy, cfg.CAPTURE_TIMEOUT_MS);
+        ? await fetchJinaReader(m, policy, captureTimeoutMs)
+        : await safeFetch(m.url, policy, captureTimeoutMs);
       const text =
         m.kind === "api"
           ? JSON.stringify(stableJSON(JSON.parse(response.body.toString())), null, 2)
@@ -347,7 +350,7 @@ export async function capture(
       );
     if (m.text_source === "jina" && m.text_enabled && !m.visual_enabled) {
       enterStage("navigation");
-      const response = await fetchJinaReader(m, policy, cfg.CAPTURE_TIMEOUT_MS);
+      const response = await fetchJinaReader(m, policy, captureTimeoutMs);
       enterStage("text_extraction");
       const readerText = validateJinaReaderContent(response.body);
       const text = m.extraction_mode === "selected_text"
@@ -382,7 +385,7 @@ export async function capture(
       deadlineElapsed = true;
       void context.close().catch(() => {});
     }, Math.max(1, deadline - Date.now()));
-    context.setDefaultTimeout(Math.min(cfg.CAPTURE_TIMEOUT_MS, 10000));
+    context.setDefaultTimeout(Math.min(captureTimeoutMs, 10000));
     // The pinned-IP proxy validates every redirect and subresource at socket
     // connection time. Keep only the stricter same-origin rule needed by
     // private workflows; duplicating DNS validation for every normal request

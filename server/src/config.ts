@@ -17,7 +17,7 @@ const schema = z.object({
     .int()
     .min(1000)
     .max(120000)
-    .default(30000),
+    .default(60000),
   CHROMIUM_CONCURRENCY: z.coerce.number().int().min(1).max(3).default(1),
   // Optional previews may wait for the existing shared Chromium slot, but
   // this admission budget remains distinct from browser execution.

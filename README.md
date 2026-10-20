@@ -50,6 +50,16 @@ For Jina Reader monitors, **Selected Text / Value** opens a dedicated safe text 
 
 Chromium work is admitted through PostgreSQL session advisory leases shared by the API and worker containers. Scheduled captures receive admission priority; optional previews fail quickly with a clear capacity response instead of starting another browser tree. Preview leases include the resident owner-bound session and are released on expiry, cancellation, timeout, crash, or normal cleanup. Capture diagnostics persist only bounded numeric stage durations and stable failure categories. URLs, selectors, page content, screenshots, cookies, credentials, and raw browser exceptions are never stored in diagnostic timing fields.
 
+## Capture timeout and resource sizing
+
+New Browser monitors use a **60-second** capture timeout by default. In **Advanced settings**, each Browser monitor can select 30, 45, 60, 75, or 90 seconds. **Settings > Monitoring** controls the default for future monitors only; changing a timeout never resets an existing baseline or removes History. Older monitor rows retain their configured server fallback until edited.
+
+`CAPTURE_TIMEOUT_MS` is that legacy fallback, not a cap on a valid per-monitor override. A 90-second monitor receives a 90-second capture deadline. Browser Steps remain bounded by the smaller of their configured budget and the remaining capture deadline. Selected Element and Selected Area preview requests use the unsaved draft timeout too. The API limits preview admission plus execution to 110 seconds, so a 90-second preview has at most 20 seconds to wait for the one shared Chromium slot. The selected-element resident session remains fixed at 45 seconds; selected-area previews remain stateless.
+
+The checked-in Compose defaults reserve `API_CPUS=0.75`, `API_MEMORY=640m`, and `API_PIDS=192` for rootless preview Chromium. Worker defaults remain `1.0` CPU, `1g`, and `256` PIDs. Tune these environment values to the server capacity before deployment, while keeping `CHROMIUM_CONCURRENCY=1` on small VPS hosts. Repeated cgroup `oom_kill` or `pids.events.max` increments indicate resource exhaustion rather than a selector problem.
+
+A reverse proxy must allow the preview endpoint to finish its bounded request. For Nginx, use an endpoint-specific rule equivalent to `proxy_read_timeout 120s` for `POST /api/v1/region-preview`, preserving existing auth, headers, proxy routing, and global timeouts. Account for Cloudflare or any other upstream proxy limit separately. Keep the previous environment file and proxy snippet until normal preview and scheduled-capture health are confirmed, then roll back by restoring them and recreating only the affected API and worker containers.
+
 ## Docker self-hosting
 
 Use Node.js 24 and PostgreSQL 16. Copy the public-safe environment example, generate independent `JWT_SECRET` and `CHANNEL_KEY` values, then start the Compose stack:
