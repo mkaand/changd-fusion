@@ -98,7 +98,7 @@ export function regionPreviewFailure(error: unknown, stage: CaptureStage): Regio
   const safe = captureFailure(error, stage);
   const validation = error instanceof HttpError && error.status >= 400 && error.status < 500;
   const stepFailure = error instanceof StepFailure ? error : undefined;
-  const code: RegionPreviewCode = error instanceof HttpError && error.status === 410 ? "session_expired" : error instanceof HttpError && error.status === 409 ? "stale_preview" : error instanceof HttpError && /unique visible/i.test(error.message) ? "ambiguous_selection" : safe.code === "unknown" && stage === "text_extraction" ? "selector_failed" : safe.code;
+  const code: RegionPreviewCode = stepFailure ? "capture_failed" : error instanceof HttpError && error.status === 410 ? "session_expired" : error instanceof HttpError && error.status === 409 ? "stale_preview" : error instanceof HttpError && /unique visible/i.test(error.message) ? "ambiguous_selection" : safe.code === "unknown" && stage === "text_extraction" ? "selector_failed" : safe.code;
   return {
     stage: safe.stage,
     failure_code: code,
