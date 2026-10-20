@@ -2118,7 +2118,9 @@ test("capture modes use one browser page for text and image; limits, selector er
     const started = Date.now();
     await assert.rejects(
       capture(
-        { ...base, url: `http://fixture.test:${port}/slow` },
+        // Explicit NULL models an unchanged pre-migration monitor, which still
+        // uses the configured legacy fallback rather than a new override.
+        { ...base, url: `http://fixture.test:${port}/slow`, capture_timeout_ms: null },
         { ...cfg, CAPTURE_TIMEOUT_MS: 1500 },
         policy,
       ),
