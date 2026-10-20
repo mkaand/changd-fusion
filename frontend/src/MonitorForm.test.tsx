@@ -20,6 +20,9 @@ it("uses the 60-second Browser capture timeout default and allows bounded overri
   await user.click(timeout);
   await user.click(screen.getByText("90 seconds", { exact: true }));
   expect(current.getFieldValue("capture_timeout_ms")).toBe(90000);
+  await user.click(timeout);
+  await user.click(screen.getByText("Use legacy server fallback", { exact: true }));
+  expect(current.getFieldValue("capture_timeout_ms")).toBeNull();
 });
 
 it("text and visual settings share one form with independent region and text selectors", async () => {

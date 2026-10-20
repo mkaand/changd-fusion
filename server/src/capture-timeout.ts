@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { Config } from "./config.js";
 
 export const captureTimeoutValues = [30_000, 45_000, 60_000, 75_000, 90_000] as const;
-export const DEFAULT_CAPTURE_TIMEOUT_MS = 60_000;
+export const DEFAULT_NEW_MONITOR_CAPTURE_TIMEOUT_MS = 60_000;
 export const MAX_MONITOR_CAPTURE_TIMEOUT_MS = 90_000;
 
 export const captureTimeoutSchema = z.union([
@@ -23,4 +23,13 @@ export function effectiveCaptureTimeout(
   return captureTimeoutValues.includes(override as CaptureTimeoutMs)
     ? override!
     : cfg.CAPTURE_TIMEOUT_MS;
+}
+
+// Preview transport has a hard 110-second end-to-end budget. Scheduled legacy
+// captures intentionally retain the configured fallback, which may be longer.
+export function previewExecutionTimeout(
+  monitor: { capture_timeout_ms?: number | null },
+  cfg: Pick<Config, "CAPTURE_TIMEOUT_MS">,
+): number {
+  return Math.min(effectiveCaptureTimeout(monitor, cfg), 110_000);
 }

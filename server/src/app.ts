@@ -25,7 +25,7 @@ import { Decimal } from "decimal.js";
 import path from "node:path";
 import { acquireChromiumLease } from "./chromium-capacity.js";
 import { captureAreaSchema } from "./capture-area.js";
-import { captureTimeoutSchema, DEFAULT_CAPTURE_TIMEOUT_MS, effectiveCaptureTimeout } from "./capture-timeout.js";
+import { captureTimeoutSchema, DEFAULT_NEW_MONITOR_CAPTURE_TIMEOUT_MS, previewExecutionTimeout } from "./capture-timeout.js";
 const uuid = z.string().uuid();
 const threshold = z
   .union([
@@ -175,7 +175,7 @@ const regionPreviewInput = z
         visual_enabled: z.literal(true),
         browser_steps: stepsSchema.optional().default([]),
         step_budget_ms: z.number().int().min(100).max(60_000).default(20_000),
-        capture_timeout_ms: captureTimeoutSchema.optional(),
+        capture_timeout_ms: captureTimeoutSchema.nullable().optional(),
       })
       .strict(),
     point: z
@@ -559,11 +559,15 @@ export function createApp(
       // Malformed historical preferences never influence monitor creation.
       const preferred = parsedDefaults.success ? parsedDefaults.data : {};
       // API clients that do not yet send the new field still receive the
-      // user's creation default. Existing monitor rows are never rewritten.
+      // user's creation default. An explicit null remains the intentional
+      // legacy fallback, and existing monitor rows are never rewritten.
+      const timeoutWasProvided = Object.hasOwn(inputFields, "capture_timeout_ms");
       const fields = {
         ...inputFields,
         capture_timeout_ms: inputFields.kind === "browser"
-          ? inputFields.capture_timeout_ms ?? preferred?.capture_timeout_ms ?? DEFAULT_CAPTURE_TIMEOUT_MS
+          ? timeoutWasProvided
+            ? inputFields.capture_timeout_ms
+            : preferred?.capture_timeout_ms ?? DEFAULT_NEW_MONITOR_CAPTURE_TIMEOUT_MS
           : null,
       };
       const names = Object.keys(fields);
@@ -627,7 +631,7 @@ export function createApp(
               return await acquireChromiumLease(pool, {
                 workload: "preview",
                 slots: cfg.CHROMIUM_CONCURRENCY,
-                waitMs: previewCapacityWaitBudget(cfg, effectiveCaptureTimeout(monitor, cfg)),
+                waitMs: previewCapacityWaitBudget(cfg, previewExecutionTimeout(monitor, cfg)),
                 signal: cancellation.signal,
                 onWait,
               });
@@ -712,10 +716,13 @@ export function createApp(
         ]);
         // A timeout changes scheduling bounds only. It deliberately preserves
         // the existing capture baseline and History.
+        // Omission preserves an existing monitor's value. An explicit null is
+        // the user's intentional switch back to the legacy server fallback.
+        const timeoutWasProvided = Object.hasOwn(fields, "capture_timeout_ms");
         const fieldsWithTimeout = {
           ...fields,
           capture_timeout_ms: fields.kind === "browser"
-            ? fields.capture_timeout_ms ?? previous.capture_timeout_ms ?? null
+            ? timeoutWasProvided ? fields.capture_timeout_ms : previous.capture_timeout_ms ?? null
             : null,
         };
         const configurationChanged = Object.entries(fieldsWithTimeout).some(

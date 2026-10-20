@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { EgressPolicy, browserProxy } from "./egress.js";
 import type { Config } from "./config.js";
-import { effectiveCaptureTimeout } from "./capture-timeout.js";
+import { previewExecutionTimeout } from "./capture-timeout.js";
 import { CaptureFailure, HttpError, captureFailure, type CaptureFailureCode, type CaptureStage } from "./errors.js";
 import { checkDimensions, pngDimensions } from "./image.js";
 import type { Monitor } from "./capture.js";
@@ -244,7 +244,7 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
   if (session?.id) {
     const active = sessions.get(session.id);
     if (!active || active.ownerId !== session.ownerId) throw regionPreviewFailure(new HttpError(410, "Preview expired. Create a new preview and try again."), "text_extraction");
-    const absoluteDeadline = Math.min(Date.now() + effectiveCaptureTimeout(m, cfg), active.expiresAt);
+    const absoluteDeadline = Math.min(Date.now() + previewExecutionTimeout(m, cfg), active.expiresAt);
     const activeRemaining = () => Math.max(1, absoluteDeadline - Date.now());
     try {
       stage = "text_extraction";
@@ -266,7 +266,7 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
   if (m.kind !== "browser" || !m.visual_enabled) throw new HttpError(422, "Visual browser capture is required");
   if ((m.browser_steps ?? []).some((step) => step.action === "fill_private")) throw new HttpError(422, "Region preview does not use private values");
   // Admission does not consume the monitor-specific browser execution budget.
-  const captureTimeoutMs = effectiveCaptureTimeout(m, cfg);
+  const captureTimeoutMs = previewExecutionTimeout(m, cfg);
   let deadline = 0;
   const remaining = () => { const value = deadline - Date.now(); if (value <= 0) throw new HttpError(504, "Preview timed out"); return value; };
   let proxy: Awaited<ReturnType<typeof browserProxy>> | undefined;
