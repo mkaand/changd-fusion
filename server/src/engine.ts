@@ -345,7 +345,7 @@ export async function runMonitor(
           [id, publicFailure(e), state, warning, Date.now() - started, diagnostic?.stage ?? null, diagnostic?.code ?? null, JSON.stringify(safeTimings(diagnostic?.timings ?? (e instanceof AttentionFailure ? e.timings : undefined)))],
         );
         if (shouldNotify)
-          await queueNotification(c, m, event.rows[0].id, createHash("sha256").update(JSON.stringify({ state, error: publicFailure(e), ...(failureAlertMode === "every" ? { failureOrdinal } : {}) })).digest("hex"));
+          await queueNotification(c, m, event.rows[0].id, createHash("sha256").update(JSON.stringify({ state, error: publicFailure(e), ...(failureAlertMode === "every" ? { failureOrdinal, eventId: event.rows[0].id } : {}) })).digest("hex"));
         await c.query("COMMIT");
         if (diagnostic)
           options.onFailure?.({

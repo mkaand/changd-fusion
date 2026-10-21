@@ -1698,6 +1698,10 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
       );
     }
     await page.setViewportSize({ width: 390, height: 844 });
+    // The monitor-list search intentionally survives navigation and polling.
+    // Clear the earlier Hybrid fixture filter before selecting this fixture.
+    await page.getByRole("searchbox", { name: "Search monitors" }).fill("");
+    await page.getByRole("button", { name: "Dimension fixture", exact: true }).waitFor();
     await page
       .getByRole("button", { name: "Dimension fixture", exact: true })
       .click();
@@ -2868,6 +2872,54 @@ test("failure alert modes preserve mute/dedupe pipeline entry semantics", async 
     const count = Number((await pool.query("SELECT count(*) FROM fusion_outbox o JOIN fusion_events e ON e.id=o.event_id WHERE e.monitor_id=$1", [monitor.id])).rows[0].count);
     assert.equal(count, notifications, mode);
   }
+
+  const every = (await ownerAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({
+    name: "Every failure resets safely",
+    url: "https://example.com",
+    failure_alert_mode: "every",
+    channel_ids: [channelId],
+  }).expect(201)).body;
+  const failEvery = () => runMonitor(pool, cfg, every.id, { force: true, capture: async () => { throw new Error("every failure"); } });
+  await failEvery();
+  await runMonitor(pool, cfg, every.id, { force: true, capture: async () => ({ text: "recovered", screenshot: null }) });
+  await failEvery();
+  await failEvery();
+  await failEvery();
+  const everyEvents = (await pool.query("SELECT notification_state FROM fusion_events WHERE monitor_id=$1 AND status='failed' ORDER BY created_at,id", [every.id])).rows;
+  assert.deepEqual(everyEvents.map((event) => event.notification_state), ["queued", "queued", "queued", "queued"], "every failure remains deliverable after a success resets its ordinal");
+  assert.equal(Number((await pool.query("SELECT count(*) FROM fusion_outbox o JOIN fusion_events e ON e.id=o.event_id WHERE e.monitor_id=$1", [every.id])).rows[0].count), 4, "consecutive every-mode failures do not deduplicate");
+
+  const muted = (await ownerAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({
+    name: "Every failure muted",
+    url: "https://example.com",
+    failure_alert_mode: "every",
+    muted_until: new Date(Date.now() + 60_000).toISOString(),
+    channel_ids: [channelId],
+  }).expect(201)).body;
+  await runMonitor(pool, cfg, muted.id, { force: true, capture: async () => { throw new Error("every failure"); } });
+  assert.equal((await pool.query("SELECT notification_state FROM fusion_events WHERE monitor_id=$1 AND status='failed'", [muted.id])).rows[0].notification_state, "muted");
+
+  const cooldown = (await ownerAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({
+    name: "Every failure cooldown",
+    url: "https://example.com",
+    failure_alert_mode: "every",
+    notification_cooldown_seconds: 300,
+    channel_ids: [channelId],
+  }).expect(201)).body;
+  for (let attempt = 0; attempt < 2; attempt++) await runMonitor(pool, cfg, cooldown.id, { force: true, capture: async () => { throw new Error("every failure"); } });
+  assert.deepEqual((await pool.query("SELECT notification_state FROM fusion_events WHERE monitor_id=$1 AND status='failed' ORDER BY created_at,id", [cooldown.id])).rows.map((event) => event.notification_state), ["queued", "cooldown"]);
+
+  const digest = (await ownerAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({
+    name: "Every failure digest",
+    url: "https://example.com",
+    failure_alert_mode: "every",
+    notification_mode: "digest",
+    digest_window_seconds: 300,
+    channel_ids: [channelId],
+  }).expect(201)).body;
+  for (let attempt = 0; attempt < 2; attempt++) await runMonitor(pool, cfg, digest.id, { force: true, capture: async () => { throw new Error("every failure"); } });
+  assert.deepEqual((await pool.query("SELECT notification_state FROM fusion_events WHERE monitor_id=$1 AND status='failed' ORDER BY created_at,id", [digest.id])).rows.map((event) => event.notification_state), ["digest_pending", "digest_pending"]);
+  assert.equal((await pool.query("SELECT event_count FROM fusion_notification_digests WHERE monitor_id=$1", [digest.id])).rows[0].event_count, 2);
 });
 
 test("pagination, configuration resets, paused scheduling and delivery retry enforce ownership", async () => {
