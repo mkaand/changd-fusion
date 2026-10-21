@@ -39,8 +39,8 @@ export async function dispatch(
       ).rows[0].locked;
       if (!locked) continue;
       const r = await c.query(
-        `SELECT o.*,ch.provider,ch.config,ch.enabled,m.name,m.id monitor_id,e.created_at checked_at,e.status event_type,e.text_changed,e.visual_changed,e.visual_percent,e.dimension_changed,e.before_dimensions,e.after_dimensions,e.text_diff,e.metadata,e.diff_screenshot,e.attention_state,e.error,
-    b.screenshot before_image,a.screenshot after_image FROM fusion_outbox o JOIN fusion_channels ch ON ch.id=o.channel_id JOIN fusion_events e ON e.id=o.event_id
+        `SELECT o.*,ch.provider,ch.config,ch.enabled,m.name,m.id monitor_id,e.created_at checked_at,e.status event_type,e.text_changed,e.visual_changed,e.visual_percent,e.dimension_changed,e.before_dimensions,e.after_dimensions,e.text_diff,e.metadata,e.diff_screenshot,e.attention_state,e.error,e.http_status,e.http_status_changed,
+    b.screenshot before_image,b.http_status before_http_status,a.screenshot after_image FROM fusion_outbox o JOIN fusion_channels ch ON ch.id=o.channel_id JOIN fusion_events e ON e.id=o.event_id
     JOIN fusion_monitors m ON m.id=e.monitor_id LEFT JOIN fusion_captures b ON b.id=e.before_id LEFT JOIN fusion_captures a ON a.id=e.after_id
     WHERE o.id=$1 AND o.status IN ('pending','sending') AND o.next_attempt<=now() AND ch.user_id=m.user_id`,
         [id],
@@ -89,6 +89,9 @@ export async function dispatch(
         digestCount: row.metadata?.digest_count,
         digestStart: row.metadata?.period_start,
         digestEnd: row.metadata?.period_end,
+        httpStatus: row.http_status,
+        previousHttpStatus: row.before_http_status,
+        httpStatusChanged: row.http_status_changed,
         attempt: row.attempts + 1,
         imageLabels: (["before", "after", "diff"] as const).filter((_, i) =>
           Boolean([row.before_image, row.after_image, row.diff_screenshot][i]),

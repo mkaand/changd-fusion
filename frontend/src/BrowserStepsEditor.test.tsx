@@ -1,19 +1,21 @@
 import { render, screen, cleanup, waitFor, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Form } from "antd";
-import { it, expect, afterEach } from "vitest";
+import { it, expect, afterEach, vi } from "vitest";
 import { BrowserStepsEditor } from "./BrowserStepsEditor";
+import { api } from "./api";
+vi.mock("./api", async () => ({ ...(await vi.importActual<typeof import("./api")>("./api")), api: vi.fn() }));
 let form: any;
 function Fixture() {
   const [f] = Form.useForm();
   form = f;
   return (
-    <Form form={f} initialValues={{ browser_steps: [], step_budget_ms: 20000 }}>
+    <Form form={f} initialValues={{ url: "https://fixture.example", kind: "browser", visual_enabled: false, browser_steps: [], step_budget_ms: 20000 }}>
       <BrowserStepsEditor form={f} />
     </Form>
   );
 }
-afterEach(cleanup);
+afterEach(() => { cleanup(); vi.clearAllMocks(); });
 it("browser steps can be added, reordered with keyboard-accessible buttons and removed", async () => {
   const user = userEvent.setup();
   render(<Fixture />);
@@ -76,4 +78,22 @@ it("step editor validates required selectors and prevents more than twenty steps
     ).toBeDisabled(),
   );
   await expect(form.validateFields()).rejects.toBeTruthy();
+});
+it("adds and replays visual Preview steps only in the unsaved form draft", async () => {
+  vi.mocked(api).mockImplementation((path: string, method?: string) => {
+    if (method === "DELETE") return Promise.resolve({}) as any;
+    return Promise.resolve({ session_id: "00000000-0000-4000-8000-000000000010", image: "aGVsbG8=", width: 1280, height: 900, selection: { selector: "#consent-reject", x: 10, y: 10, width: 120, height: 44 } }) as any;
+  });
+  const user = userEvent.setup();
+  render(<Fixture />);
+  await user.click(screen.getByRole("button", { name: "Add step from Preview" }));
+  await screen.findByText("Selected visible element");
+  await user.click(screen.getByRole("combobox", { name: "Browser step action" }));
+  await user.click(screen.getByText("dismiss cookie"));
+  await user.click(screen.getByRole("switch", { name: "Optional browser step" }));
+  await user.click(screen.getByRole("button", { name: "Add step to draft" }));
+  expect(form.getFieldValue("browser_steps")).toEqual([{ action: "dismiss_cookie", selector: "#consent-reject", selector_type: "css", timeout_ms: 5000, continue_on_error: true }]);
+  await user.click(screen.getByRole("button", { name: "Replay preview" }));
+  await waitFor(() => expect(vi.mocked(api).mock.calls.filter(([path]) => path === "/region-preview")).toHaveLength(2));
+  expect(form.getFieldValue("browser_steps")).toHaveLength(1);
 });

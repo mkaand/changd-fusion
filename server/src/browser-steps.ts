@@ -71,6 +71,26 @@ export class StepFailure extends HttpError {
     );
   }
 }
+export type BrowserStepWarning = {
+  code: "optional_step_failed";
+  step: number;
+  action: BrowserStep["action"];
+  category: "selector_unavailable" | "navigation_unavailable" | "step_timeout" | "step_failed";
+};
+
+function safeStepFailureCategory(step: BrowserStep, error: unknown): BrowserStepWarning["category"] {
+  const message = error instanceof Error ? error.message.toLowerCase() : "";
+  if (message.includes("timeout")) return "step_timeout";
+  if (step.action === "wait_navigation") return "navigation_unavailable";
+  if ("selector" in step) return "selector_unavailable";
+  return "step_failed";
+}
+
+export function warningCode(warning: BrowserStepWarning | undefined): string | undefined {
+  return warning
+    ? `${warning.code}:${warning.step}:${warning.action}:${warning.category}`
+    : undefined;
+}
 export async function runSteps(
   page: Page,
   input: unknown,
@@ -78,7 +98,7 @@ export async function runSteps(
   values: Record<string, string> = {},
 ) {
   const steps = stepsSchema.parse(input ?? []);
-  let warning: string | undefined;
+  let warning: BrowserStepWarning | undefined;
   const timer = setTimeout(
     () => void page.close().catch(() => {}),
     Math.max(1, deadline - Date.now()),
@@ -148,10 +168,15 @@ export async function runSteps(
             await node!.fill(values[step.credential], { timeout });
             break;
         }
-      } catch {
+      } catch (error) {
         if (!step.continue_on_error)
           throw new StepFailure(index + 1, step.action);
-        warning = "optional_step_failed";
+        warning = {
+          code: "optional_step_failed",
+          step: index + 1,
+          action: step.action,
+          category: safeStepFailureCategory(step, error),
+        };
       }
       if (Date.now() > deadline)
         throw new HttpError(422, "Browser workflow exceeded its time budget");

@@ -87,6 +87,7 @@ const monitorInput = z
     mobile_view: z.boolean().default(false),
     paused: z.boolean().default(false),
     notify_failures: z.boolean().default(false),
+    failure_alert_mode: z.enum(["off", "first_or_persistent", "every"]).optional(),
     notify_attention: z.boolean().default(false),
     notification_enabled: z.boolean().default(true),
     muted_until: z.string().datetime().nullable().optional(),
@@ -147,7 +148,11 @@ const monitorInput = z
   .refine(
     (m) => m.kind === "browser" || (m.text_enabled && !m.visual_enabled),
     { message: "HTML/API monitors require text-only detection" },
-  );
+  )
+  .transform((m) => ({
+    ...m,
+    failure_alert_mode: m.failure_alert_mode ?? (m.notify_failures ? "first_or_persistent" as const : "off" as const),
+  }));
 const monitoringDefaults = z.object({
   interval_seconds: z.number().int().min(30).max(604800).optional(),
   text_enabled: z.boolean().optional(), visual_enabled: z.boolean().optional(),
@@ -717,6 +722,7 @@ export function createApp(
           "enabled",
           "paused",
           "notify_failures",
+          "failure_alert_mode",
           "notify_attention",
           "notification_enabled",
           "muted_until",
@@ -911,7 +917,7 @@ export function createApp(
       .default(20)
       .parse(req.query.page_size);
     const r = await pool.query(
-      `SELECT e.*,b.screenshot before_image,a.screenshot after_image,
+      `SELECT e.*,b.screenshot before_image,b.http_status before_http_status,a.screenshot after_image,
    coalesce((SELECT jsonb_agg(jsonb_build_object('channel_id',o.channel_id,'status',o.status,'attempts',o.attempts,'error',o.last_error)) FROM fusion_outbox o WHERE o.event_id=e.id),'[]'::jsonb) deliveries
    FROM fusion_events e LEFT JOIN fusion_captures b ON b.id=e.before_id LEFT JOIN fusion_captures a ON a.id=e.after_id
    WHERE e.monitor_id=$1 AND ($2::text IS NULL OR e.status=$2) ORDER BY e.created_at DESC,e.id DESC LIMIT $3 OFFSET $4`,

@@ -52,6 +52,7 @@ export function notificationFingerprint(
     beforeDimensions?: unknown;
     afterDimensions?: unknown;
   } | null,
+  http?: { before?: number | null; after?: number | null; changed?: boolean } | null,
 ) {
   const text = textParts
     .filter((part) => part.added || part.removed)
@@ -68,7 +69,11 @@ export function notificationFingerprint(
       }
     : null;
   return createHash("sha256")
-    .update(JSON.stringify({ text, image }))
+    .update(JSON.stringify({
+      text,
+      image,
+      http: http?.changed ? { before: http.before ?? null, after: http.after ?? null } : null,
+    }))
     .digest("hex");
 }
 
@@ -280,8 +285,12 @@ export async function runMonitor(
           ],
         );
         if (status === "changed") {
-          const fingerprint = notificationFingerprint(text.parts, visual);
-          if (visual?.changed || !text.changed || textDirectionMatches(text.parts, m.text_direction))
+          const fingerprint = notificationFingerprint(text.parts, visual, {
+            before: before?.http_status,
+            after: current.http_status,
+            changed: httpStatusChanged,
+          });
+          if (httpStatusChanged || visual?.changed || !text.changed || textDirectionMatches(text.parts, m.text_direction))
             await queueNotification(c, m, event.rows[0].id, fingerprint);
           else
             await c.query("UPDATE fusion_events SET notification_state='direction_filtered',notification_fingerprint=$2 WHERE id=$1", [event.rows[0].id, fingerprint]);
@@ -308,11 +317,13 @@ export async function runMonitor(
             ? "persistent_failure"
             : "temporary_failure";
       const warning = e instanceof AttentionFailure ? e.confidence : null;
-      const shouldNotify =
-        state !== m.monitor_state &&
-        (state === "persistent_failure"
-          ? m.notify_failures
-          : e instanceof AttentionFailure && m.notify_attention);
+      const failureAlertMode = m.failure_alert_mode ?? (m.notify_failures ? "first_or_persistent" : "off");
+      const failureOrdinal = m.failure_count + 1;
+      const shouldNotify = e instanceof AttentionFailure
+        ? state !== m.monitor_state && Boolean(m.notify_attention)
+        : failureAlertMode === "every" ||
+          (failureAlertMode === "first_or_persistent" &&
+            (failureOrdinal === 1 || (state === "persistent_failure" && state !== m.monitor_state)));
       await c.query("BEGIN");
       try {
         await c.query(
@@ -334,7 +345,7 @@ export async function runMonitor(
           [id, publicFailure(e), state, warning, Date.now() - started, diagnostic?.stage ?? null, diagnostic?.code ?? null, JSON.stringify(safeTimings(diagnostic?.timings ?? (e instanceof AttentionFailure ? e.timings : undefined)))],
         );
         if (shouldNotify)
-          await queueNotification(c, m, event.rows[0].id, createHash("sha256").update(JSON.stringify({ state, error: publicFailure(e) })).digest("hex"));
+          await queueNotification(c, m, event.rows[0].id, createHash("sha256").update(JSON.stringify({ state, error: publicFailure(e), ...(failureAlertMode === "every" ? { failureOrdinal } : {}) })).digest("hex"));
         await c.query("COMMIT");
         if (diagnostic)
           options.onFailure?.({

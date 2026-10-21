@@ -79,6 +79,18 @@ it("keeps Selected area distinct from element capture and validates its applied 
   await user.click(screen.getByText("Viewport (default)", { exact: true }));
   expect(current.getFieldValue("capture_area")).toBeNull();
 });
+it("never silently converts Selected Area when Mobile view is requested", async () => {
+  const user = userEvent.setup();
+  render(<Fixture />);
+  await user.click(screen.getByRole("switch", { name: "Visual detection" }));
+  await user.click(screen.getByText("Advanced settings", { exact: true }));
+  await user.click(screen.getByLabelText("Screenshot capture mode"));
+  await user.click(screen.getByText("Selected area", { exact: true }));
+  current.setFieldValue("capture_area", { x: 10, y: 20, width: 100, height: 80 });
+  expect(screen.getByRole("switch", { name: "Mobile view" })).toBeDisabled();
+  expect(current.getFieldValue("capture_mode")).toBe("selected_area");
+  expect(current.getFieldValue("capture_area")).toEqual({ x: 10, y: 20, width: 100, height: 80 });
+});
 it("offers focused Jina extraction modes and hides incompatible browser controls", async () => {
   const user = userEvent.setup();
   render(<Fixture />);

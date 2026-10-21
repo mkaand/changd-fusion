@@ -1,20 +1,22 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 import { EgressPolicy, browserProxy } from "./egress.js";
 import type { Config } from "./config.js";
 import { previewExecutionTimeout } from "./capture-timeout.js";
 import { CaptureFailure, HttpError, captureFailure, type CaptureFailureCode, type CaptureStage } from "./errors.js";
 import { checkDimensions, pngDimensions } from "./image.js";
-import type { Monitor } from "./capture.js";
+import { navigateForCapture, type Monitor } from "./capture.js";
 import type { ChromiumLease } from "./chromium-capacity.js";
-import { runSteps, StepFailure } from "./browser-steps.js";
+import { runSteps, StepFailure, warningCode } from "./browser-steps.js";
+import { AttentionFailure, detectAttention } from "./attention.js";
+import { browserViewport, dismissCookieConsent, installBrowserRouting, observeMainFrameStatus } from "./browser-experience.js";
 
-type RegionPreviewCode = CaptureFailureCode | "session_expired" | "stale_preview" | "ambiguous_selection";
+type RegionPreviewCode = CaptureFailureCode | "session_expired" | "stale_preview" | "stale_configuration" | "ambiguous_selection";
 export type RegionPreviewFailure = { stage: CaptureStage; failure_code: RegionPreviewCode; status: number; message: string; step?: number; action?: string };
 type Selection = { selector: string; label: string; visible: boolean; x: number; y: number; width: number; height: number };
 export type PreviewStage = "target_validation" | "capacity_wait" | "proxy_initialization" | "browser_launch" | "browser_context" | "navigation" | "dom_ready" | "browser_steps" | "rendering_preparation" | "screenshot" | "serialization" | "ready";
 type PreviewTimings = Partial<Record<PreviewStage, number>>;
-type Session = { id: string; ownerId: string; createdAt: number; expiresAt: number; expiryTimer?: NodeJS.Timeout; closing?: Promise<void>; browser: Browser; context: BrowserContext; page: Page; proxy: Awaited<ReturnType<typeof browserProxy>>; capacity?: ChromiumLease; image: Buffer; timings: PreviewTimings; warning?: string };
+type Session = { id: string; ownerId: string; createdAt: number; expiresAt: number; expiryTimer?: NodeJS.Timeout; closing?: Promise<void>; browser: Browser; context: BrowserContext; page: Page; proxy: Awaited<ReturnType<typeof browserProxy>>; capacity?: ChromiumLease; image: Buffer; width: number; height: number; httpStatus?: number; signature: string; timings: PreviewTimings; warning?: string };
 type PreviewOperations = {
   snapshot?: (page: Page) => Promise<void>;
   screenshot?: (context: BrowserContext, page: Page) => Promise<Buffer>;
@@ -82,6 +84,7 @@ export async function expireRegionPreviewSessions(now: number) { await purgeExpi
 function previewMessage(stage: CaptureStage, code: RegionPreviewCode) {
   if (code === "session_expired") return "Preview expired. Refresh the preview and try again.";
   if (code === "stale_preview") return "The page changed after the screenshot. Refresh the preview before selecting.";
+  if (code === "stale_configuration") return "Preview settings changed. Replay the preview before selecting.";
   if (code === "ambiguous_selection") return "The selected point does not identify one stable visible element. Try a nearby point.";
   if (code === "timeout") return "Preview timed out. Retry, or use viewport capture instead.";
   if (code === "capacity_busy") return "Preview capacity is busy. Retry shortly.";
@@ -98,7 +101,7 @@ export function regionPreviewFailure(error: unknown, stage: CaptureStage): Regio
   const safe = captureFailure(error, stage);
   const validation = error instanceof HttpError && error.status >= 400 && error.status < 500;
   const stepFailure = error instanceof StepFailure ? error : undefined;
-  const code: RegionPreviewCode = stepFailure ? "capture_failed" : error instanceof HttpError && error.status === 410 ? "session_expired" : error instanceof HttpError && error.status === 409 ? "stale_preview" : error instanceof HttpError && /unique visible/i.test(error.message) ? "ambiguous_selection" : safe.code === "unknown" && stage === "text_extraction" ? "selector_failed" : safe.code;
+  const code: RegionPreviewCode = stepFailure ? "capture_failed" : error instanceof HttpError && error.status === 410 ? "session_expired" : error instanceof HttpError && error.status === 409 && /settings changed/i.test(error.message) ? "stale_configuration" : error instanceof HttpError && error.status === 409 ? "stale_preview" : error instanceof HttpError && /unique visible/i.test(error.message) ? "ambiguous_selection" : safe.code === "unknown" && stage === "text_extraction" ? "selector_failed" : safe.code;
   return {
     stage: safe.stage,
     failure_code: code,
@@ -170,8 +173,8 @@ async function boundedPreviewOperation<T>(input: {
   }
 }
 
-export async function selectionAt(page: Page, point: { x: number; y: number }): Promise<{ selection: Selection; candidates: Selection[] }> {
-  if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || point.x < 0 || point.y < 0 || point.x > 1280 || point.y > 900)
+export async function selectionAt(page: Page, point: { x: number; y: number }, viewport: { width: number; height: number } = { width: 1280, height: 900 }): Promise<{ selection: Selection; candidates: Selection[] }> {
+  if (!Number.isFinite(point.x) || !Number.isFinite(point.y) || point.x < 0 || point.y < 0 || point.x > viewport.width || point.y > viewport.height)
     throw new HttpError(422, "Invalid preview point");
   const result = await page.evaluate(({ x, y }) => {
     const element = document.elementFromPoint(x, y);
@@ -240,10 +243,25 @@ export async function selectionAt(page: Page, point: { x: number; y: number }): 
 
 export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number; y: number }, policy = new EgressPolicy(), session?: { ownerId: string; id?: string; retain?: boolean; captureLayout?: boolean; refresh?: boolean; progress?: (stage: PreviewStage) => void; signal?: AbortSignal; operations?: PreviewOperations; acquireCapacity?: (onWait: () => void) => Promise<ChromiumLease | null> }) {
   let stage: CaptureStage = "target_validation";
+  const signature = createHash("sha256").update(JSON.stringify({
+    url: m.url,
+    browser_steps: m.browser_steps ?? [],
+    step_budget_ms: m.step_budget_ms ?? 20_000,
+    monitor_http_error_pages: Boolean(m.monitor_http_error_pages),
+    disable_javascript: Boolean(m.disable_javascript),
+    block_ads_trackers: Boolean(m.block_ads_trackers),
+    cookie_banner_handling: Boolean(m.cookie_banner_handling),
+    wait_before_capture_ms: m.wait_before_capture_ms ?? 0,
+    mobile_view: Boolean(m.mobile_view),
+  })).digest("hex");
   await purgeExpired();
   if (session?.id) {
     const active = sessions.get(session.id);
     if (!active || active.ownerId !== session.ownerId) throw regionPreviewFailure(new HttpError(410, "Preview expired. Create a new preview and try again."), "text_extraction");
+    if (active.signature !== signature) {
+      await closeSession(active);
+      throw regionPreviewFailure(new HttpError(409, "Preview settings changed. Create a new preview."), "text_extraction");
+    }
     const absoluteDeadline = Math.min(Date.now() + previewExecutionTimeout(m, cfg), active.expiresAt);
     const activeRemaining = () => Math.max(1, absoluteDeadline - Date.now());
     try {
@@ -255,9 +273,9 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
         active.image = await boundedPreviewOperation({ operation: () => (session.operations?.screenshot ?? capturePreviewScreenshot)(active.context, active.page), remaining: activeRemaining, cancel: () => closeSession(active), stage: "screenshot", signal: session.signal });
         pngDimensions(active.image, { width: cfg.MAX_CAPTURE_WIDTH, height: cfg.MAX_CAPTURE_HEIGHT, pixels: cfg.MAX_CAPTURE_PIXELS });
       }
-      const picked = point ? await boundedPreviewOperation({ operation: () => selectionAt(active.page, point), remaining: activeRemaining, cancel: () => closeSession(active), stage: "text_extraction", signal: session.signal }) : null;
+      const picked = point ? await boundedPreviewOperation({ operation: () => selectionAt(active.page, point, { width: active.width, height: active.height }), remaining: activeRemaining, cancel: () => closeSession(active), stage: "text_extraction", signal: session.signal }) : null;
       if (picked) checkDimensions({ width: Math.ceil(picked.selection.width), height: Math.ceil(picked.selection.height) }, { width: cfg.MAX_CAPTURE_WIDTH, height: cfg.MAX_CAPTURE_HEIGHT, pixels: cfg.MAX_CAPTURE_PIXELS });
-      return { session_id: active.id, image: active.image.toString("base64"), width: 1280, height: 900, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings: active.timings, warning: active.warning, reused: true };
+      return { session_id: active.id, image: active.image.toString("base64"), width: active.width, height: active.height, http_status: active.httpStatus, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings: active.timings, warning: active.warning, reused: true };
     } catch (error) {
       if (session.signal?.aborted || Date.now() >= active.expiresAt) await closeSession(active);
       throw regionPreviewFailure(error, stage);
@@ -306,25 +324,46 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
     browser = await chromium.launch({ headless: true, chromiumSandbox: true, executablePath: cfg.PLAYWRIGHT_EXECUTABLE_PATH, proxy: { server: proxy.url, bypass: "<-loopback>" }, timeout: remaining() });
     stage = "browser_context";
     enter("browser_context");
-    const viewport = m.mobile_view ? { width: 390, height: 844 } : { width: 1280, height: 900 };
+    const viewport = browserViewport(Boolean(m.mobile_view));
     context = await browser.newContext({ viewport, deviceScaleFactor: 1, javaScriptEnabled: !m.disable_javascript, isMobile: Boolean(m.mobile_view), hasTouch: Boolean(m.mobile_view), userAgent: m.mobile_view ? "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" : undefined, locale: "en-US", timezoneId: "UTC", serviceWorkers: "block", ignoreHTTPSErrors: false });
-    if (m.block_ads_trackers) await context.route("**/*", async (route) => {
-      const host = new URL(route.request().url()).hostname.toLowerCase();
-      if (/(?:doubleclick|google-analytics|googletagmanager|facebook\.net|hotjar|segment\.io|mixpanel|adsystem)/.test(host)) await route.abort("blockedbyclient");
-      else await route.continue();
-    });
-    await context.routeWebSocket("**/*", (socket) => socket.close());
+    await installBrowserRouting(context, m.url, { privateWorkflow: false, blockTrackers: Boolean(m.block_ads_trackers) });
     const page = await context.newPage();
+    const statusObserver = observeMainFrameStatus(page);
     stage = "navigation";
     enter("navigation");
-    const response = await page.goto(m.url, { waitUntil: "domcontentloaded", timeout: remaining() });
-    if (!response?.ok() && !m.monitor_http_error_pages) throw new HttpError(422, `HTTP ${response?.status() ?? 0}`);
+    const initialStatus = await navigateForCapture(page, m.url, deadline, Boolean(m.monitor_http_error_pages));
+    statusObserver.setInitial(initialStatus);
     enter("dom_ready");
     await page.addStyleTag({ content: "* { animation:none !important; transition:none !important; caret-color:transparent !important; }" });
-    if (m.cookie_banner_handling) await page.locator('[id*="reject" i], [class*="reject" i], [aria-label*="reject" i], [data-testid*="reject" i]').first().click({ timeout: Math.min(1500, remaining()) }).catch(() => {});
     stage = "browser_steps";
     enter("browser_steps");
-    const warning = await runSteps(page, m.browser_steps ?? [], Math.min(deadline, Date.now() + (m.step_budget_ms ?? 20_000)));
+    const skipStepsForErrorPage = Boolean(m.monitor_http_error_pages && initialStatus >= 400);
+    let stepWarning;
+    let stepsSkippedForErrorPage = skipStepsForErrorPage;
+    if (!skipStepsForErrorPage) {
+      try {
+        stepWarning = await runSteps(page, m.browser_steps ?? [], Math.min(deadline, Date.now() + (m.step_budget_ms ?? 20_000)));
+      } catch (error) {
+        if (!(error instanceof StepFailure && m.monitor_http_error_pages && (statusObserver.value() ?? initialStatus) >= 400))
+          throw error;
+        stepsSkippedForErrorPage = true;
+      }
+    }
+    const warning = stepsSkippedForErrorPage && (m.browser_steps?.length ?? 0) > 0
+      ? "browser_steps_skipped_http_error"
+      : warningCode(stepWarning);
+    const navigationStatus = statusObserver.value() ?? initialStatus;
+    const attentionSignals = await page.evaluate(() => ({
+      title: document.title,
+      password: Boolean(document.querySelector('input[type="password"]')),
+      challenge: Boolean(document.querySelector('iframe[src*="recaptcha"], iframe[src*="hcaptcha"], .cf-challenge, #challenge-running, [data-sitekey]')),
+    }));
+    const attention = detectAttention(navigationStatus, new URL(page.url()).pathname, attentionSignals.title, attentionSignals.password, attentionSignals.challenge);
+    if (attention instanceof AttentionFailure) throw attention;
+    if (attention && !m.monitor_http_error_pages) throw attention;
+    if (navigationStatus >= 400 && !m.monitor_http_error_pages)
+      throw new HttpError(422, "Website returned an unsuccessful HTTP response");
+    if (m.cookie_banner_handling) await dismissCookieConsent(page, deadline, m.browser_steps);
     if (m.wait_before_capture_ms) await page.waitForTimeout(Math.min(m.wait_before_capture_ms, remaining()));
     enter("rendering_preparation");
     stage = "font_wait";
@@ -340,19 +379,19 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
     enter("screenshot");
     const image = await boundedPreviewOperation({ operation: () => (session?.operations?.screenshot ?? capturePreviewScreenshot)(context!, page), remaining, cancel: cancelBrowser, stage, signal: session?.signal });
     pngDimensions(image, { width: cfg.MAX_CAPTURE_WIDTH, height: cfg.MAX_CAPTURE_HEIGHT, pixels: cfg.MAX_CAPTURE_PIXELS });
-    const picked = point ? await selectionAt(page, point) : null;
+    const picked = point ? await selectionAt(page, point, viewport) : null;
     enter("serialization");
     const encoded = image.toString("base64");
     timings.serialization = Math.round(performance.now() - stageStarted);
     session?.progress?.("ready");
-    if (!session?.retain) return { image: encoded, width: 1280, height: 900, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings, warning };
+    if (!session?.retain) return { image: encoded, width: viewport.width, height: viewport.height, http_status: navigationStatus, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings, warning };
     const createdAt = Date.now();
-    const active: Session = { id: randomUUID(), ownerId: session.ownerId, createdAt, expiresAt: createdAt + REGION_PREVIEW_MAX_LIFETIME_MS, browser, context, page, proxy, capacity, image, timings, warning };
+    const active: Session = { id: randomUUID(), ownerId: session.ownerId, createdAt, expiresAt: createdAt + REGION_PREVIEW_MAX_LIFETIME_MS, browser, context, page, proxy, capacity, image, width: viewport.width, height: viewport.height, httpStatus: navigationStatus, signature, timings, warning };
     active.expiryTimer = setTimeout(() => void closeSession(active), REGION_PREVIEW_MAX_LIFETIME_MS);
     active.expiryTimer.unref();
     sessions.set(active.id, active);
     browser = undefined; context = undefined; proxy = undefined; capacity = undefined;
-    return { session_id: active.id, image: encoded, width: 1280, height: 900, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings, warning, reused: false };
+    return { session_id: active.id, image: encoded, width: viewport.width, height: viewport.height, http_status: navigationStatus, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings, warning, reused: false };
   } catch (error) { throw regionPreviewFailure(error, stage); }
   finally {
     session?.signal?.removeEventListener("abort", abortBrowser);

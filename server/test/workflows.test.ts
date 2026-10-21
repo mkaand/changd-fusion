@@ -131,7 +131,7 @@ test("optional safe steps report a warning and mandatory failures stop the seque
     }),
     close: async () => {},
   };
-  assert.equal(
+  assert.deepEqual(
     await runSteps(
       page,
       [
@@ -144,7 +144,12 @@ test("optional safe steps report a warning and mandatory failures stop the seque
       ],
       Date.now() + 1000,
     ),
-    "optional_step_failed",
+    {
+      code: "optional_step_failed",
+      step: 1,
+      action: "wait_visible",
+      category: "selector_unavailable",
+    },
   );
   assert.equal(clicks, 1);
   await assert.rejects(

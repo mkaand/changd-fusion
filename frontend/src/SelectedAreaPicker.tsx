@@ -14,7 +14,7 @@ import {
 const PREVIEW_REQUEST_TIMEOUT_MS = 125000;
 const MIN_ZOOM = .5, MAX_ZOOM = 3, ZOOM_STEP = .25;
 type Draft = { url?: string; kind?: string; visual_enabled?: boolean; browser_steps?: unknown[]; step_budget_ms?: number; capture_timeout_ms?: number | null; monitor_http_error_pages?: boolean; disable_javascript?: boolean; block_ads_trackers?: boolean; cookie_banner_handling?: boolean; wait_before_capture_ms?: 0 | 2000 | 5000 | 10000; mobile_view?: boolean; capture_area?: unknown };
-type Preview = { image: string; width: number; height: number; timings?: Record<string, number>; warning?: string };
+type Preview = { image: string; width: number; height: number; http_status?: number; timings?: Record<string, number>; warning?: string };
 type Tool = "draw" | "pan";
 type Action = "draw" | "pan" | "move" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw" | "pinch";
 type Interaction = { action: Action; start: { x: number; y: number }; original?: CaptureArea; left: number; top: number; zoom: number; distance?: number };
@@ -47,6 +47,7 @@ export function SelectedAreaPicker({ monitorId, getDraft, onApply, mobilePage = 
     if (controller.current) return;
     const draft = getDraft();
     if (!draft.url || draft.kind !== "browser" || !draft.visual_enabled) { setError(new ApiError("Enter a valid Browser URL and enable Visual detection before selecting an area.")); return; }
+    if (draft.mobile_view) { setError(new ApiError("Selected Area uses fixed 1280 × 900 desktop coordinates. Turn off Mobile view or choose another capture mode.")); return; }
     if (reason === "initialize") setArea(isValidCaptureArea(draft.capture_area) ? draft.capture_area : undefined);
     const pending = new AbortController(), version = ++requestVersion.current;
     controller.current = pending; setLoading(true); setError(undefined); setRefreshFailed(false); setProgress("target_validation");
@@ -141,7 +142,8 @@ export function SelectedAreaPicker({ monitorId, getDraft, onApply, mobilePage = 
     {loading && preview && <div className="region-preview-updating" role="status"><Spin size="small" /><span>{progressLabels[progress] ?? "Refreshing preview"}</span></div>}
     {!preview && error && <div className="selected-area-actions"><Button type="primary" onClick={() => void load("retry")} disabled={loading}>Retry preview</Button></div>}
     {preview && <>
-      {preview.warning && <Alert type="warning" showIcon title="An optional browser step did not complete. The preview continued." />}
+      {preview.http_status && preview.http_status >= 400 && <Alert type="warning" showIcon title={`HTTP ${preview.http_status} error page`} description="The preview was captured successfully, but the origin returned an unsuccessful HTTP status." />}
+      {preview.warning && <Alert type="warning" showIcon title={preview.warning === "browser_steps_skipped_http_error" ? "Browser steps were skipped because the initial response was an HTTP error page." : `Browser step warning: ${preview.warning}`} />}
       <div className="region-preview-toolbar selected-area-toolbar">
         <Radio.Group value={tool} onChange={(event) => setTool(event.target.value)} aria-label="Selected area interaction mode" optionType="button" options={[{ value: "draw", label: "Draw" }, { value: "pan", label: "Pan" }]} />
         <Button aria-label="Zoom out" onClick={() => setZoom((value) => clampZoom(value - ZOOM_STEP))}>−</Button><output>{Math.round(zoom * 100)}%</output><Button aria-label="Zoom in" onClick={() => setZoom((value) => clampZoom(value + ZOOM_STEP))}>+</Button>

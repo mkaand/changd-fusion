@@ -6,6 +6,7 @@ import {
   deliver,
   truncateText,
   safeTextSummary,
+  summary,
   type EventMessage,
 } from "../src/notifications.js";
 import type { Storage } from "../src/storage.js";
@@ -78,6 +79,15 @@ test("notification fingerprints are stable for ignored hydration and distinguish
   ]);
   assert.equal(aToB, same);
   assert.notEqual(aToB, bToA);
+  const statusTo403 = notificationFingerprint([], null, { before: 200, after: 403, changed: true });
+  const statusTo200 = notificationFingerprint([], null, { before: 403, after: 200, changed: true });
+  assert.notEqual(statusTo403, statusTo200);
+  assert.notEqual(statusTo403, notificationFingerprint([], null));
+});
+test("status-only notifications identify origin health without claiming capture failure", () => {
+  const text = summary({ ...event, textChanged: false, visualChanged: false, httpStatusChanged: true, previousHttpStatus: 200, httpStatus: 403 });
+  assert.match(text, /HTTP status changed: 200 → 403/);
+  assert.doesNotMatch(text, /capture failed/i);
 });
 test("text direction filters delivery without changing the complete text diff", () => {
   const added = [{ value: "new", added: true }];

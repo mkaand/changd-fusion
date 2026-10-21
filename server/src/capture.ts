@@ -1,7 +1,7 @@
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright";
 import { EgressPolicy, browserProxy, safeFetch, type SafeFetchOptions } from "./egress.js";
 import { normalizeText } from "./comparison.js";
-import { locate, runSteps, type BrowserStep } from "./browser-steps.js";
+import { locate, runSteps, StepFailure, warningCode, type BrowserStep } from "./browser-steps.js";
 import { AttentionFailure, detectAttention } from "./attention.js";
 import {
   CaptureFailure,
@@ -17,6 +17,7 @@ import { effectiveCaptureTimeout } from "./capture-timeout.js";
 import { jinaReaderText } from "./jina-reader.js";
 import { applySelectedTextRule, readableJinaLines, type SelectedTextRule } from "./selected-text.js";
 import { captureAreaSchema, cropCaptureArea, type CaptureArea } from "./capture-area.js";
+import { browserViewport, dismissCookieConsent, installBrowserRouting, observeMainFrameStatus } from "./browser-experience.js";
 export type Monitor = {
   id: string;
   user_id: string;
@@ -47,6 +48,7 @@ export type Monitor = {
   paused?: boolean;
   monitor_state?: string;
   notify_failures?: boolean;
+  failure_alert_mode?: "off" | "first_or_persistent" | "every";
   notify_attention?: boolean;
   notification_enabled?: boolean;
   muted_until?: string | null;
@@ -378,7 +380,7 @@ export async function capture(
       proxy: { server: proxy.url, bypass: "<-loopback>" },
     });
     enterStage("browser_context");
-    const viewport = m.mobile_view ? { width: 390, height: 844 } : { width: 1280, height: 900 };
+    const viewport = browserViewport(Boolean(m.mobile_view));
     const context = await browser.newContext({
       viewport,
       deviceScaleFactor: 1,
@@ -403,26 +405,37 @@ export async function capture(
     // connection time. Keep only the stricter same-origin rule needed by
     // private workflows; duplicating DNS validation for every normal request
     // adds avoidable navigation latency without strengthening egress safety.
-    if (privateWorkflow || m.block_ads_trackers) await context.route("**/*", async (route) => {
-      try {
-        const requested = new URL(route.request().url());
-        const host = requested.hostname.toLowerCase();
-        const tracker = /(?:doubleclick|google-analytics|googletagmanager|facebook\.net|hotjar|segment\.io|mixpanel|adsystem)/.test(host);
-        if ((privateWorkflow && requested.origin !== new URL(m.url).origin) || (m.block_ads_trackers && tracker)) throw Error();
-        await route.continue();
-      } catch { await route.abort("blockedbyclient"); }
+    await installBrowserRouting(context, m.url, {
+      privateWorkflow,
+      blockTrackers: Boolean(m.block_ads_trackers),
     });
-    await context.routeWebSocket("**/*", (ws) => ws.close());
     enterStage("navigation");
     const page = await context.newPage();
-    const navigationStatus = await navigateForCapture(page, m.url, deadline, Boolean(m.monitor_http_error_pages));
+    const statusObserver = observeMainFrameStatus(page);
+    const initialStatus = await navigateForCapture(page, m.url, deadline, Boolean(m.monitor_http_error_pages));
+    statusObserver.setInitial(initialStatus);
     enterStage("browser_steps");
-    const warning = await runSteps(
-      page,
-      m.browser_steps ?? [],
-      Math.min(deadline, Date.now() + (m.step_budget_ms ?? 20000)),
-      privateValues,
-    );
+    const skipStepsForErrorPage = Boolean(m.monitor_http_error_pages && initialStatus >= 400);
+    let stepWarning;
+    let stepsSkippedForErrorPage = skipStepsForErrorPage;
+    if (!skipStepsForErrorPage) {
+      try {
+        stepWarning = await runSteps(
+          page,
+          m.browser_steps ?? [],
+          Math.min(deadline, Date.now() + (m.step_budget_ms ?? 20000)),
+          privateValues,
+        );
+      } catch (error) {
+        if (!(error instanceof StepFailure && m.monitor_http_error_pages && (statusObserver.value() ?? initialStatus) >= 400))
+          throw error;
+        stepsSkippedForErrorPage = true;
+      }
+    }
+    const warning = stepsSkippedForErrorPage && (m.browser_steps?.length ?? 0) > 0
+      ? "browser_steps_skipped_http_error"
+      : warningCode(stepWarning);
+    const navigationStatus = statusObserver.value() ?? initialStatus;
     enterStage("attention_detection");
     // One bounded DOM round-trip instead of three independent title/locator calls.
     const attentionSignals = await page.evaluate(() => ({
@@ -437,11 +450,12 @@ export async function capture(
       attentionSignals.password,
       attentionSignals.challenge,
     );
-    if (attention && !(m.monitor_http_error_pages && navigationStatus >= 400 && !(attention instanceof AttentionFailure))) throw attention;
-    if (m.cookie_banner_handling) {
-      const dismiss = page.locator('[id*="reject" i], [class*="reject" i], [aria-label*="reject" i], [data-testid*="reject" i]').first();
-      await dismiss.click({ timeout: Math.min(1500, Math.max(1, deadline - Date.now())) }).catch(() => {});
-    }
+    if (attention instanceof AttentionFailure) throw attention;
+    if (attention && !m.monitor_http_error_pages) throw attention;
+    if (navigationStatus >= 400 && !m.monitor_http_error_pages)
+      throw new HttpError(422, "Website returned an unsuccessful HTTP response");
+    if (m.cookie_banner_handling)
+      await dismissCookieConsent(page, deadline, m.browser_steps);
     if (m.wait_before_capture_ms) await page.waitForTimeout(Math.min(m.wait_before_capture_ms, Math.max(1, deadline - Date.now())));
     // Font readiness can wait for third-party font downloads until the global
     // capture deadline. Text-only monitors compare DOM text, so font rasterization

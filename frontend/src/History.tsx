@@ -229,7 +229,11 @@ export function History({ id, refresh }: { id: string; refresh: number }) {
                 <Tag>Visual: {percent(e.visual_percent)}</Tag>
               )}
               {e.text_changed && <Tag color="blue">Text changed</Tag>}
+              {e.http_status && <Tag color={e.http_status >= 400 ? "red" : "green"}>HTTP {e.http_status}</Tag>}
             </Space>
+            {e.http_status_changed && (
+              <Alert showIcon type="warning" title={`HTTP status changed: ${e.before_http_status ?? "unknown"} → ${e.http_status}`} description="The page capture succeeded, but the origin health status changed." />
+            )}
             {e.dimension_changed && (
               <Alert
                 showIcon

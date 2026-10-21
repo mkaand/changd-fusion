@@ -10,6 +10,7 @@ import {
   Typography,
   Alert,
 } from "antd";
+import { RegionPicker, type VisualBrowserStep } from "./RegionPicker";
 export const stepActions = [
   "wait_selector",
   "wait_visible",
@@ -185,7 +186,11 @@ function StepFields({ name, form }: { name: number; form: any }) {
     </>
   );
 }
-export function BrowserStepsEditor({ form }: { form: any }) {
+export function BrowserStepsEditor({ form, monitorId, onOpenMobileStep }: { form: any; monitorId?: string; onOpenMobileStep?: () => void }) {
+  const appendVisualStep = (step: VisualBrowserStep) => {
+    const steps = [...(form.getFieldValue("browser_steps") ?? [])];
+    if (steps.length < 20) form.setFieldValue("browser_steps", [...steps, step]);
+  };
   return (
     <section aria-label="Browser steps">
       <Typography.Title level={4}>Browser Steps</Typography.Title>
@@ -197,6 +202,7 @@ export function BrowserStepsEditor({ form }: { form: any }) {
       <Form.Item name="step_budget_ms" label="Workflow budget (ms)">
         <InputNumber min={100} max={60000} />
       </Form.Item>
+      <RegionPicker purpose="step" monitorId={monitorId} getDraft={() => form.getFieldsValue(true)} onRequestMobile={onOpenMobileStep} onAddStep={appendVisualStep} onSelect={() => {}} onUseViewport={() => {}} />
       <Form.List
         name="browser_steps"
         rules={[

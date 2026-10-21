@@ -80,6 +80,31 @@ it("history explains dimension changes without displaying a fabricated percentag
   expect(screen.queryByText("Visual: 100%")).not.toBeInTheDocument();
 });
 
+it("distinguishes a successful capture from an unhealthy HTTP status transition", async () => {
+  vi.mocked(api).mockResolvedValue({
+    items: [
+      {
+        id: "http-transition",
+        status: "changed",
+        created_at: "2026-01-01",
+        visual_percent: null,
+        http_status: 403,
+        before_http_status: 200,
+        http_status_changed: true,
+      },
+    ],
+    total: 1,
+  });
+  render(<History id="fixture" refresh={0} />);
+  expect(await screen.findByText("HTTP 403")).toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "HTTP status changed: 200 → 403",
+  );
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "capture succeeded, but the origin health status changed",
+  );
+});
+
 it("groups monitoring history content for consistent mobile spacing", async () => {
   vi.mocked(api).mockResolvedValue({ items: [], total: 0 } as never);
   render(<History id="fixture" refresh={0} />);
