@@ -2248,6 +2248,73 @@ test("capture modes use one browser page for text and image; limits, selector er
   }
 });
 
+test("full-page capture measures the active mobile viewport without inflating resource preflight", async (t) => {
+  const fixture = managedServer(t, (req, res) => {
+    const pages: Record<string, { height: number; wide?: boolean }> = {
+      "/mobile": { height: 844 },
+      "/mobile-long": { height: 2000 },
+      "/mobile-oversized": { height: 4000 },
+      "/mobile-too-wide": { height: 844, wide: true },
+      "/desktop": { height: 900 },
+    };
+    const page = pages[req.url ?? ""];
+    if (!page) return void res.writeHead(404).end();
+    res.setHeader("Content-Type", "text/html");
+    res.end(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><style>html,body{margin:0;padding:0}#surface{width:${page.wide ? "4097px" : "100vw"};height:${page.height}px;background:#246}</style><main id="surface">Fixture</main>`);
+  });
+  await listenServer(fixture);
+  const port = (fixture.address() as AddressInfo).port;
+  const policy = new EgressPolicy(
+    async () => [{ address: "127.0.0.1", family: 4 }],
+    (ip) => ip === "127.0.0.1",
+    new Set([port]),
+  );
+  const mobileLimits = { ...cfg, MAX_CAPTURE_PIXELS: 1_200_000 };
+  const base = {
+    ...monitor,
+    url: `http://fixture.test:${port}/mobile`,
+    text_enabled: false,
+    visual_enabled: true,
+    capture_mode: "full_page" as const,
+    selector: "",
+    selector_type: "css" as const,
+    capture_selector: "",
+    ignore_selectors: [],
+    mask_selectors: [],
+    ignore_text: [],
+    normalize_whitespace: true,
+    ignore_case: false,
+    mobile_view: true,
+  };
+  const dimensions = (result: Awaited<ReturnType<typeof capture>>) => {
+    const png = PNG.sync.read(result.screenshot!);
+    return { width: png.width, height: png.height };
+  };
+  try {
+    assert.deepEqual(dimensions(await capture(base, mobileLimits, policy)), { width: 390, height: 844 });
+    assert.deepEqual(
+      dimensions(await capture({ ...base, url: `http://fixture.test:${port}/mobile-long` }, mobileLimits, policy)),
+      { width: 390, height: 2000 },
+      "a valid long mobile page stays below its real pixel budget",
+    );
+    await assert.rejects(
+      capture({ ...base, url: `http://fixture.test:${port}/mobile-oversized` }, mobileLimits, policy),
+      (error: any) => error instanceof CaptureFailure && /image dimension\/pixel limits/.test(error.message),
+    );
+    await assert.rejects(
+      capture({ ...base, url: `http://fixture.test:${port}/mobile-too-wide` }, cfg, policy),
+      (error: any) => error instanceof CaptureFailure && /image dimension\/pixel limits/.test(error.message),
+    );
+    assert.deepEqual(
+      dimensions(await capture({ ...base, url: `http://fixture.test:${port}/desktop`, mobile_view: false }, mobileLimits, policy)),
+      { width: 1280, height: 900 },
+      "desktop full-page capture retains its 1280 × 900 viewport minimum",
+    );
+  } finally {
+    await closeServer(fixture);
+  }
+});
+
 test("worker concurrency follows configured browser limit and stopping prevents new captures", async () => {
   const ids: string[] = [];
   try {

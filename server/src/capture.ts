@@ -573,12 +573,12 @@ export async function capture(
                 width: Math.max(
                   document.documentElement.scrollWidth,
                   document.body.scrollWidth,
-                  1280,
+                  window.innerWidth,
                 ),
                 height: Math.max(
                   document.documentElement.scrollHeight,
                   document.body.scrollHeight,
-                  900,
+                  window.innerHeight,
                 ),
               }))
             : viewport;
