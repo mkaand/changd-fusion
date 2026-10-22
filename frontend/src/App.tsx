@@ -234,7 +234,7 @@ export default function FusionApp() {
     editorDraftRef.current = nextDraft;
     restoreEditorDraft(nextDraft);
     setPage("editor");
-    if (["/jobs/editor/region-picker", "/jobs/editor/area-picker", "/jobs/editor/text-picker"].includes(location.pathname) && history.length > 1) history.back();
+    if (["/jobs/editor/region-picker", "/jobs/editor/area-picker", "/jobs/editor/text-picker", "/jobs/editor/step-picker"].includes(location.pathname) && history.length > 1) history.back();
     else history.replaceState(null, "", "/jobs/editor");
   };
   useEffect(() => {
@@ -242,6 +242,7 @@ export default function FusionApp() {
       if (location.pathname === "/jobs/editor/region-picker" && open) setPage("region-picker");
       else if (location.pathname === "/jobs/editor/area-picker" && open) setPage("area-picker");
       else if (location.pathname === "/jobs/editor/text-picker" && open) setPage("text-picker");
+      else if (location.pathname === "/jobs/editor/step-picker" && open) setPage("step-picker");
       else if (location.pathname === "/jobs/editor" && open) setPage("editor");
       else if (location.pathname.startsWith("/jobs/editor")) { setPage("jobs"); history.replaceState(null, "", "/jobs"); }
       else if (location.pathname === "/jobs") setPage("jobs");
@@ -461,7 +462,7 @@ export default function FusionApp() {
             {page === "editor" && compactLayout && open ? (
               <section className="mobile-monitor-editor" aria-label={editing ? "Edit monitor" : "New monitor"}>
                 <div className="mobile-editor-header"><Button type="text" onClick={() => { setOpen(false); navigate("jobs"); }}>← Back</Button><Typography.Title level={3}>{editing ? "Edit monitor" : "New monitor"}</Typography.Title></div>
-                <MonitorForm form={form} channels={channels} monitorId={editing?.id} advancedOpen={advancedOpen} setAdvancedOpen={setAdvancedOpen} useDefaults={false} onOpenMobileRegion={() => { editorDraftRef.current = form.getFieldsValue(true); setPage("region-picker"); history.pushState(null, "", "/jobs/editor/region-picker"); }} onOpenMobileArea={() => { editorDraftRef.current = form.getFieldsValue(true); setPage("area-picker"); history.pushState(null, "", "/jobs/editor/area-picker"); }} onOpenMobileText={() => { editorDraftRef.current = form.getFieldsValue(true); setPage("text-picker"); history.pushState(null, "", "/jobs/editor/text-picker"); }} />
+                <MonitorForm form={form} channels={channels} monitorId={editing?.id} advancedOpen={advancedOpen} setAdvancedOpen={setAdvancedOpen} useDefaults={false} onOpenMobileRegion={() => { editorDraftRef.current = form.getFieldsValue(true); setPage("region-picker"); history.pushState(null, "", "/jobs/editor/region-picker"); }} onOpenMobileArea={() => { editorDraftRef.current = form.getFieldsValue(true); setPage("area-picker"); history.pushState(null, "", "/jobs/editor/area-picker"); }} onOpenMobileText={() => { editorDraftRef.current = form.getFieldsValue(true); setPage("text-picker"); history.pushState(null, "", "/jobs/editor/text-picker"); }} onOpenMobileStep={() => { editorDraftRef.current = form.getFieldsValue(true); setPage("step-picker"); history.pushState(null, "", "/jobs/editor/step-picker"); }} />
                 <div className="mobile-editor-actions"><Button onClick={() => { setOpen(false); navigate("jobs"); }}>Cancel</Button><Button type="primary" loading={saving} onClick={save}>Save monitor</Button></div>
               </section>
             ) : page === "region-picker" && compactLayout && open ? (
@@ -470,6 +471,8 @@ export default function FusionApp() {
               <SelectedAreaPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onApply={(capture_area) => { returnToEditor({ capture_mode: "selected_area", capture_area }); void message.success("Area applied to the editor. Save the monitor to persist it."); }} onBackMobile={() => returnToEditor()} />
             ) : page === "text-picker" && compactLayout && open ? (
               <TextPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onApply={(rule) => { returnToEditor({ extraction_mode: "selected_text", extraction_rule: rule }); void message.success("Selection applied to the editor. Save the monitor to persist it."); }} onBackMobile={() => returnToEditor()} />
+            ) : page === "step-picker" && compactLayout && open ? (
+              <RegionPicker purpose="step" mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onSelect={() => {}} onUseViewport={() => {}} onAddStep={(step) => { const draft = editorDraftRef.current ?? form.getFieldsValue(true); const steps = [...((draft.browser_steps as unknown[]) ?? []), step].slice(0, 20); const next = { ...draft, browser_steps: steps }; editorDraftRef.current = next; form.setFieldValue("browser_steps", steps); }} onBackMobile={() => returnToEditor()} />
             ) : page === "timeline" ? (
               <Timeline monitors={monitors} />
             ) : page === "analytics" ? (
@@ -521,6 +524,7 @@ export default function FusionApp() {
                     {current.visual_enabled && (
                       <Tag>{current.capture_mode.replace("_", " ")}</Tag>
                     )}
+                    {current.last_http_status && <Tag color={current.last_http_status >= 400 ? "red" : "green"}>HTTP {current.last_http_status}</Tag>}
                     <span>Every {current.interval_seconds}s</span>
                   </Space>
                   <div className="monitor-detail-url-row"><Typography.Paragraph className="monitor-url">{current.url}</Typography.Paragraph><MonitorUrlActions url={current.url} message={message} /></div>
@@ -661,6 +665,7 @@ export default function FusionApp() {
                               {monitorState(m).replaceAll("_", " ")}
                             </Tag>
                             {m.warning_code && <Tag color="gold">Warning</Tag>}
+                            {m.last_http_status && <Tag color={m.last_http_status >= 400 ? "red" : "green"}>HTTP {m.last_http_status}</Tag>}
                           </Space>
                           <dl className="monitor-card-meta">
                             <div><dt>Last checked</dt><dd>{m.last_run ? new Date(m.last_run).toLocaleString() : "Never"}</dd></div>
@@ -749,6 +754,7 @@ export default function FusionApp() {
                               {monitorState(m).replaceAll("_", " ")}
                             </Tag>
                             {m.warning_code && <Tag color="gold">Warning</Tag>}
+                            {m.last_http_status && <Tag color={m.last_http_status >= 400 ? "red" : "green"}>HTTP {m.last_http_status}</Tag>}
                           </Space>
                         ),
                       },

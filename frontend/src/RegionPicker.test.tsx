@@ -58,6 +58,36 @@ it("zooms without selecting and maps a click to original preview coordinates", a
   ));
 });
 
+it("maps mobile preview taps against the returned 390 by 844 viewport", async () => {
+  vi.mocked(api)
+    .mockResolvedValueOnce({ session_id: "00000000-0000-4000-8000-000000000099", image: "aGVsbG8=", width: 390, height: 844, selection: null })
+    .mockResolvedValueOnce({ session_id: "00000000-0000-4000-8000-000000000099", image: "aGVsbG8=", width: 390, height: 844, selection: { selector: "#mobile", x: 195, y: 422, width: 40, height: 40 } });
+  render(<RegionPicker mobilePage getDraft={() => ({ ...draft, mobile_view: true })} onSelect={vi.fn()} onUseViewport={vi.fn()} />);
+  const image = await screen.findByAltText("Secure monitor preview");
+  Object.defineProperty(image, "getBoundingClientRect", { value: () => ({ left: 10, top: 20, width: 195, height: 422 }) });
+  fireEvent.pointerDown(image, { pointerId: 12, pointerType: "touch", clientX: 107.5, clientY: 231 });
+  fireEvent.pointerUp(image.closest(".region-preview-canvas")!, { pointerId: 12, pointerType: "touch", clientX: 107.5, clientY: 231 });
+  await waitFor(() => expect(api).toHaveBeenLastCalledWith(
+    "/region-preview",
+    "POST",
+    expect.objectContaining({ point: { x: 195, y: 422 } }),
+    expect.anything(),
+  ));
+});
+
+it("builds a CSS browser step from Preview without enabling visual detection", async () => {
+  const onAddStep = vi.fn();
+  vi.mocked(api).mockResolvedValue({ session_id: "00000000-0000-4000-8000-000000000099", image: "aGVsbG8=", width: 1280, height: 900, http_status: 403, selection: { selector: "#reject-cookies", label: "Exact: button", x: 20, y: 20, width: 120, height: 44 } });
+  render(<RegionPicker purpose="step" getDraft={() => ({ ...draft, visual_enabled: false })} onAddStep={onAddStep} onSelect={vi.fn()} onUseViewport={vi.fn()} />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Add step from Preview" }));
+  expect(await screen.findByText("HTTP 403 error page")).toBeInTheDocument();
+  expect(screen.getByRole("switch", { name: "Optional browser step" })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "Add step to draft" }));
+  expect(onAddStep).toHaveBeenCalledWith({ action: "click", selector: "#reject-cookies", selector_type: "css", timeout_ms: 5000, continue_on_error: false });
+  expect(screen.getByText("Step added to the unsaved draft")).toBeInTheDocument();
+});
+
 it("does not select while panning, after pointer cancellation, or twice while a selection is pending", async () => {
   let resolveSelection!: (value: unknown) => void;
   vi.mocked(api)

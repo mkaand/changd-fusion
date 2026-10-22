@@ -130,7 +130,7 @@ test("fresh migration is repeatable and decimal columns are NUMERIC", async () =
   );
   assert.equal(Number((await pool.query("SELECT count(*) FROM fusion_migrations")).rows[0].count), expectedMigrationCount);
 });
-test("migration 013 to 014 preserves existing monitors, baselines, and history", async () => {
+test("migration 013 through current preserves existing monitors, baselines, and history", async () => {
   const name = "fusion_upgrade_014_" + randomUUID().replaceAll("-", "");
   const url = new URL(dbURL);
   url.pathname = "/" + name;
@@ -156,18 +156,23 @@ test("migration 013 to 014 preserves existing monitors, baselines, and history",
     await upgrade.query("INSERT INTO users(user_id,email,password) VALUES('upgrade-owner','upgrade@example.com','synthetic-hash')");
     const full = (await upgrade.query("INSERT INTO fusion_monitors(user_id,name,url,kind,text_source,extraction_mode) VALUES('upgrade-owner','Existing full text','https://example.com/full','browser','direct','full_text') RETURNING id")).rows[0];
     const selected = (await upgrade.query("INSERT INTO fusion_monitors(user_id,name,url,kind,text_source,extraction_mode,extraction_rule) VALUES('upgrade-owner','Existing selected text','https://example.com/selected','browser','jina','selected_text',$1::jsonb) RETURNING id", [JSON.stringify({ version: 1, kind: "bounded_context", before: "Before", after: "After", max_length: 80 })])).rows[0];
+    await upgrade.query("UPDATE fusion_monitors SET notify_failures=true WHERE id=$1", [selected.id]);
     const baseline = randomUUID();
     await upgrade.query("INSERT INTO fusion_captures(id,monitor_id,text_content) VALUES($1,$2,'Preserved baseline')", [baseline, full.id]);
     await upgrade.query("UPDATE fusion_monitors SET baseline_id=$2,latest_capture_id=$2 WHERE id=$1", [full.id, baseline]);
     await upgrade.query("INSERT INTO fusion_events(monitor_id,after_id,status) VALUES($1,$2,'baseline')", [full.id, baseline]);
     await migrate(upgrade);
     await migrate(upgrade);
-    const rows = (await upgrade.query("SELECT id,extraction_mode,extraction_rule,keyword,capture_area,capture_timeout_ms,baseline_id,latest_capture_id FROM fusion_monitors ORDER BY name")).rows;
+    const rows = (await upgrade.query("SELECT id,extraction_mode,extraction_rule,keyword,capture_area,capture_timeout_ms,baseline_id,latest_capture_id,monitor_http_error_pages,failure_alert_mode,last_http_status FROM fusion_monitors ORDER BY name")).rows;
     assert.equal(rows.length, 2);
     assert.deepEqual(rows.map((row) => row.extraction_mode).sort(), ["full_text", "selected_text"]);
     assert.ok(rows.every((row) => row.keyword === null));
     assert.ok(rows.every((row) => row.capture_area === null));
     assert.ok(rows.every((row) => row.capture_timeout_ms === null));
+    assert.ok(rows.every((row) => row.monitor_http_error_pages === false));
+    assert.ok(rows.every((row) => row.last_http_status === null));
+    assert.equal(rows.find((row) => row.id === full.id)?.failure_alert_mode, "off");
+    assert.equal(rows.find((row) => row.id === selected.id)?.failure_alert_mode, "first_or_persistent");
     assert.equal(rows.find((row) => row.id === full.id)?.baseline_id, baseline);
     assert.equal(rows.find((row) => row.id === full.id)?.latest_capture_id, baseline);
     assert.equal(rows.find((row) => row.id === selected.id)?.extraction_rule.kind, "bounded_context");
@@ -1221,6 +1226,40 @@ test("dimension events persist explicit sizes, preserve both images, advance bas
   );
 });
 
+test("HTTP status-only transitions advance history and notify independently of text direction", async () => {
+  const monitor = (
+    await ownerAgent
+      .post("/api/v1/jobs")
+      .set("X-Fusion-Request", "1")
+      .send({
+        name: "HTTP status fixture",
+        url: "https://example.com/status",
+        monitor_http_error_pages: true,
+        text_direction: "removed",
+        channel_ids: [channelId],
+      })
+      .expect(201)
+  ).body;
+  const take = (http_status: number) => runMonitor(pool, cfg, monitor.id, {
+    force: true,
+    capture: async () => ({ text: "stable content", screenshot: null, http_status }),
+  });
+  await take(200);
+  await take(403);
+  await take(200);
+  const history = (await ownerAgent.get(`/api/v1/jobs/${monitor.id}/history`).expect(200)).body;
+  const changed = history.filter((event: any) => event.status === "changed");
+  assert.equal(changed.length, 2);
+  assert.deepEqual(changed.map((event: any) => event.http_status).sort(), [200, 403]);
+  assert.ok(changed.every((event: any) => event.http_status_changed && event.text_changed === false));
+  assert.ok(changed.some((event: any) => event.before_http_status === 200 && event.http_status === 403));
+  assert.ok(changed.some((event: any) => event.before_http_status === 403 && event.http_status === 200));
+  assert.ok(changed.every((event: any) => event.notification_state !== "direction_filtered"));
+  assert.equal((await pool.query("SELECT count(*) FROM fusion_outbox o JOIN fusion_events e ON e.id=o.event_id WHERE e.monitor_id=$1", [monitor.id])).rows[0].count, "2");
+  const stored = (await ownerAgent.get(`/api/v1/jobs/${monitor.id}`).expect(200)).body;
+  assert.equal(stored.last_http_status, 200);
+});
+
 test("browser smoke: sign in, monitor history, decimal display, image comparison and mobile layout", async (t) => {
   const { chromium } = await import("playwright");
   const { readFile } = await import("node:fs/promises");
@@ -1390,11 +1429,11 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     const output = process.env.UI_SCREENSHOT_DIR ?? root;
     await mkdir(output, { recursive: true });
     await page
-      .getByRole("button", { name: "Hybrid fixture", exact: true })
-      .waitFor();
-    await page
       .getByRole("searchbox", { name: "Search monitors" })
       .fill("Hybrid fixture");
+    await page
+      .getByRole("button", { name: "Hybrid fixture", exact: true })
+      .waitFor();
     assert.equal(
       await page
         .getByRole("button", { name: "Dimension fixture", exact: true })
@@ -1517,8 +1556,11 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
         assert.ok(layout.tokens.every((token) => token.lines === 1 && token.width > 20 && token.wordBreak === "normal" && token.whiteSpace === "nowrap"), `Application metadata tokens do not split character-by-character at ${width}px in ${theme} theme`);
       }
     }
-    await page.getByRole("link", { name: /^Commit [0-9a-f]{40}$/i }).waitFor();
-    assert.match(await page.getByRole("link", { name: /^Commit [0-9a-f]{40}$/i }).getAttribute("href") ?? "", /^https:\/\/github\.com\/mkaand\/changd-fusion\/commit\/[0-9a-f]{40}$/i);
+    const commitLink = page.getByRole("link", { name: /^Commit [0-9a-f]{40}$/i });
+    if (await commitLink.count())
+      assert.match(await commitLink.getAttribute("href") ?? "", /^https:\/\/github\.com\/mkaand\/changd-fusion\/commit\/[0-9a-f]{40}$/i);
+    else
+      assert.ok(await applicationMetadata.getByText("Unavailable", { exact: true }).count(), "missing build metadata has a safe fallback");
     const sourcePr = page.getByRole("link", { name: /^#\d+$/ });
     if (await sourcePr.count())
       assert.match(await sourcePr.getAttribute("href") ?? "", /^https:\/\/github\.com\/mkaand\/changd-fusion\/pull\/\d+$/);
@@ -1540,7 +1582,7 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await page.getByText("Successful captures", { exact: true }).waitFor();
     assert.ok(await page.getByRole("img", { name: "Daily capture event trend" }).count());
     await page.getByText("Monitors", { exact: true }).first().click();
-    await page.getByRole("searchbox", { name: "Search monitors" }).fill("");
+    await page.getByRole("searchbox", { name: "Search monitors" }).fill("Hybrid fixture");
     await page
       .getByRole("button", { name: "Hybrid fixture", exact: true })
       .click();
@@ -1656,6 +1698,10 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
       );
     }
     await page.setViewportSize({ width: 390, height: 844 });
+    // The monitor-list search intentionally survives navigation and polling.
+    // Clear the earlier Hybrid fixture filter before selecting this fixture.
+    await page.getByRole("searchbox", { name: "Search monitors" }).fill("");
+    await page.getByRole("button", { name: "Dimension fixture", exact: true }).waitFor();
     await page
       .getByRole("button", { name: "Dimension fixture", exact: true })
       .click();
@@ -2202,6 +2248,73 @@ test("capture modes use one browser page for text and image; limits, selector er
   }
 });
 
+test("full-page capture measures the active mobile viewport without inflating resource preflight", async (t) => {
+  const fixture = managedServer(t, (req, res) => {
+    const pages: Record<string, { height: number; wide?: boolean }> = {
+      "/mobile": { height: 844 },
+      "/mobile-long": { height: 2000 },
+      "/mobile-oversized": { height: 4000 },
+      "/mobile-too-wide": { height: 844, wide: true },
+      "/desktop": { height: 900 },
+    };
+    const page = pages[req.url ?? ""];
+    if (!page) return void res.writeHead(404).end();
+    res.setHeader("Content-Type", "text/html");
+    res.end(`<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><style>html,body{margin:0;padding:0}#surface{width:${page.wide ? "4097px" : "100vw"};height:${page.height}px;background:#246}</style><main id="surface">Fixture</main>`);
+  });
+  await listenServer(fixture);
+  const port = (fixture.address() as AddressInfo).port;
+  const policy = new EgressPolicy(
+    async () => [{ address: "127.0.0.1", family: 4 }],
+    (ip) => ip === "127.0.0.1",
+    new Set([port]),
+  );
+  const mobileLimits = { ...cfg, MAX_CAPTURE_PIXELS: 1_200_000 };
+  const base = {
+    ...monitor,
+    url: `http://fixture.test:${port}/mobile`,
+    text_enabled: false,
+    visual_enabled: true,
+    capture_mode: "full_page" as const,
+    selector: "",
+    selector_type: "css" as const,
+    capture_selector: "",
+    ignore_selectors: [],
+    mask_selectors: [],
+    ignore_text: [],
+    normalize_whitespace: true,
+    ignore_case: false,
+    mobile_view: true,
+  };
+  const dimensions = (result: Awaited<ReturnType<typeof capture>>) => {
+    const png = PNG.sync.read(result.screenshot!);
+    return { width: png.width, height: png.height };
+  };
+  try {
+    assert.deepEqual(dimensions(await capture(base, mobileLimits, policy)), { width: 390, height: 844 });
+    assert.deepEqual(
+      dimensions(await capture({ ...base, url: `http://fixture.test:${port}/mobile-long` }, mobileLimits, policy)),
+      { width: 390, height: 2000 },
+      "a valid long mobile page stays below its real pixel budget",
+    );
+    await assert.rejects(
+      capture({ ...base, url: `http://fixture.test:${port}/mobile-oversized` }, mobileLimits, policy),
+      (error: any) => error instanceof CaptureFailure && /image dimension\/pixel limits/.test(error.message),
+    );
+    await assert.rejects(
+      capture({ ...base, url: `http://fixture.test:${port}/mobile-too-wide` }, cfg, policy),
+      (error: any) => error instanceof CaptureFailure && /image dimension\/pixel limits/.test(error.message),
+    );
+    assert.deepEqual(
+      dimensions(await capture({ ...base, url: `http://fixture.test:${port}/desktop`, mobile_view: false }, mobileLimits, policy)),
+      { width: 1280, height: 900 },
+      "desktop full-page capture retains its 1280 × 900 viewport minimum",
+    );
+  } finally {
+    await closeServer(fixture);
+  }
+});
+
 test("worker concurrency follows configured browser limit and stopping prevents new captures", async () => {
   const ids: string[] = [];
   try {
@@ -2329,7 +2442,7 @@ test("browser steps execute cookie dismissal, dropdown, form fill, CSS/XPath wai
     cfg,
     policy,
   );
-  assert.equal(optional.warning, "optional_step_failed");
+  assert.equal(optional.warning, "optional_step_failed:1:wait_visible:step_timeout");
   await assert.rejects(
     capture(
       {
@@ -2379,6 +2492,89 @@ test("browser steps execute cookie dismissal, dropdown, form fill, CSS/XPath wai
     ),
     /Browser step/,
   );
+});
+
+test("HTTP error-page monitoring preserves final status, skips unavailable steps and uses viewport fallback", async (t) => {
+  const requests = new Map<string, number>();
+  const fixture = managedServer(t, (req, res) => {
+    const path = req.url ?? "/";
+    requests.set(path, (requests.get(path) ?? 0) + 1);
+    if (path === "/start") {
+      res.end(`<button id="go" onclick="location.href='/403'">Continue</button><main>healthy</main>`);
+      return;
+    }
+    if (path === "/challenge") {
+      res.statusCode = 403;
+      res.end(`<title>Verify you are human</title><div class="cf-challenge">Synthetic challenge</div>`);
+      return;
+    }
+    if (path === "/login") {
+      res.statusCode = 401;
+      res.end(`<title>Sign in</title><input type="password">`);
+      return;
+    }
+    const status = Number(path.slice(1));
+    res.statusCode = Number.isInteger(status) ? status : 200;
+    res.end(`<main style="width:200px;height:100px;background:rgb(20,40,60)">HTTP ${res.statusCode} fixture</main>`);
+  });
+  await listenServer(fixture);
+  const port = (fixture.address() as AddressInfo).port;
+  const policy = new EgressPolicy(async () => [{ address: "127.0.0.1", family: 4 }], () => true, new Set([port]));
+  const url = (path: string) => `http://127.0.0.1:${port}${path}`;
+
+  for (const status of [403, 404, 429, 500]) {
+    const result = await capture({
+      ...monitor,
+      url: url(`/${status}`),
+      monitor_http_error_pages: true,
+      visual_enabled: true,
+      capture_mode: "element",
+      capture_selector: "#missing-on-error-page",
+      browser_steps: [{ action: "wait_visible", selector: "#missing-on-error-page", timeout_ms: 100 }],
+    } as any, cfg, policy);
+    assert.equal(result.http_status, status);
+    assert.equal(result.warning, "browser_steps_skipped_http_error");
+    assert.equal(PNG.sync.read(result.screenshot!).width, 1280);
+    assert.equal(PNG.sync.read(result.screenshot!).height, 900);
+    assert.match(result.text ?? "", new RegExp(`HTTP ${status}`));
+  }
+  assert.equal(requests.get("/429"), 1, "HTTP 429 is observed once and never retried");
+  await assert.rejects(
+    capture({ ...monitor, url: url("/403"), monitor_http_error_pages: false } as any, cfg, policy),
+    /unsuccessful|Access denied/i,
+  );
+  await assert.rejects(
+    capture({ ...monitor, url: url("/challenge"), monitor_http_error_pages: true } as any, cfg, policy),
+    (error: any) => error?.state === "challenge_detected",
+  );
+  await assert.rejects(
+    capture({ ...monitor, url: url("/login"), monitor_http_error_pages: true } as any, cfg, policy),
+    (error: any) => error?.state === "authentication_required",
+  );
+
+  const navigated = await capture({
+    ...monitor,
+    url: url("/start"),
+    monitor_http_error_pages: true,
+    browser_steps: [
+      { action: "click", selector: "#go", timeout_ms: 2000 },
+      { action: "wait_navigation", path: "/403", timeout_ms: 2000 },
+      { action: "wait_visible", selector: "#not-on-error-page", timeout_ms: 100 },
+    ],
+  } as any, cfg, policy);
+  assert.equal(navigated.http_status, 403);
+  assert.equal(navigated.warning, "browser_steps_skipped_http_error");
+
+  const areaFallback = await capture({
+    ...monitor,
+    url: url("/500"),
+    monitor_http_error_pages: true,
+    visual_enabled: true,
+    capture_mode: "selected_area",
+    capture_area: { x: 10, y: 10, width: 32, height: 32 },
+  } as any, cfg, policy);
+  const dimensions = PNG.sync.read(areaFallback.screenshot!);
+  assert.deepEqual({ width: dimensions.width, height: dimensions.height }, { width: 1280, height: 900 });
 });
 
 test("browser challenge fixtures distinguish denied, login and heuristic CAPTCHA without solving", async (t) => {
@@ -2643,7 +2839,7 @@ test("private vault is write-only, owner-bound and expiring; missing values pres
     .expect(400);
 });
 
-test("failure state transitions preserve captures, back off and notify once per persistent or challenge state", async () => {
+test("failure state transitions preserve captures, back off and honor the legacy first-or-persistent alert policy", async () => {
   const { AttentionFailure } = await import("../../src/attention.js");
   const m = (
     await ownerAgent
@@ -2694,7 +2890,10 @@ test("failure state transitions preserve captures, back off and notify once per 
         [m.id],
       )
     ).rows[0].count;
-  assert.equal(await count(), "1");
+  // Legacy notify_failures=true migrates to first_or_persistent: the first
+  // failure and the transition to persistent failure each enter the existing
+  // notification pipeline exactly once.
+  assert.equal(await count(), "2");
   for (let i = 0; i < 2; i++)
     await runMonitor(pool, cfg, m.id, {
       force: true,
@@ -2712,7 +2911,7 @@ test("failure state transitions preserve captures, back off and notify once per 
   assert.equal(state.monitor_state, "challenge_detected");
   assert.equal(state.warning_code, "heuristic");
   assert.ok(state.next_run.getTime() - state.last_run.getTime() >= 900000);
-  assert.equal(await count(), "2");
+  assert.equal(await count(), "3");
   await runMonitor(pool, cfg, m.id, {
     force: true,
     capture: async () => ({ text: "baseline", screenshot: null }),
@@ -2723,6 +2922,71 @@ test("failure state transitions preserve captures, back off and notify once per 
   assert.equal(state.monitor_state, "unchanged");
   assert.equal(state.failure_count, 0);
   assert.equal(state.warning_code, null);
+});
+
+test("failure alert modes preserve mute/dedupe pipeline entry semantics", async () => {
+  const expected = new Map([["off", 0], ["first_or_persistent", 2], ["every", 3]] as const);
+  for (const [mode, notifications] of expected) {
+    const monitor = (await ownerAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({
+      name: `Failure mode ${mode}`,
+      url: "https://example.com",
+      failure_alert_mode: mode,
+      channel_ids: [channelId],
+    }).expect(201)).body;
+    for (let attempt = 0; attempt < 3; attempt++) {
+      await runMonitor(pool, cfg, monitor.id, { force: true, capture: async () => { throw new Error("synthetic capture failure"); } });
+    }
+    const count = Number((await pool.query("SELECT count(*) FROM fusion_outbox o JOIN fusion_events e ON e.id=o.event_id WHERE e.monitor_id=$1", [monitor.id])).rows[0].count);
+    assert.equal(count, notifications, mode);
+  }
+
+  const every = (await ownerAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({
+    name: "Every failure resets safely",
+    url: "https://example.com",
+    failure_alert_mode: "every",
+    channel_ids: [channelId],
+  }).expect(201)).body;
+  const failEvery = () => runMonitor(pool, cfg, every.id, { force: true, capture: async () => { throw new Error("every failure"); } });
+  await failEvery();
+  await runMonitor(pool, cfg, every.id, { force: true, capture: async () => ({ text: "recovered", screenshot: null }) });
+  await failEvery();
+  await failEvery();
+  await failEvery();
+  const everyEvents = (await pool.query("SELECT notification_state FROM fusion_events WHERE monitor_id=$1 AND status='failed' ORDER BY created_at,id", [every.id])).rows;
+  assert.deepEqual(everyEvents.map((event) => event.notification_state), ["queued", "queued", "queued", "queued"], "every failure remains deliverable after a success resets its ordinal");
+  assert.equal(Number((await pool.query("SELECT count(*) FROM fusion_outbox o JOIN fusion_events e ON e.id=o.event_id WHERE e.monitor_id=$1", [every.id])).rows[0].count), 4, "consecutive every-mode failures do not deduplicate");
+
+  const muted = (await ownerAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({
+    name: "Every failure muted",
+    url: "https://example.com",
+    failure_alert_mode: "every",
+    muted_until: new Date(Date.now() + 60_000).toISOString(),
+    channel_ids: [channelId],
+  }).expect(201)).body;
+  await runMonitor(pool, cfg, muted.id, { force: true, capture: async () => { throw new Error("every failure"); } });
+  assert.equal((await pool.query("SELECT notification_state FROM fusion_events WHERE monitor_id=$1 AND status='failed'", [muted.id])).rows[0].notification_state, "muted");
+
+  const cooldown = (await ownerAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({
+    name: "Every failure cooldown",
+    url: "https://example.com",
+    failure_alert_mode: "every",
+    notification_cooldown_seconds: 300,
+    channel_ids: [channelId],
+  }).expect(201)).body;
+  for (let attempt = 0; attempt < 2; attempt++) await runMonitor(pool, cfg, cooldown.id, { force: true, capture: async () => { throw new Error("every failure"); } });
+  assert.deepEqual((await pool.query("SELECT notification_state FROM fusion_events WHERE monitor_id=$1 AND status='failed' ORDER BY created_at,id", [cooldown.id])).rows.map((event) => event.notification_state), ["queued", "cooldown"]);
+
+  const digest = (await ownerAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({
+    name: "Every failure digest",
+    url: "https://example.com",
+    failure_alert_mode: "every",
+    notification_mode: "digest",
+    digest_window_seconds: 300,
+    channel_ids: [channelId],
+  }).expect(201)).body;
+  for (let attempt = 0; attempt < 2; attempt++) await runMonitor(pool, cfg, digest.id, { force: true, capture: async () => { throw new Error("every failure"); } });
+  assert.deepEqual((await pool.query("SELECT notification_state FROM fusion_events WHERE monitor_id=$1 AND status='failed' ORDER BY created_at,id", [digest.id])).rows.map((event) => event.notification_state), ["digest_pending", "digest_pending"]);
+  assert.equal((await pool.query("SELECT event_count FROM fusion_notification_digests WHERE monitor_id=$1", [digest.id])).rows[0].event_count, 2);
 });
 
 test("pagination, configuration resets, paused scheduling and delivery retry enforce ownership", async () => {
@@ -3587,6 +3851,46 @@ test("region preview applies the validated browser workflow before its screensho
   const preview = await previewRegion(monitored, cfg, { x: 200, y: 150 }, policy, { ownerId: "preview-steps-owner", retain: true });
   assert.equal(preview.selection?.selector, "#target", "preview selection sees the post-step DOM rather than the cookie overlay");
   assert.ok((preview.timings?.browser_steps ?? 0) >= 0, "workflow timing is separate from navigation timing");
+  await closeRegionPreviewSessions();
+});
+
+test("preview and capture share cookie, status, mobile viewport and stale-workflow semantics", async (t) => {
+  await closeRegionPreviewSessions();
+  const fixture = managedServer(t, (req, res) => {
+    if (req.url === "/error") {
+      res.statusCode = 403;
+      res.end(`<main id="error">Synthetic forbidden page</main>`);
+      return;
+    }
+    res.end(`<!doctype html><style>body{margin:0}#consent{position:fixed;inset:0;background:#fff;z-index:3}#target{position:absolute;left:40px;top:80px;width:180px;height:60px;background:#0f0}</style><div id="consent" role="dialog" aria-modal="true" aria-label="Cookie consent"><button id="reject-cookies" onclick="this.parentElement.remove()">Reject all</button></div><button id="reject-offer" onclick="document.querySelector('#target').remove()">Reject offer</button><main id="target">Consistent product state</main>`);
+  });
+  await listenServer(fixture);
+  const port = (fixture.address() as AddressInfo).port;
+  const policy = new EgressPolicy(async () => [{ address: "127.0.0.1", family: 4 }], () => true, new Set([port]));
+  const base = {
+    ...monitor,
+    id: randomUUID(),
+    url: `http://preview-parity.example:${port}/`,
+    cookie_banner_handling: true,
+    browser_steps: [],
+  } as any;
+  const preview = await previewRegion({ ...base, visual_enabled: true }, cfg, { x: 100, y: 100 }, policy, { ownerId: "parity-owner", retain: true });
+  assert.equal(preview.selection?.selector, "#target");
+  const scheduled = await capture({ ...base, text_enabled: true, visual_enabled: false, selector: "#target" }, cfg, policy);
+  assert.equal(scheduled.text, "Consistent product state", "unrelated Reject offer button is never clicked");
+
+  const mobile = await previewRegion({ ...base, visual_enabled: true, mobile_view: true }, cfg, { x: 100, y: 100 }, policy, { ownerId: "mobile-parity-owner", retain: true });
+  assert.deepEqual([mobile.width, mobile.height], [390, 844]);
+  assert.equal(mobile.selection?.selector, "#target");
+
+  const error = await previewRegion({ ...base, url: `http://preview-parity.example:${port}/error`, visual_enabled: true, monitor_http_error_pages: true, browser_steps: [{ action: "wait_visible", selector: "#missing", timeout_ms: 100 }] }, cfg, undefined, policy, { ownerId: "error-preview-owner", retain: false });
+  assert.equal(error.http_status, 403);
+  assert.equal(error.warning, "browser_steps_skipped_http_error");
+
+  await assert.rejects(
+    previewRegion({ ...base, visual_enabled: true, browser_steps: [{ action: "wait_visible", selector: "#target", timeout_ms: 1000 }] }, cfg, { x: 100, y: 100 }, policy, { ownerId: "parity-owner", id: preview.session_id, retain: true }),
+    (failure: any) => failure.status === 409 && failure.failure_code === "stale_configuration",
+  );
   await closeRegionPreviewSessions();
 });
 

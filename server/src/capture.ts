@@ -1,7 +1,7 @@
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright";
 import { EgressPolicy, browserProxy, safeFetch, type SafeFetchOptions } from "./egress.js";
 import { normalizeText } from "./comparison.js";
-import { locate, runSteps, type BrowserStep } from "./browser-steps.js";
+import { locate, runSteps, StepFailure, warningCode, type BrowserStep } from "./browser-steps.js";
 import { AttentionFailure, detectAttention } from "./attention.js";
 import {
   CaptureFailure,
@@ -17,6 +17,7 @@ import { effectiveCaptureTimeout } from "./capture-timeout.js";
 import { jinaReaderText } from "./jina-reader.js";
 import { applySelectedTextRule, readableJinaLines, type SelectedTextRule } from "./selected-text.js";
 import { captureAreaSchema, cropCaptureArea, type CaptureArea } from "./capture-area.js";
+import { browserViewport, dismissCookieConsent, installBrowserRouting, observeMainFrameStatus } from "./browser-experience.js";
 export type Monitor = {
   id: string;
   user_id: string;
@@ -47,6 +48,7 @@ export type Monitor = {
   paused?: boolean;
   monitor_state?: string;
   notify_failures?: boolean;
+  failure_alert_mode?: "off" | "first_or_persistent" | "every";
   notify_attention?: boolean;
   notification_enabled?: boolean;
   muted_until?: string | null;
@@ -61,10 +63,17 @@ export type Monitor = {
   browser_text_extraction_version?: number;
   failure_count: number;
   capture_timeout_ms?: number | null;
+  monitor_http_error_pages?: boolean;
+  disable_javascript?: boolean;
+  block_ads_trackers?: boolean;
+  cookie_banner_handling?: boolean;
+  wait_before_capture_ms?: 0 | 2000 | 5000 | 10000;
+  mobile_view?: boolean;
 };
 export type Capture = {
   text: string | null;
   screenshot: Buffer | null;
+  http_status?: number;
   warning?: string;
   // Numeric-only stage timings; the engine persists this bounded diagnostic
   // map without URLs, selectors, page content, or raw provider errors.
@@ -182,7 +191,7 @@ export async function elementCaptureViewportState(
   });
 }
 
-export async function navigateForCapture(page: Page, url: string, deadline: number) {
+export async function navigateForCapture(page: Page, url: string, deadline: number, allowHttpErrorPage = false) {
   // Inspect the final HTTP redirect response as soon as it commits. An error
   // document must not spend the capture budget loading scripts before rejection.
   // Successful documents still require DOMContentLoaded: commit alone is not
@@ -192,10 +201,11 @@ export async function navigateForCapture(page: Page, url: string, deadline: numb
     timeout: Math.max(1, deadline - Date.now()),
   });
   if (!response) throw Error("Capture navigation failed");
-  if (!response.ok())
+  if (!response.ok() && !allowHttpErrorPage)
     throw (detectAttention(response.status(), new URL(page.url()).pathname, "", false, false) ??
       new HttpError(422, "Website returned an unsuccessful HTTP response"));
   await page.waitForLoadState("domcontentloaded", { timeout: Math.max(1, deadline - Date.now()) });
+  return response.status();
 }
 
 export async function scrollCaptureRegion(region: Locator) {
@@ -370,9 +380,14 @@ export async function capture(
       proxy: { server: proxy.url, bypass: "<-loopback>" },
     });
     enterStage("browser_context");
+    const viewport = browserViewport(Boolean(m.mobile_view));
     const context = await browser.newContext({
-      viewport: { width: 1280, height: 900 },
+      viewport,
       deviceScaleFactor: 1,
+      javaScriptEnabled: !m.disable_javascript,
+      isMobile: Boolean(m.mobile_view),
+      hasTouch: Boolean(m.mobile_view),
+      userAgent: m.mobile_view ? "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1" : undefined,
       locale: "en-US",
       timezoneId: "UTC",
       reducedMotion: "reduce",
@@ -390,29 +405,37 @@ export async function capture(
     // connection time. Keep only the stricter same-origin rule needed by
     // private workflows; duplicating DNS validation for every normal request
     // adds avoidable navigation latency without strengthening egress safety.
-    if (privateWorkflow) await context.route("**/*", async (route) => {
-      try {
-        const requested = route.request().url();
-        if (new URL(requested).origin !== new URL(m.url).origin) throw Error();
-        await route.continue();
-      } catch { await route.abort("blockedbyclient"); }
+    await installBrowserRouting(context, m.url, {
+      privateWorkflow,
+      blockTrackers: Boolean(m.block_ads_trackers),
     });
-    await context.routeWebSocket("**/*", (ws) => ws.close());
     enterStage("navigation");
     const page = await context.newPage();
-    let navigationStatus = 200;
-    page.on("response", (r) => {
-      if (r.request().isNavigationRequest() && r.frame() === page.mainFrame())
-        navigationStatus = r.status();
-    });
-    await navigateForCapture(page, m.url, deadline);
+    const statusObserver = observeMainFrameStatus(page);
+    const initialStatus = await navigateForCapture(page, m.url, deadline, Boolean(m.monitor_http_error_pages));
+    statusObserver.setInitial(initialStatus);
     enterStage("browser_steps");
-    const warning = await runSteps(
-      page,
-      m.browser_steps ?? [],
-      Math.min(deadline, Date.now() + (m.step_budget_ms ?? 20000)),
-      privateValues,
-    );
+    const skipStepsForErrorPage = Boolean(m.monitor_http_error_pages && initialStatus >= 400);
+    let stepWarning;
+    let stepsSkippedForErrorPage = skipStepsForErrorPage;
+    if (!skipStepsForErrorPage) {
+      try {
+        stepWarning = await runSteps(
+          page,
+          m.browser_steps ?? [],
+          Math.min(deadline, Date.now() + (m.step_budget_ms ?? 20000)),
+          privateValues,
+        );
+      } catch (error) {
+        if (!(error instanceof StepFailure && m.monitor_http_error_pages && (statusObserver.value() ?? initialStatus) >= 400))
+          throw error;
+        stepsSkippedForErrorPage = true;
+      }
+    }
+    const warning = stepsSkippedForErrorPage && (m.browser_steps?.length ?? 0) > 0
+      ? "browser_steps_skipped_http_error"
+      : warningCode(stepWarning);
+    const navigationStatus = statusObserver.value() ?? initialStatus;
     enterStage("attention_detection");
     // One bounded DOM round-trip instead of three independent title/locator calls.
     const attentionSignals = await page.evaluate(() => ({
@@ -427,7 +450,13 @@ export async function capture(
       attentionSignals.password,
       attentionSignals.challenge,
     );
-    if (attention) throw attention;
+    if (attention instanceof AttentionFailure) throw attention;
+    if (attention && !m.monitor_http_error_pages) throw attention;
+    if (navigationStatus >= 400 && !m.monitor_http_error_pages)
+      throw new HttpError(422, "Website returned an unsuccessful HTTP response");
+    if (m.cookie_banner_handling)
+      await dismissCookieConsent(page, deadline, m.browser_steps);
+    if (m.wait_before_capture_ms) await page.waitForTimeout(Math.min(m.wait_before_capture_ms, Math.max(1, deadline - Date.now())));
     // Font readiness can wait for third-party font downloads until the global
     // capture deadline. Text-only monitors compare DOM text, so font rasterization
     // cannot affect their result; visual captures keep the existing wait.
@@ -444,7 +473,8 @@ export async function capture(
       });
     }
     enterStage("text_extraction");
-    const locator = m.selector
+    const errorPageFallback = Boolean(m.monitor_http_error_pages && navigationStatus >= 400);
+    const locator = !errorPageFallback && m.selector
       ? m.selector_type === "xpath"
         ? page.locator("xpath=" + m.selector)
         : locate(page, m.selector)
@@ -455,7 +485,7 @@ export async function capture(
     for (const value of Object.values(privateValues))
       extracted = extracted.split(value).join("[private]");
     const text = m.text_enabled ? normalizeText(extracted, m) : null;
-    if (m.text_enabled && m.selector && (await locator.count()) === 0)
+    if (m.text_enabled && !errorPageFallback && m.selector && (await locator.count()) === 0)
       throw new HttpError(422, "Extraction selector matched no elements");
     // Freeze animations and use the same page for DOM and all screenshot modes.
     let screenshot: Buffer | null = null;
@@ -478,7 +508,8 @@ export async function capture(
           s.startsWith("xpath=") ? page.locator(s) : locate(page, s),
         ),
       };
-      if (m.capture_mode === "element") {
+      const captureMode = errorPageFallback ? "viewport" : m.capture_mode;
+      if (captureMode === "element") {
         enterStage("selector_lookup");
         const region = locate(
           page,
@@ -537,26 +568,26 @@ export async function capture(
         }
       } else {
         const size =
-          m.capture_mode === "full_page"
+          captureMode === "full_page"
             ? await page.evaluate(() => ({
                 width: Math.max(
                   document.documentElement.scrollWidth,
                   document.body.scrollWidth,
-                  1280,
+                  window.innerWidth,
                 ),
                 height: Math.max(
                   document.documentElement.scrollHeight,
                   document.body.scrollHeight,
-                  900,
+                  window.innerHeight,
                 ),
               }))
-            : { width: 1280, height: 900 };
+            : viewport;
         checkDimensions(size, limits);
         enterStage("screenshot_rasterization");
-        screenshot = (m.capture_mode === "viewport" || m.capture_mode === "selected_area") && !m.mask_selectors.length
+        screenshot = (captureMode === "viewport" || captureMode === "selected_area") && !m.mask_selectors.length
           ? await cdpScreenshot(context, page)
-          : await page.screenshot({ ...options, fullPage: m.capture_mode === "full_page" });
-        if (m.capture_mode === "selected_area") {
+          : await page.screenshot({ ...options, fullPage: captureMode === "full_page" });
+        if (captureMode === "selected_area") {
           enterStage("image_validation");
           const area = captureAreaSchema.parse(m.capture_area);
           screenshot = cropCaptureArea(screenshot, area, limits);
@@ -568,7 +599,7 @@ export async function capture(
     if (text && text.length > 2_000_000)
       throw Error("Extracted text too large");
     finishTimings();
-    return { text, screenshot, warning, timings };
+    return { text, screenshot, http_status: navigationStatus, warning, timings };
   } catch (error) {
     finishTimings();
     if (error instanceof WorkerFatalError) { error.timings = timings; throw error; }

@@ -124,6 +124,27 @@ it("returns from RegionPicker without applying a selection and keeps the initial
   await waitFor(() => expect(mockedApi).toHaveBeenCalledWith(`/jobs/${existing.id}`, "PUT", expect.objectContaining({ capture_selector: "#old-price" })));
 }, 20_000);
 
+it("adds a browser step from the real mobile Preview without enabling visual detection", async () => {
+  const user = userEvent.setup({ pointerEventsCheck: PointerEventsCheckLevel.Never });
+  render(<AntApp><FusionApp /></AntApp>);
+  await user.click(await screen.findByText("New monitor", { exact: true }));
+  fireEvent.change(screen.getByLabelText("Monitor name"), { target: { value: "Text workflow monitor" } });
+  fireEvent.change(screen.getByLabelText("URL"), { target: { value: "https://example.com/workflow" } });
+  await user.click(screen.getByText("Advanced settings", { exact: true }));
+  expect(screen.getByLabelText("Visual detection")).not.toBeChecked();
+  await user.click(screen.getByRole("button", { name: "Add step from Preview" }));
+  await screen.findByRole("region", { name: "Add browser step from preview" });
+  await user.click(await screen.findByRole("button", { name: "Add step to draft" }));
+  await user.click(screen.getByRole("button", { name: "← Back" }));
+  expect(await screen.findByLabelText("Monitor name")).toHaveValue("Text workflow monitor");
+  expect(screen.getByLabelText("Visual detection")).not.toBeChecked();
+  await user.click(screen.getByRole("button", { name: "Save monitor" }));
+  await waitFor(() => expect(mockedApi).toHaveBeenCalledWith("/jobs", "POST", expect.objectContaining({
+    visual_enabled: false,
+    browser_steps: [expect.objectContaining({ action: "click", selector: "#new-price", continue_on_error: false })],
+  })));
+}, 20_000);
+
 it("uses the real mobile SelectedAreaPicker and sends the applied area unchanged in PUT", async () => {
   setupApi(existing);
   const user = userEvent.setup({ pointerEventsCheck: PointerEventsCheckLevel.Never });

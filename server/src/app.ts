@@ -79,8 +79,15 @@ const monitorInput = z
     browser_steps: stepsSchema,
     step_budget_ms: z.number().int().min(100).max(60000).default(20000),
     capture_timeout_ms: captureTimeoutSchema.nullable().optional(),
+    monitor_http_error_pages: z.boolean().default(false),
+    disable_javascript: z.boolean().default(false),
+    block_ads_trackers: z.boolean().default(false),
+    cookie_banner_handling: z.boolean().default(false),
+    wait_before_capture_ms: z.union([z.literal(0), z.literal(2000), z.literal(5000), z.literal(10000)]).default(0),
+    mobile_view: z.boolean().default(false),
     paused: z.boolean().default(false),
     notify_failures: z.boolean().default(false),
+    failure_alert_mode: z.enum(["off", "first_or_persistent", "every"]).optional(),
     notify_attention: z.boolean().default(false),
     notification_enabled: z.boolean().default(true),
     muted_until: z.string().datetime().nullable().optional(),
@@ -98,6 +105,9 @@ const monitorInput = z
   .strict()
   .refine((m) => m.capture_mode !== "element" || !!m.capture_selector.trim(), {
     message: "Element capture requires a selector",
+  })
+  .refine((m) => !m.mobile_view || m.capture_mode !== "selected_area", {
+    message: "Selected area is not available in mobile view",
   })
   .refine((m) => m.capture_mode !== "selected_area" || !!m.capture_area, {
     message: "Selected area capture requires valid coordinates",
@@ -138,7 +148,11 @@ const monitorInput = z
   .refine(
     (m) => m.kind === "browser" || (m.text_enabled && !m.visual_enabled),
     { message: "HTML/API monitors require text-only detection" },
-  );
+  )
+  .transform((m) => ({
+    ...m,
+    failure_alert_mode: m.failure_alert_mode ?? (m.notify_failures ? "first_or_persistent" as const : "off" as const),
+  }));
 const monitoringDefaults = z.object({
   interval_seconds: z.number().int().min(30).max(604800).optional(),
   text_enabled: z.boolean().optional(), visual_enabled: z.boolean().optional(),
@@ -176,6 +190,12 @@ const regionPreviewInput = z
         browser_steps: stepsSchema.optional().default([]),
         step_budget_ms: z.number().int().min(100).max(60_000).default(20_000),
         capture_timeout_ms: captureTimeoutSchema.nullable().optional(),
+        monitor_http_error_pages: z.boolean().optional(),
+        disable_javascript: z.boolean().optional(),
+        block_ads_trackers: z.boolean().optional(),
+        cookie_banner_handling: z.boolean().optional(),
+        wait_before_capture_ms: z.union([z.literal(0), z.literal(2000), z.literal(5000), z.literal(10000)]).optional(),
+        mobile_view: z.boolean().optional(),
       })
       .strict(),
     point: z
@@ -702,6 +722,7 @@ export function createApp(
           "enabled",
           "paused",
           "notify_failures",
+          "failure_alert_mode",
           "notify_attention",
           "notification_enabled",
           "muted_until",
@@ -896,7 +917,7 @@ export function createApp(
       .default(20)
       .parse(req.query.page_size);
     const r = await pool.query(
-      `SELECT e.*,b.screenshot before_image,a.screenshot after_image,
+      `SELECT e.*,b.screenshot before_image,b.http_status before_http_status,a.screenshot after_image,
    coalesce((SELECT jsonb_agg(jsonb_build_object('channel_id',o.channel_id,'status',o.status,'attempts',o.attempts,'error',o.last_error)) FROM fusion_outbox o WHERE o.event_id=e.id),'[]'::jsonb) deliveries
    FROM fusion_events e LEFT JOIN fusion_captures b ON b.id=e.before_id LEFT JOIN fusion_captures a ON a.id=e.after_id
    WHERE e.monitor_id=$1 AND ($2::text IS NULL OR e.status=$2) ORDER BY e.created_at DESC,e.id DESC LIMIT $3 OFFSET $4`,

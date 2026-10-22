@@ -56,6 +56,9 @@ export type EventMessage = {
   digestCount?: number;
   digestStart?: string;
   digestEnd?: string;
+  httpStatus?: number | null;
+  previousHttpStatus?: number | null;
+  httpStatusChanged?: boolean;
 };
 export const escapeHTML = (s: string) =>
   s.replace(
@@ -76,7 +79,10 @@ export function visualSummary(event: EventMessage) {
   return `Visual change: ${formatPercent(event.percent ?? "0")}%`;
 }
 export function summary(event: EventMessage) {
-  return `${event.name}\n${event.attentionState ? event.attentionState.replaceAll("_", " ") + ": " + (event.attentionMessage ?? "Requires attention") + "\n" : ""}${event.textChanged ? "Text changed: " + event.textSummary + "\n" : ""}${event.visualChanged ? visualSummary(event) + "\n" : ""}${event.link}`;
+  const http = event.httpStatusChanged
+    ? `HTTP status changed: ${event.previousHttpStatus ?? "unknown"} → ${event.httpStatus ?? "unknown"}\n`
+    : "";
+  return `${event.name}\n${event.attentionState ? event.attentionState.replaceAll("_", " ") + ": " + (event.attentionMessage ?? "Requires attention") + "\n" : ""}${http}${event.textChanged ? "Text changed: " + event.textSummary + "\n" : ""}${event.visualChanged ? visualSummary(event) + "\n" : ""}${event.link}`;
 }
 // Plain text only: never enable Telegram HTML/Markdown parsing for user content.
 export function truncateText(value: string, limit: number) {

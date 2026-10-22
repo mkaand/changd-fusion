@@ -614,12 +614,15 @@ details {
 .region-preview-error details { margin-top:10px; }
 .region-preview-error code,.region-preview-selection code { display:block; max-width:100%; margin:8px 0; white-space:normal; overflow-wrap:anywhere; }
 .region-preview-selection { width:100%; min-width:0; margin-top:12px; padding:12px; border:1px solid #b7eb8f; border-radius:8px; background:#f6ffed; }
+.visual-step-builder { display:grid; grid-template-columns:minmax(0,1fr) minmax(120px,.5fr); gap:12px; align-items:center; margin-top:12px; }
+.visual-step-builder > * { min-width:0; }
 .region-preview-candidates { margin:10px 0; }
 .region-preview-candidates .ant-btn { max-width:100%; overflow:hidden; text-overflow:ellipsis; }
 .region-preview-timing { display:block; margin-top:8px; font-variant-numeric:tabular-nums; }
 :root[data-theme="dark"] .region-preview-toolbar { background:#121d30; border-color:#2d4058; }
 :root[data-theme="dark"] .region-preview-error { color:#f3f6fa; background:#351a1d; border-color:#80343b; }
 :root[data-theme="dark"] .region-preview-selection { background:#162a20; border-color:#39754b; }
+@media (max-width: 767px) { .visual-step-builder { grid-template-columns:minmax(0,1fr); } }
 .text-picker-body { display:grid; gap:12px; min-width:0; }
 .text-preview-lines { max-height:48dvh; overflow:auto; border:1px solid var(--fusion-table-border, #dfe6ee); border-radius:8px; background:var(--fusion-surface, #fff); }
 .text-preview-lines button { display:block; width:100%; padding:8px 10px; color:inherit; text-align:left; font:inherit; line-height:1.45; overflow-wrap:anywhere; background:transparent; border:0; border-bottom:1px solid var(--fusion-table-border, #dfe6ee); cursor:pointer; }
