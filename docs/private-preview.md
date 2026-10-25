@@ -21,7 +21,7 @@ Rebuild, uzaktaki yeni commit'i kendiliğinden checkout'a çekmez; bu yüzden ö
 
 ## Otomatik kurulum
 
-- Pinned Node.js 24.19.0, PostgreSQL 16.13, Chromium ve checksum doğrulamalı GitHub CLI 2.102.0.
+- Pinned Node.js 24.22.1, PostgreSQL 16.15, Chromium ve checksum doğrulamalı GitHub CLI 2.102.0.
 - Tek geliştirme container'ında API + build edilmiş React arayüzü + worker; ayrı PostgreSQL container'ı. Redis ve iç içe Docker daemon yoktur.
 - `node` UID/GID 1000, `HOME=/home/node` ve VS Code config/server dizinleri açıkça hazırlanır. `updateRemoteUserUID=false` kimliğin değişmesini önler; ayrı `preview_home` volume'u platformun `/home` mount'undan bağımsız writable HOME sağlar.
 - Ağsız, read-only root filesystem kullanan, 60 saniye sınırlı `permissions` servisi yalnızca `.preview` ve HOME mount'larını hazırlamak için kısa süreli root çalışır. CHOWN/FOWNER/DAC_OVERRIDE dışında capability yoktur; uygulama/API/worker/browser daima UID/GID 1000 olarak çalışır. Dizinler 0700, normal runtime dosyaları 0600 olur; symlink/special-file/hardlink reddedilir. Secret byte'ları, kullanıcı parolaları ve DB volume'u korunur. Host UID farklıysa sonraki initialize koşusu runtime içine girmeden container onarımına bırakır.

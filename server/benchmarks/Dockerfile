@@ -1,5 +1,5 @@
 # Benchmark only. Production Dockerfiles and the pinned Debian package stay unchanged.
-FROM node:24.19.0-bookworm
+FROM node:24.22.1-bookworm@sha256:6449e19d8184d84062525b6a7524def03146c2cb04a7f08b076680d0e8e4240a
 ENV PLAYWRIGHT_BROWSERS_PATH=/opt/playwright
 WORKDIR /app/server
 COPY server/package.json server/package-lock.json ./
