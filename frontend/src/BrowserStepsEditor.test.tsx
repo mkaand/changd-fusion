@@ -16,6 +16,14 @@ function Fixture() {
   );
 }
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
+it("accepts a 60-second step while preserving the independent workflow limit", async () => {
+  render(<Fixture />);
+  await userEvent.click(screen.getByRole("button", { name: "Add browser step" }));
+  const timeout = screen.getByLabelText("Step timeout (ms)");
+  expect(timeout).toHaveAttribute("aria-valuemin", "100");
+  expect(timeout).toHaveAttribute("aria-valuemax", "60000");
+  expect(screen.getByLabelText("Workflow budget (ms)")).toHaveAttribute("aria-valuemax", "60000");
+});
 it("browser steps can be added, reordered with keyboard-accessible buttons and removed", async () => {
   const user = userEvent.setup();
   render(<Fixture />);

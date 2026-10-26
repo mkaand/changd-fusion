@@ -175,6 +175,10 @@ export async function browserProxy(policy: EgressPolicy) {
           agent: false,
         },
         (r) => {
+          // An interrupted origin body must terminate the browser response;
+          // pipe() alone neither forwards errors nor completes that response.
+          r.on("aborted", () => res.destroy());
+          r.on("error", () => res.destroy());
           res.writeHead(r.statusCode ?? 502, r.headers);
           r.pipe(res);
         },
@@ -220,6 +224,9 @@ export async function browserProxy(policy: EgressPolicy) {
   });
   server.on("connection", (socket) => {
     sockets.add(socket);
+    // CONNECT may be cancelled while asynchronous DNS validation is pending,
+    // before its upstream-specific error handlers have been installed.
+    socket.on("error", () => socket.destroy());
     socket.on("close", () => sockets.delete(socket));
   });
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));

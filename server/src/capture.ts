@@ -425,6 +425,7 @@ export async function capture(
           m.browser_steps ?? [],
           Math.min(deadline, Date.now() + (m.step_budget_ms ?? 20000)),
           privateValues,
+          deadline,
         );
       } catch (error) {
         if (!(error instanceof StepFailure && m.monitor_http_error_pages && (statusObserver.value() ?? initialStatus) >= 400))
@@ -604,8 +605,9 @@ export async function capture(
     finishTimings();
     if (error instanceof WorkerFatalError) { error.timings = timings; throw error; }
     if (error instanceof AttentionFailure) { error.timings = timings; throw error; }
-    const failure = deadlineElapsed
-      ? new CaptureFailure(stage, (stage as string) === "screenshot_rasterization" ? "screenshot_timeout" : "timeout")
+    const failure = error instanceof StepFailure ? captureFailure(error, stage) : deadlineElapsed
+      ? new CaptureFailure(stage, (stage as string) === "screenshot_rasterization" ? "screenshot_timeout" : "timeout",
+          (stage as string) === "element_stability" ? "Capture deadline expired while confirming region stability. Check for continuous layout movement or stalled rendering." : undefined)
       : captureFailure(error, stage);
     failure.timings = timings;
     throw failure;

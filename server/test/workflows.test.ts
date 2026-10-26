@@ -5,6 +5,7 @@ import { detectAttention, AttentionFailure } from "../src/attention.js";
 import { sealValues, openValues, vaultSchema } from "../src/vault.js";
 import { randomUUID, randomBytes } from "node:crypto";
 import { Storage } from "../src/storage.js";
+import { captureFailure } from "../src/errors.js";
 
 test("browser steps reject execution, navigation, oversized input and unsafe optional actions", () => {
   for (const input of [
@@ -21,7 +22,8 @@ test("browser steps reject execution, navigation, oversized input and unsafe opt
     [{ action: "delay", duration_ms: 5001 }],
     [{ action: "scroll_by", y: 5001 }],
     [{ action: "wait_navigation", path: "//example.com" }],
-    [{ action: "click", selector: "#x", timeout_ms: 10001 }],
+    [{ action: "click", selector: "#x", timeout_ms: 60001 }],
+    [{ action: "click", selector: "#x", timeout_ms: 99 }],
     Array.from({ length: 21 }, () => ({ action: "delay", duration_ms: 0 })),
   ])
     assert.equal(stepsSchema.safeParse(input).success, false);
@@ -80,6 +82,7 @@ test("ordered steps pass only validated actions and CSS/XPath locators to Playwr
     "xpath=//main",
     "visible",
     "css=#x",
+    "attached",
     "click",
     "css=#x",
     "scroll",
@@ -121,9 +124,9 @@ test("step failures never expose field values, selector details or internal erro
 test("optional safe steps report a warning and mandatory failures stop the sequence", async () => {
   let clicks = 0;
   const page: any = {
-    locator: () => ({
+    locator: (selector: string) => ({
       waitFor: async () => {
-        throw Error();
+        if (selector.includes("missing")) throw Error();
       },
       click: async () => {
         clicks++;
@@ -169,6 +172,7 @@ test("workflow timer closes stalled browser work and cleanup leaves no live time
   let closed = 0;
   const page: any = {
     locator: () => ({
+      waitFor: async () => {},
       click: () =>
         new Promise((_, r) => {
           reject = r;
@@ -187,6 +191,47 @@ test("workflow timer closes stalled browser work and cleanup leaves no live time
     runSteps(page, [{ action: "delay", duration_ms: 5000 }], Date.now() + 10),
   );
 });
+test("step timeout boundaries preserve saved steps and clamp to workflow/capture deadlines", async () => {
+  for (const timeout_ms of [100, 10000, 60000]) {
+    assert.equal(stepsSchema.parse([{ action: "click", selector: "#fixture", timeout_ms }])[0].timeout_ms, timeout_ms);
+    let received = 0;
+    const page: any = { close: async () => {}, locator: () => ({ waitFor: async () => {}, click: async ({ timeout }: any) => { received = timeout; } }) };
+    await runSteps(page, [{ action: "click", selector: "#fixture", timeout_ms }], Date.now() + 20000, {}, Date.now() + 1000);
+    assert.ok(received > 0 && received <= Math.min(timeout_ms, 1000));
+  }
+  assert.equal(stepsSchema.parse([{ action: "click", selector: "#fixture" }])[0].timeout_ms, 5000);
+  for (const capture of [false, true]) {
+    const page: any = { close: async () => {} };
+    await assert.rejects(runSteps(page, [{ action: "click", selector: "#private" }], capture ? Date.now() + 60000 : Date.now() - 1, {}, capture ? Date.now() - 1 : Infinity), (e: any) => e instanceof StepFailure && e.category === (capture ? "capture_deadline" : "workflow_deadline"));
+  }
+});
+
+test("click diagnostics separate missing selectors, actionability and timeout without exposing page text", async () => {
+  for (const [message, name, attached, category] of [
+    ["private selector secret", "TimeoutError", false, "selector_missing"],
+    ["element is not visible secret", "TimeoutError", true, "element_not_actionable"],
+    ["private page text secret", "TimeoutError", true, "step_timeout"],
+  ] as const) {
+    const error = Object.assign(Error(message), { name });
+    const page: any = { close: async () => {}, locator: () => ({ waitFor: async () => { if (!attached) throw error; }, click: async () => { throw error; } }) };
+    await assert.rejects(runSteps(page, [{ action: "click", selector: "#secret" }], Date.now() + 2000), (e: any) => e instanceof StepFailure && e.category === category && !e.message.includes("secret"));
+  }
+});
+
+test("capture diagnostics retain safe step context and explain stability timeouts", () => {
+  for (const category of ["step_timeout", "selector_missing", "element_not_actionable", "workflow_deadline", "capture_deadline"] as const) {
+    const error = new StepFailure(2, "click", category);
+    const failure = captureFailure(error, "browser_steps");
+    assert.equal(failure.message, error.message);
+    assert.equal(failure.stage, "browser_steps");
+    assert.notEqual(failure.code, "unknown");
+  }
+  const failure = captureFailure(Object.assign(Error("private synthetic contents"), { name: "TimeoutError" }), "element_stability");
+  assert.equal(failure.code, "timeout");
+  assert.match(failure.message, /stability.*deadline/);
+  assert.ok(!failure.message.includes("private"));
+});
+
 test("challenge detection differentiates confirmed 401, heuristic challenge and ordinary 403", () => {
   const a = detectAttention(401, "/", "", false, false);
   assert.ok(a instanceof AttentionFailure);

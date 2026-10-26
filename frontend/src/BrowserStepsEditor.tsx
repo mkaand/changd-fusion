@@ -170,7 +170,7 @@ function StepFields({ name, form }: { name: number; form: any }) {
           label="Step timeout (ms)"
           rules={[{ required: true }]}
         >
-          <InputNumber min={100} max={10000} />
+          <InputNumber min={100} max={60000} />
         </Form.Item>
         <Form.Item
           name={[name, "continue_on_error"]}
@@ -192,12 +192,12 @@ export function BrowserStepsEditor({ form, monitorId, onOpenMobileStep }: { form
     if (steps.length < 20) form.setFieldValue("browser_steps", [...steps, step]);
   };
   return (
-    <section aria-label="Browser steps">
+    <section className="browser-steps-editor" aria-label="Browser steps">
       <Typography.Title level={4}>Browser Steps</Typography.Title>
       <Typography.Paragraph type="secondary">
         Steps run in order before text and visual capture in the same secure
-        browser session. Maximum 20 steps; the server capture deadline always
-        applies.
+        browser session. Maximum 20 steps; each step allows 100–60000 ms and
+        shares the workflow budget (maximum 60 seconds) and capture deadline.
       </Typography.Paragraph>
       <Form.Item name="step_budget_ms" label="Workflow budget (ms)">
         <InputNumber min={100} max={60000} />

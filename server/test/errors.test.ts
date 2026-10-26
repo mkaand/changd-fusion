@@ -101,5 +101,5 @@ test("required browser steps return only safe step metadata", () => {
     { stage: failure.stage, code: failure.failure_code, status: failure.status, step: failure.step, action: failure.action },
     { stage: "browser_steps", code: "capture_failed", status: 422, step: 2, action: "click" },
   );
-  assert.equal(failure.message, "A required browser step failed. Check its action and timeout.");
+  assert.match(failure.message, /Browser step 2 \(click\) failed: step_failed/);
 });
