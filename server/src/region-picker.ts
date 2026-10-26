@@ -106,7 +106,7 @@ export function regionPreviewFailure(error: unknown, stage: CaptureStage): Regio
     stage: safe.stage,
     failure_code: code,
     status: safe.code === "timeout" ? 504 : ["capacity_busy", "capacity_wait_timeout", "capacity_queue_full"].includes(safe.code) ? 429 : validation ? error.status : 422,
-    message: previewMessage(safe.stage, code),
+    message: stepFailure ? stepFailure.message : previewMessage(safe.stage, code),
     ...(stepFailure ? { step: stepFailure.step, action: stepFailure.action } : {}),
   };
 }
@@ -342,7 +342,7 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
     let stepsSkippedForErrorPage = skipStepsForErrorPage;
     if (!skipStepsForErrorPage) {
       try {
-        stepWarning = await runSteps(page, m.browser_steps ?? [], Math.min(deadline, Date.now() + (m.step_budget_ms ?? 20_000)));
+        stepWarning = await runSteps(page, m.browser_steps ?? [], Math.min(deadline, Date.now() + (m.step_budget_ms ?? 20_000)), {}, deadline);
       } catch (error) {
         if (!(error instanceof StepFailure && m.monitor_http_error_pages && (statusObserver.value() ?? initialStatus) >= 400))
           throw error;

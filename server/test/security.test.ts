@@ -8,12 +8,58 @@ import {
 } from "../src/egress.js";
 import http from "node:http";
 import type { AddressInfo } from "node:net";
+import net from "node:net";
 import { encrypt, decrypt } from "../src/crypto.js";
 import { randomBytes } from "node:crypto";
 import { Storage } from "../src/storage.js";
 import { mkdtemp, symlink, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+test("browser proxy handles CONNECT cancellation during DNS validation", async () => {
+  let startLookup!: () => void, finishLookup!: () => void;
+  const started = new Promise<void>((resolve) => { startLookup = resolve; });
+  const gate = new Promise<void>((resolve) => { finishLookup = resolve; });
+  const proxy = await browserProxy(new EgressPolicy(async () => {
+    startLookup();
+    await gate;
+    return [{ address: "127.0.0.1", family: 4 }];
+  }, () => true));
+  const client = net.connect(Number(new URL(proxy.url).port), "127.0.0.1");
+  client.on("error", () => {});
+  try {
+    await new Promise<void>((resolve) => client.once("connect", resolve));
+    client.write("CONNECT fixture.test:443 HTTP/1.1\r\nHost: fixture.test:443\r\n\r\n");
+    await started;
+    await new Promise<void>((resolve) => { client.once("close", resolve); client.resetAndDestroy(); });
+    finishLookup();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  } finally { finishLookup(); client.destroy(); await proxy.close(); }
+});
+test("browser proxy contains an interrupted upstream response without uncaught socket errors", async () => {
+  const fixture = http.createServer((_req, res) => {
+    res.writeHead(200, { "Content-Length": "1000" });
+    res.write("synthetic");
+    setTimeout(() => res.destroy(), 20);
+  });
+  await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
+  const port = (fixture.address() as AddressInfo).port;
+  const proxy = await browserProxy(new EgressPolicy(async () => [{ address: "127.0.0.1", family: 4 }], () => true, new Set([port])));
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const request = http.get(proxy.url, { path: `http://fixture.test:${port}/` }, (response) => {
+        response.on("data", () => {});
+        response.on("error", () => resolve());
+        response.on("end", resolve);
+      });
+      request.on("error", () => resolve());
+      request.setTimeout(1000, () => { request.destroy(); reject(Error("Proxy did not close the interrupted response")); });
+    });
+  } finally {
+    await proxy.close();
+    fixture.closeAllConnections();
+    await new Promise<void>((resolve) => fixture.close(() => resolve()));
+  }
+});
 test("private, mapped IPv6, link-local, multicast and metadata addresses are blocked", () => {
   for (const ip of [
     "127.0.0.1",

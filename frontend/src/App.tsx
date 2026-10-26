@@ -525,16 +525,16 @@ export default function FusionApp() {
                       <Tag>{current.capture_mode.replace("_", " ")}</Tag>
                     )}
                     {current.last_http_status && <Tag color={current.last_http_status >= 400 ? "red" : "green"}>HTTP {current.last_http_status}</Tag>}
-                    <span>Every {current.interval_seconds}s</span>
+                    <span>Configured interval: {current.interval_seconds}s</span>
                   </Space>
                   <div className="monitor-detail-url-row"><Typography.Paragraph className="monitor-url">{current.url}</Typography.Paragraph><MonitorUrlActions url={current.url} message={message} /></div>
                   {current.last_error && (
-                    <Alert title={current.last_error} type="error" />
+                    <Alert className="monitor-detail-failure" title={current.last_error} type="error" description={`Failed captures preserve the baseline. Failure backoff may delay retries beyond the configured interval. Next attempt: ${current.enabled && !current.paused && current.next_run ? new Date(current.next_run).toLocaleString() : "Not scheduled"}.`} />
                   )}
-                  <Typography.Text type="secondary">
+                  <Typography.Paragraph className="monitor-baseline-help" type="secondary">
                     Baseline advances only after a combined change event. Failed
                     captures preserve the baseline.
-                  </Typography.Text>
+                  </Typography.Paragraph>
                 </Card>
                 <Card size="small" className="event">
                   <Space wrap>

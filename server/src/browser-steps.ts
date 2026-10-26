@@ -2,7 +2,7 @@ import { z } from "zod";
 import type { Page } from "playwright";
 import { HttpError } from "./errors.js";
 const common = {
-  timeout_ms: z.number().int().min(100).max(10000).default(5000),
+  timeout_ms: z.number().int().min(100).max(60000).default(5000),
   continue_on_error: z.boolean().default(false),
 };
 const target = {
@@ -64,10 +64,11 @@ export class StepFailure extends HttpError {
   constructor(
     public step: number,
     public action: string,
+    public category: BrowserStepWarning["category"] = "step_failed",
   ) {
     super(
       422,
-      `Browser step ${step} (${action}) failed. Check selector and timeout.`,
+      `Browser step ${step} (${action}) failed: ${category}. Check the step and remaining time budget.`,
     );
   }
 }
@@ -75,12 +76,14 @@ export type BrowserStepWarning = {
   code: "optional_step_failed";
   step: number;
   action: BrowserStep["action"];
-  category: "selector_unavailable" | "navigation_unavailable" | "step_timeout" | "step_failed";
+  category: "selector_unavailable" | "selector_missing" | "element_not_actionable" | "navigation_unavailable" | "step_timeout" | "workflow_deadline" | "capture_deadline" | "step_failed";
 };
 
 function safeStepFailureCategory(step: BrowserStep, error: unknown): BrowserStepWarning["category"] {
   const message = error instanceof Error ? error.message.toLowerCase() : "";
-  if (message.includes("timeout")) return "step_timeout";
+  // Inspect only known Playwright actionability signals; never return raw text.
+  if (/element is not (visible|enabled|stable)|intercepts pointer events|element is outside of the viewport/.test(message)) return "element_not_actionable";
+  if ((error instanceof Error && error.name === "TimeoutError") || message.includes("timeout")) return "step_timeout";
   if (step.action === "wait_navigation") return "navigation_unavailable";
   if ("selector" in step) return "selector_unavailable";
   return "step_failed";
@@ -96,7 +99,10 @@ export async function runSteps(
   input: unknown,
   deadline: number,
   values: Record<string, string> = {},
+  captureDeadline = Infinity,
 ) {
+  deadline = Math.min(deadline, captureDeadline);
+  const deadlineCategory = deadline >= captureDeadline ? "capture_deadline" : "workflow_deadline";
   const steps = stepsSchema.parse(input ?? []);
   let warning: BrowserStepWarning | undefined;
   const timer = setTimeout(
@@ -107,8 +113,9 @@ export async function runSteps(
     for (const [index, step] of steps.entries()) {
       const remaining = deadline - Date.now();
       if (remaining <= 0)
-        throw new HttpError(422, "Browser workflow exceeded its time budget");
+        throw new StepFailure(index + 1, step.action, deadlineCategory);
       const timeout = Math.min(step.timeout_ms, remaining);
+      const stepDeadline = Math.min(deadline, Date.now() + step.timeout_ms);
       try {
         const node =
           "selector" in step
@@ -123,7 +130,18 @@ export async function runSteps(
             break;
           case "click":
           case "dismiss_cookie":
-            await node!.click({ timeout });
+            // Attachment and actionability share one step deadline. This makes
+            // an absent selector distinguishable without a second diagnostic wait.
+            try {
+              await node!.waitFor({ state: "attached", timeout });
+            } catch (error) {
+              if (error instanceof Error && error.name === "TimeoutError")
+                throw new StepFailure(index + 1, step.action, "selector_missing");
+              throw error;
+            }
+            if (Date.now() >= stepDeadline)
+              throw new StepFailure(index + 1, step.action, "step_timeout");
+            await node!.click({ timeout: Math.max(1, stepDeadline - Date.now()) });
             break;
           case "scroll_to":
             await node!.scrollIntoViewIfNeeded({ timeout });
@@ -144,7 +162,7 @@ export async function runSteps(
             break;
           }
           case "delay":
-            if (step.duration_ms > timeout) throw Error();
+            if (step.duration_ms > timeout) throw new StepFailure(index + 1, step.action, "step_timeout");
             await page.waitForTimeout(step.duration_ms);
             break;
           // An explicit path prevents accepting an unrelated navigation. Origin is never changed by this action.
@@ -169,17 +187,20 @@ export async function runSteps(
             break;
         }
       } catch (error) {
+        const category = Date.now() >= deadline ? deadlineCategory
+          : error instanceof StepFailure ? error.category : safeStepFailureCategory(step, error);
+        if (category === "workflow_deadline" || category === "capture_deadline") throw new StepFailure(index + 1, step.action, category);
         if (!step.continue_on_error)
-          throw new StepFailure(index + 1, step.action);
+          throw new StepFailure(index + 1, step.action, category);
         warning = {
           code: "optional_step_failed",
           step: index + 1,
           action: step.action,
-          category: safeStepFailureCategory(step, error),
+          category,
         };
       }
       if (Date.now() > deadline)
-        throw new HttpError(422, "Browser workflow exceeded its time budget");
+        throw new StepFailure(index + 1, step.action, deadlineCategory);
     }
     return warning;
   } finally {

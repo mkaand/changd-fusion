@@ -95,6 +95,12 @@ export function captureFailure(
   if (error instanceof CaptureFailure) return error;
   if (error instanceof HttpError) {
     const message = error.message;
+    if (/^Browser step \d+ \([a-z_]+\) failed: /.test(message)) {
+      const code = /selector_missing/.test(message) ? "selector_missing"
+        : /deadline|step_timeout/.test(message) ? "timeout"
+        : /element_not_actionable/.test(message) ? "element_not_visible" : "capture_failed";
+      return new CaptureFailure(stage, code, message);
+    }
     if (/HTTP 403/.test(message))
       return new CaptureFailure(stage, "http_403", message, 403);
     if (/HTTP 429/.test(message))
@@ -118,7 +124,8 @@ export function captureFailure(
   const name = error instanceof Error ? error.name : "";
   const message = error instanceof Error ? error.message : "";
   if (/timeout/i.test(name) || /timeout/i.test(message))
-    return new CaptureFailure(stage, stage === "screenshot_rasterization" ? "screenshot_timeout" : "timeout");
+    return new CaptureFailure(stage, stage === "screenshot_rasterization" ? "screenshot_timeout" : "timeout",
+      stage === "element_stability" ? "Capture region stability could not be confirmed before the deadline. Check for continuous layout movement or stalled rendering." : undefined);
   if (/dns|enotfound|getaddrinfo/i.test(message))
     return new CaptureFailure(stage, "dns_failure");
   if (/tls|certificate|ssl/i.test(message))
