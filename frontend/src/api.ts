@@ -40,13 +40,19 @@ export async function api<T = any>(
   retriedAfterRefresh = false,
 ): Promise<T> {
   const timeout = AbortSignal.timeout(options?.timeoutMs ?? 15000);
-  const response = await fetch("/api/v1" + path, {
+  let response: Response;
+  try { response = await fetch("/api/v1" + path, {
     method,
     signal: options?.signal ? AbortSignal.any([options.signal, timeout]) : timeout,
     credentials: "same-origin",
     headers: { "Content-Type": "application/json", "X-Fusion-Request": "1" },
     body: data === undefined ? undefined : JSON.stringify(data),
-  });
+  }); } catch {
+    const cancelled = options?.signal?.aborted;
+    throw new ApiError(cancelled ? "Request cancelled." : timeout.aborted ? "The client deadline expired before the server responded. Retry the Preview." : "The server could not be reached. Check your connection and retry.", {
+      preview_stage: "transport", failure_code: cancelled ? "cancelled" : timeout.aborted ? "client_timeout" : "network_failure",
+    });
+  }
   const requestId = response.headers?.get?.("x-request-id") ?? undefined;
   let result: any;
   try {
@@ -58,8 +64,8 @@ export async function api<T = any>(
     }
   } catch {
     throw new ApiError(
-      response.ok ? "Server returned an invalid response." : "Request failed. Retry.",
-      { request_id: requestId, status: response.status },
+      response.ok ? "Server returned an invalid response." : `HTTP ${response.status}: ${response.status === 504 ? "An upstream proxy timed out before a Preview response arrived." : response.status === 502 ? "The upstream service is unavailable." : "The server returned an invalid response."} Retry shortly; manual editing remains available.`,
+      { request_id: requestId, status: response.status, preview_stage: "transport", failure_code: response.status === 504 ? "upstream_timeout" : "invalid_response" },
     );
   }
   if (response.status === 401 && result.error === "Authentication required" && path !== "/session/refresh" && !retriedAfterRefresh) {

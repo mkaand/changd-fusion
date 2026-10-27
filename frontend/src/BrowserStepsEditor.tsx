@@ -198,6 +198,7 @@ export function BrowserStepsEditor({ form, monitorId, onOpenMobileStep }: { form
         Steps run in order before text and visual capture in the same secure
         browser session. Maximum 20 steps; each step allows 100–60000 ms and
         shares the workflow budget (maximum 60 seconds) and capture deadline.
+        Preview is optional: manual steps and Save remain available while it loads.
       </Typography.Paragraph>
       <Form.Item name="step_budget_ms" label="Workflow budget (ms)">
         <InputNumber min={100} max={60000} />

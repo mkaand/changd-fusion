@@ -27,6 +27,7 @@ import { compareVisual } from "../../src/comparison.js";
 import { telegramSummary } from "../../src/notifications.js";
 import { closeRegionPreviewSessions, expireRegionPreviewSessions, previewRegion, REGION_PREVIEW_MAX_LIFETIME_MS } from "../../src/region-picker.js";
 import { acquireChromiumLease } from "../../src/chromium-capacity.js";
+import { spawn } from "node:child_process";
 import { applySelectedTextRule, generateSelectedTextRule } from "../../src/selected-text.js";
 const expectedMigrationCount = (await readdir(path.resolve(import.meta.dirname, "../../migrations"))).filter((file) => /^\d+_.+\.sql$/.test(file)).length;
 const dbURL = new URL(process.env.TEST_DATABASE_URL ?? "");
@@ -3699,31 +3700,111 @@ test("region preview capacity includes initializing browsers and releases reserv
   await closeRegionPreviewSessions();
 });
 
+test("a real scheduled capture cannot block an idle interactive Preview lane", async (t) => {
+  let started!: () => void;
+  const capturing = new Promise<void>((resolve) => { started = resolve; });
+  let unblock!: () => void;
+  const gate = new Promise<void>((resolve) => { unblock = resolve; });
+  const fixture = managedServer(t, async (req, res) => {
+    if (req.url === "/worker") { started(); await gate; }
+    res.end("<!doctype html><main id='target'>Independent lane fixture</main>");
+  });
+  await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
+  const port = (fixture.address() as AddressInfo).port;
+  const policy = new EgressPolicy(async () => [{ address: "127.0.0.1", family: 4 }], () => true, new Set([port]));
+  const monitor = { id: randomUUID(), kind: "browser", visual_enabled: true, text_enabled: false, capture_mode: "viewport", mask_selectors: [], ignore_selectors: [], ignore_text: [], browser_steps: [], url: `http://lane.fixture:${port}/worker` } as any;
+  const worker = await acquireChromiumLease(pool, { workload: "capture", slots: 1 });
+  assert.ok(worker);
+  const scheduled = capture(monitor, cfg, policy, worker.signal);
+  try {
+    await capturing;
+    const preview = await previewRegion({ ...monitor, url: `http://lane.fixture:${port}/preview` }, cfg, undefined, policy, {
+      ownerId: "independent-lane-owner", retain: true,
+      acquireCapacity: () => acquireChromiumLease(pool, { workload: "preview", slots: 1, waitMs: 0 }),
+    });
+    assert.ok(preview.image.length > 100);
+    const began = Date.now();
+    assert.equal(await acquireChromiumLease(pool, { workload: "preview", slots: 3, waitMs: 45000 }), null);
+    assert.ok(Date.now() - began < 2500, "legacy long wait settings cannot create a blocking interactive queue");
+    await closeRegionPreviewSessions();
+  } finally { unblock(); await scheduled; await worker.release(); await closeRegionPreviewSessions(); }
+});
+
+test("database session loss aborts a resident browser and permits lane recovery", async (t) => {
+  const fixture = managedServer(t, (_req, res) => res.end("<!doctype html><main>Lease recovery fixture</main>"));
+  await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
+  const port = (fixture.address() as AddressInfo).port;
+  const policy = new EgressPolicy(async () => [{ address: "127.0.0.1", family: 4 }], () => true, new Set([port]));
+  let lease: Awaited<ReturnType<typeof acquireChromiumLease>>;
+  const monitor = { id: randomUUID(), url: `http://lease.fixture:${port}/`, kind: "browser", visual_enabled: true, text_enabled: false, browser_steps: [] } as any;
+  try {
+    const preview = await previewRegion(monitor, cfg, undefined, policy, { ownerId: "crash-recovery-owner", retain: true, acquireCapacity: async () => lease = await acquireChromiumLease(pool, { workload: "preview", slots: 1 }) });
+    const locks = await pool.query("SELECT pid FROM pg_locks WHERE locktype='advisory' AND classid=$1 AND objid=4 AND granted", [0x43484645]);
+    assert.equal(locks.rowCount, 1);
+    await pool.query("SELECT pg_terminate_backend($1)", [locks.rows[0].pid]);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.ok(lease!.signal!.aborted);
+    await closeRegionPreviewSessions();
+    await assert.rejects(previewRegion(monitor, cfg, undefined, policy, { ownerId: "crash-recovery-owner", id: preview.session_id }), (e: any) => e.failure_code === "session_expired");
+    const recovered = await acquireChromiumLease(pool, { workload: "preview", slots: 1 });
+    assert.ok(recovered); await recovered.release();
+  } finally { await closeRegionPreviewSessions(); }
+});
+
+test("API and Worker process crashes release PostgreSQL lane leases for restarted processes", async () => {
+  for (const workload of ["preview", "capture"] as const) {
+    const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+      import {makePool} from './src/db.ts';
+      import {acquireChromiumLease} from './src/chromium-capacity.ts';
+      const pool=makePool(process.env.TEST_DATABASE_URL);
+      const lease=await acquireChromiumLease(pool,{workload:'${workload}',slots:1});
+      if(!lease)process.exit(2);
+      console.log('ready');setInterval(()=>{},1000);
+    `], { env: { ...process.env, TEST_DATABASE_URL: cfg.DATABASE_URL }, stdio: ["ignore", "pipe", "pipe"] });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(Error("Lease subprocess did not start")), 5000);
+        child.stdout.once("data", () => { clearTimeout(timer); resolve(); });
+        child.once("error", (e) => { clearTimeout(timer); reject(e); });
+        child.once("exit", () => { clearTimeout(timer); reject(Error("Lease subprocess exited early")); });
+      });
+      const busy = await acquireChromiumLease(pool, { workload, slots: 1 });
+      if (busy) await busy.release();
+      assert.equal(busy, null);
+      await new Promise<void>((resolve) => { child.once("exit", () => resolve()); child.kill("SIGKILL"); });
+      const recovered = await acquireChromiumLease(pool, { workload, slots: 1, waitMs: 1000 });
+      assert.ok(recovered, `${workload} restart recovers a crashed process lease`);
+      await recovered.release();
+    } finally { child.kill("SIGKILL"); }
+  }
+});
+
 test("PostgreSQL Chromium admission coordinates preview and scheduled capture leases", async () => {
   const preview = await acquireChromiumLease(pool, { workload: "preview", slots: 1 });
-  assert.ok(preview, "first preview reserves the only cross-process Chromium slot");
+  assert.ok(preview, "first preview reserves the cross-process interactive slot");
   assert.equal(await acquireChromiumLease(pool, { workload: "preview", slots: 1 }), null, "excess preview is rejected before browser launch");
   const waitingCapture = acquireChromiumLease(pool, { workload: "capture", slots: 1, waitMs: 1000 });
   await new Promise((resolve) => setTimeout(resolve, 100));
-  assert.equal(await acquireChromiumLease(pool, { workload: "preview", slots: 1 }), null, "a waiting scheduled capture has priority over a new preview");
+  assert.equal(await acquireChromiumLease(pool, { workload: "preview", slots: 1 }), null, "a second preview cannot exceed the reserved interactive slot");
   await preview!.release();
   const captureLease = await waitingCapture;
-  assert.ok(captureLease, "scheduled capture acquires capacity after the resident preview releases it");
-  await captureLease!.release();
+  assert.ok(captureLease, "scheduled capture has its independent lane");
   const recovered = await acquireChromiumLease(pool, { workload: "preview", slots: 1 });
   assert.ok(recovered, "capacity is reusable after cancellation/cleanup");
+  assert.equal(await acquireChromiumLease(pool, { workload: "capture", slots: 3, waitMs: 0 }), null, "replicas and larger slot settings cannot exceed the fixed scheduled limit");
+  await captureLease!.release();
   await recovered!.release();
 });
 
-test("waiting previews release PostgreSQL clients between probes and acquire after scheduled work", async () => {
-  const capture = await acquireChromiumLease(pool, { workload: "capture", slots: 1, waitMs: 0 });
+test("waiting previews release PostgreSQL clients between probes and acquire after interactive work", async () => {
+  const capture = await acquireChromiumLease(pool, { workload: "preview", slots: 1, waitMs: 0 });
   assert.ok(capture);
   const controller = new AbortController();
   let waits = 0;
   const queued = acquireChromiumLease(pool, {
     // The configured admission window is long enough for a representative
     // scheduled capture; this controlled release keeps the CI test bounded.
-    workload: "preview", slots: 1, waitMs: 45_000, signal: controller.signal,
+    workload: "preview", slots: 1, waitMs: 1000, signal: controller.signal,
     onWait: () => { waits++; },
   });
   await new Promise((resolve) => setTimeout(resolve, 100));
@@ -3733,7 +3814,7 @@ test("waiting previews release PostgreSQL clients between probes and acquire aft
   assert.ok(preview, "preview acquires the released slot automatically");
   await preview!.release();
 
-  const held = await acquireChromiumLease(pool, { workload: "capture", slots: 1, waitMs: 0 });
+  const held = await acquireChromiumLease(pool, { workload: "preview", slots: 1, waitMs: 0 });
   assert.ok(held);
   const cancelled = acquireChromiumLease(pool, { workload: "preview", slots: 1, waitMs: 1_000, signal: controller.signal });
   controller.abort();
@@ -3772,9 +3853,9 @@ test("preview sessions have an absolute lifetime despite repeated selections and
   const preview = await previewRegion(monitor, cfg, undefined, policy, { ownerId: "absolute-lifetime-owner", retain: true, acquireCapacity });
   await previewRegion(monitor, cfg, { x: 120, y: 120 }, policy, { ownerId: "absolute-lifetime-owner", id: preview.session_id, retain: true });
   await previewRegion(monitor, cfg, { x: 120, y: 120 }, policy, { ownerId: "absolute-lifetime-owner", id: preview.session_id, retain: true });
-  assert.equal(await acquireChromiumLease(pool, { workload: "capture", slots: 1, waitMs: 0 }), null, "resident preview holds its slot only until its absolute expiry");
+  assert.equal(await acquireChromiumLease(pool, { workload: "preview", slots: 1, waitMs: 0 }), null, "resident preview holds its interactive slot only until its absolute expiry");
   await expireRegionPreviewSessions(Date.now() + REGION_PREVIEW_MAX_LIFETIME_MS + 1);
-  const scheduled = await acquireChromiumLease(pool, { workload: "capture", slots: 1, waitMs: 100 });
+  const scheduled = await acquireChromiumLease(pool, { workload: "preview", slots: 1, waitMs: 100 });
   assert.ok(scheduled, "absolute expiry releases capacity for a scheduled capture after repeated selections");
   await scheduled!.release();
   await closeRegionPreviewSessions();
@@ -3953,5 +4034,10 @@ test("region preview deadline and cancellation stop browser work and release cap
   assert.match(recovered.session_id!, /^[0-9a-f-]{36}$/, "timeouts and cancellation release preview capacity");
   const selected = await previewRegion(monitorFor(), cfg, { x: 100, y: 40 }, policy, { ownerId: "recovered-owner", id: recovered.session_id, retain: true });
   assert.equal(selected.selection?.selector, "#preview-target", "a recovered session remains coordinate accurate and reusable");
+  const alreadyCancelled = new AbortController(); alreadyCancelled.abort();
+  await assert.rejects(previewRegion(monitorFor(), cfg, { x: 100, y: 40 }, policy, { ownerId: "recovered-owner", id: recovered.session_id, signal: alreadyCancelled.signal }),
+    (error: any) => error.status === 499 && error.failure_code === "cancelled");
+  await assert.rejects(previewRegion(monitorFor(), cfg, undefined, policy, { ownerId: "recovered-owner", id: recovered.session_id }),
+    (error: any) => error.status === 410 && error.failure_code === "session_expired");
   await closeRegionPreviewSessions();
 });

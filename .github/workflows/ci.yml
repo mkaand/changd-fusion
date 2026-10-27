@@ -107,8 +107,12 @@ jobs:
         run: node scripts/docker-smoke.mjs
         timeout-minutes: 2
       - name: Nginx Docker DNS recovery
+        # Admission is independently tested with PostgreSQL in Verify.
         run: node scripts/nginx-dns-smoke.mjs
         timeout-minutes: 1
+      - name: Concurrent Preview and Worker resource budgets
+        run: node scripts/interactive-capacity-smoke.mjs
+        timeout-minutes: 2
       - name: Codespaces image sandbox smoke
         run: npm ci --prefix server --ignore-scripts --no-audit --no-fund && node scripts/preview-docker-smoke.mjs
         timeout-minutes: 2
@@ -135,6 +139,9 @@ jobs:
       - name: ARM64 Nginx Docker DNS recovery
         run: node scripts/nginx-dns-smoke.mjs
         timeout-minutes: 1
+      - name: ARM64 concurrent Preview and Worker resource budgets
+        run: node scripts/interactive-capacity-smoke.mjs
+        timeout-minutes: 2
       - name: ARM64 Codespaces image sandbox smoke
         run: npm ci --prefix server --ignore-scripts --no-audit --no-fund && node scripts/preview-docker-smoke.mjs
         timeout-minutes: 2

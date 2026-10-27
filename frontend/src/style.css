@@ -626,6 +626,7 @@ details {
 .region-preview-candidates { margin:10px 0; }
 .region-preview-candidates .ant-btn { max-width:100%; overflow:hidden; text-overflow:ellipsis; }
 .region-preview-timing { display:block; margin-top:8px; font-variant-numeric:tabular-nums; }
+.interactive-preview-panel { width:100%; min-width:0; margin:12px 0; padding:12px; border:1px solid var(--fusion-table-border, #dfe6ee); border-radius:8px; overflow-wrap:anywhere; }
 :root[data-theme="dark"] .region-preview-toolbar { background:#121d30; border-color:#2d4058; }
 :root[data-theme="dark"] .region-preview-error { color:#f3f6fa; background:#351a1d; border-color:#80343b; }
 :root[data-theme="dark"] .region-preview-selection { background:#162a20; border-color:#39754b; }

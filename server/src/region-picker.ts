@@ -5,13 +5,13 @@ import type { Config } from "./config.js";
 import { previewExecutionTimeout } from "./capture-timeout.js";
 import { CaptureFailure, HttpError, captureFailure, type CaptureFailureCode, type CaptureStage } from "./errors.js";
 import { checkDimensions, pngDimensions } from "./image.js";
-import { navigateForCapture, type Monitor } from "./capture.js";
+import { closeWithDeadline, navigateForCapture, type Monitor } from "./capture.js";
 import type { ChromiumLease } from "./chromium-capacity.js";
 import { runSteps, StepFailure, warningCode } from "./browser-steps.js";
 import { AttentionFailure, detectAttention } from "./attention.js";
 import { browserViewport, dismissCookieConsent, installBrowserRouting, observeMainFrameStatus } from "./browser-experience.js";
 
-type RegionPreviewCode = CaptureFailureCode | "session_expired" | "stale_preview" | "stale_configuration" | "ambiguous_selection";
+type RegionPreviewCode = CaptureFailureCode | "cancelled" | "session_expired" | "stale_preview" | "stale_configuration" | "ambiguous_selection";
 export type RegionPreviewFailure = { stage: CaptureStage; failure_code: RegionPreviewCode; status: number; message: string; step?: number; action?: string };
 type Selection = { selector: string; label: string; visible: boolean; x: number; y: number; width: number; height: number };
 export type PreviewStage = "target_validation" | "capacity_wait" | "proxy_initialization" | "browser_launch" | "browser_context" | "navigation" | "dom_ready" | "browser_steps" | "rendering_preparation" | "screenshot" | "serialization" | "ready";
@@ -30,7 +30,7 @@ export function previewCapacityWaitBudget(
   cfg: Pick<Config, "PREVIEW_CAPACITY_WAIT_MS">,
   captureTimeoutMs: number,
 ) {
-  return Math.min(cfg.PREVIEW_CAPACITY_WAIT_MS, Math.max(0, PREVIEW_REQUEST_BUDGET_MS - captureTimeoutMs));
+  return Math.min(1000, cfg.PREVIEW_CAPACITY_WAIT_MS, Math.max(0, PREVIEW_REQUEST_BUDGET_MS - captureTimeoutMs));
 }
 const MAX_SESSIONS = 4;
 const sessions = new Map<string, Session>();
@@ -55,10 +55,12 @@ async function closeSession(session: Session) {
   sessions.delete(session.id);
   if (session.expiryTimer) clearTimeout(session.expiryTimer);
   session.closing = (async () => {
-    try { await session.context.close(); } catch {}
-    try { await session.browser.close(); } catch {}
-    await session.proxy.close().catch(() => {});
-    await session.capacity?.release().catch(() => {});
+    const browserClosed = await closeWithDeadline(() => session.browser.close());
+    const proxyClosed = await closeWithDeadline(() => session.proxy.close());
+    // Never advertise a free slot when cleanup cannot be confirmed. Retain
+    // its lease until supervised API restart rather than oversubscribe.
+    if (browserClosed && proxyClosed) await session.capacity?.release().catch(() => {});
+    else console.error(JSON.stringify({ code: "preview_cleanup_timeout" }));
   })();
   return session.closing;
 }
@@ -82,13 +84,14 @@ export async function releaseRegionPreviewSession(ownerId: string, sessionId: st
 export async function expireRegionPreviewSessions(now: number) { await purgeExpired(now); }
 
 function previewMessage(stage: CaptureStage, code: RegionPreviewCode) {
+  if (code === "cancelled") return "Preview was cancelled. Start a new Preview when ready.";
   if (code === "session_expired") return "Preview expired. Refresh the preview and try again.";
   if (code === "stale_preview") return "The page changed after the screenshot. Refresh the preview before selecting.";
   if (code === "stale_configuration") return "Preview settings changed. Replay the preview before selecting.";
   if (code === "ambiguous_selection") return "The selected point does not identify one stable visible element. Try a nearby point.";
   if (code === "timeout") return "Preview timed out. Retry, or use viewport capture instead.";
   if (code === "capacity_busy") return "Preview capacity is busy. Retry shortly.";
-  if (code === "capacity_wait_timeout") return "No browser capacity became available in time. Retry shortly.";
+  if (code === "capacity_wait_timeout") return "The interactive Preview lane is busy. Close another Preview or retry shortly. You can continue editing and saving manually.";
   if (code === "capacity_queue_full") return "Preview capacity is busy. Retry shortly.";
   if (code === "egress_denied") return "Preview destination is not permitted.";
   if (code === "selector_failed") return "The selected region is not a unique visible element.";
@@ -98,6 +101,8 @@ function previewMessage(stage: CaptureStage, code: RegionPreviewCode) {
   return "Website preview failed. Retry, or use viewport capture instead.";
 }
 export function regionPreviewFailure(error: unknown, stage: CaptureStage): RegionPreviewFailure {
+  if (error instanceof HttpError && error.status === 499)
+    return { stage, failure_code: "cancelled", status: 499, message: "Preview was cancelled. Start a new Preview when ready." };
   const safe = captureFailure(error, stage);
   const validation = error instanceof HttpError && error.status >= 400 && error.status < 500;
   const stepFailure = error instanceof StepFailure ? error : undefined;
@@ -149,6 +154,7 @@ async function boundedPreviewOperation<T>(input: {
   stage: CaptureStage;
   signal?: AbortSignal;
 }) {
+  if (input.signal?.aborted) throw new HttpError(499, "Preview request was cancelled");
   const budget = input.remaining();
   let interruption: HttpError | CaptureFailure | undefined;
   let cancelling: Promise<void> | undefined;
@@ -275,7 +281,7 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
       }
       const picked = point ? await boundedPreviewOperation({ operation: () => selectionAt(active.page, point, { width: active.width, height: active.height }), remaining: activeRemaining, cancel: () => closeSession(active), stage: "text_extraction", signal: session.signal }) : null;
       if (picked) checkDimensions({ width: Math.ceil(picked.selection.width), height: Math.ceil(picked.selection.height) }, { width: cfg.MAX_CAPTURE_WIDTH, height: cfg.MAX_CAPTURE_HEIGHT, pixels: cfg.MAX_CAPTURE_PIXELS });
-      return { session_id: active.id, image: active.image.toString("base64"), width: active.width, height: active.height, http_status: active.httpStatus, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings: active.timings, warning: active.warning, reused: true };
+      return { session_id: active.id, expires_at: active.expiresAt, image: active.image.toString("base64"), width: active.width, height: active.height, http_status: active.httpStatus, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings: active.timings, warning: active.warning, reused: true };
     } catch (error) {
       if (session.signal?.aborted || Date.now() >= active.expiresAt) await closeSession(active);
       throw regionPreviewFailure(error, stage);
@@ -293,8 +299,7 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
   let capacity: ChromiumLease | undefined;
   let reservation: ReturnType<typeof reserveSession> | undefined;
   const cancelBrowser = async () => {
-    try { await context?.close(); } catch {}
-    try { await browser?.close(); } catch {}
+    await closeWithDeadline(browser ? () => browser!.close() : undefined);
   };
   const abortBrowser = () => { void cancelBrowser(); };
   const timings: PreviewTimings = {};
@@ -310,9 +315,11 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
     if (existing) await closeSession(existing);
     if (session?.acquireCapacity) {
       enter("capacity_wait");
+      stage = "browser_launch";
       capacity = await session.acquireCapacity(() => session.progress?.("capacity_wait")) ?? undefined;
       if (session.signal?.aborted) throw new HttpError(499, "Preview request was cancelled");
       if (!capacity) throw new CaptureFailure("browser_launch", "capacity_wait_timeout", "No browser capacity became available in time. Retry shortly.");
+      if (capacity.signal?.aborted) throw new HttpError(499, "Preview was cancelled");
     }
     if (session?.signal?.aborted) throw new HttpError(499, "Preview request was cancelled");
     deadline = Date.now() + captureTimeoutMs;
@@ -322,6 +329,9 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
     enter("browser_launch");
     stage = "browser_launch";
     browser = await chromium.launch({ headless: true, chromiumSandbox: true, executablePath: cfg.PLAYWRIGHT_EXECUTABLE_PATH, proxy: { server: proxy.url, bypass: "<-loopback>" }, timeout: remaining() });
+    capacity?.signal?.addEventListener("abort", abortBrowser, { once: true });
+    browser.once("disconnected", () => capacity?.signal?.removeEventListener("abort", abortBrowser));
+    if (capacity?.signal?.aborted || session?.signal?.aborted) throw new HttpError(499, "Preview was cancelled");
     stage = "browser_context";
     enter("browser_context");
     const viewport = browserViewport(Boolean(m.mobile_view));
@@ -390,13 +400,22 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
     active.expiryTimer = setTimeout(() => void closeSession(active), REGION_PREVIEW_MAX_LIFETIME_MS);
     active.expiryTimer.unref();
     sessions.set(active.id, active);
+    const lost = () => void closeSession(active);
+    active.capacity?.signal?.addEventListener("abort", lost, { once: true });
+    active.browser.once("disconnected", () => { active.capacity?.signal?.removeEventListener("abort", lost); void closeSession(active); });
+    if (active.capacity?.signal?.aborted || session.signal?.aborted) {
+      await closeSession(active);
+      throw new HttpError(499, "Preview was cancelled");
+    }
     browser = undefined; context = undefined; proxy = undefined; capacity = undefined;
-    return { session_id: active.id, image: encoded, width: viewport.width, height: viewport.height, http_status: navigationStatus, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings, warning, reused: false };
+    return { session_id: active.id, expires_at: active.expiresAt, image: encoded, width: viewport.width, height: viewport.height, http_status: navigationStatus, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings, warning, reused: false };
   } catch (error) { throw regionPreviewFailure(error, stage); }
   finally {
     session?.signal?.removeEventListener("abort", abortBrowser);
     if (reservation) reservations.delete(reservation.token);
-    try { await context?.close(); } catch {}
-    try { await browser?.close(); } finally { await proxy?.close(); await capacity?.release().catch(() => {}); }
+    const browserClosed = await closeWithDeadline(browser ? () => browser!.close() : undefined);
+    const proxyClosed = await closeWithDeadline(proxy ? () => proxy!.close() : undefined);
+    if (browserClosed && proxyClosed) await capacity?.release().catch(() => {});
+    else console.error(JSON.stringify({ code: "preview_cleanup_timeout" }));
   }
 }

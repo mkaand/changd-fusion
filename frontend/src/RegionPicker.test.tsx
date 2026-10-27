@@ -161,6 +161,43 @@ it("refreshes a stale selection inside the existing session and clears the old e
   expect(await screen.findByText("Selected visible element")).toBeInTheDocument();
 });
 
+it("mobile Back cancels pending Preview and ignores a late owner session", async () => {
+  let finish!: (value: unknown) => void;
+  let signal: AbortSignal | undefined;
+  vi.mocked(api).mockImplementation((path, method, _data, options) => {
+    if (method === "DELETE") return Promise.resolve({}) as any;
+    if (path === "/region-preview") { signal = options?.signal; return new Promise(resolve => { finish = resolve; }); }
+    return Promise.resolve({ stage: "capacity_wait" }) as any;
+  });
+  const back = vi.fn();
+  const { unmount } = render(<RegionPicker mobilePage getDraft={() => draft} onSelect={vi.fn()} onUseViewport={vi.fn()} onBackMobile={back} />);
+  await waitFor(() => expect(api).toHaveBeenCalled());
+  await userEvent.click(screen.getByRole("button", { name: "← Back" }));
+  expect(back).toHaveBeenCalled();
+  expect(signal?.aborted).toBe(true);
+  const id = "00000000-0000-4000-8000-000000000088";
+  finish({ session_id: id, image: "aGVsbG8=", width: 1280, height: 900 });
+  await waitFor(() => expect(api).toHaveBeenCalledWith(`/region-preview/${id}`, "DELETE"));
+  expect(screen.queryByText("Selected visible element")).not.toBeInTheDocument();
+  unmount();
+});
+
+it("cannot apply a selector from a Preview rendered before manual draft edits", async () => {
+  const current = { ...draft };
+  const select = vi.fn();
+  const id = "00000000-0000-4000-8000-000000000077";
+  vi.mocked(api).mockResolvedValue({ session_id: id, image: "aGVsbG8=", width: 1280, height: 900, selection: { selector: "#old-target", x: 0, y: 0, width: 30, height: 30 } });
+  render(<RegionPicker getDraft={() => current} onSelect={select} onUseViewport={vi.fn()} />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Select region visually" }));
+  await screen.findByText("Selected visible element");
+  current.url = "https://changed-fixture.example";
+  await user.click(screen.getByRole("button", { name: "Use selector" }));
+  expect(select).not.toHaveBeenCalled();
+  expect(screen.getByRole("alert")).toHaveTextContent("Preview settings changed");
+  await waitFor(() => expect(api).toHaveBeenCalledWith(`/region-preview/${id}`, "DELETE"));
+});
+
 it("does not open a network preview when the visual draft is incomplete", async () => {
   render(<RegionPicker getDraft={() => ({ kind: "browser", visual_enabled: false })} onSelect={vi.fn()} onUseViewport={vi.fn()} />);
   fireEvent.click(screen.getByRole("button", { name: "Select region visually" }));

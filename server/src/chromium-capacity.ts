@@ -1,127 +1,61 @@
-import type pg from "pg";
 import type { Pool } from "./db.js";
 
-// Session advisory locks coordinate the API and worker even though they run in
-// separate containers. A lease deliberately owns a dedicated pool connection
-// for the lifetime of the Chromium process tree (and a resident preview).
-const LOCK_NAMESPACE = 0x43484645; // "CHFE"
-const PRIORITY_GATE = 0;
-const POLL_MS = 50;
-
-export type ChromiumWorkload = "capture" | "preview";
-
+const LOCK_NAMESPACE = 0x43484645;
+// Capture retains the legacy slot. All replicas share one reservation per lane;
+// configuration cannot multiply the global limit of two Chromium processes.
+const SLOTS = { capture: 1, preview: 4 } as const;
+export type ChromiumWorkload = keyof typeof SLOTS;
 export type ChromiumLease = {
   readonly workload: ChromiumWorkload;
   readonly slot: number;
+  readonly signal?: AbortSignal;
   release(): Promise<void>;
 };
-
-const delay = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-const waitForCapacityPoll = (ms: number, signal?: AbortSignal) => new Promise<void>((resolve) => {
-  let timer: NodeJS.Timeout | undefined;
-  const finish = () => { if (timer) clearTimeout(timer); signal?.removeEventListener("abort", finish); resolve(); };
-  timer = setTimeout(finish, ms);
-  signal?.addEventListener("abort", finish, { once: true });
-});
-
-async function tryLock(client: pg.PoolClient, shared: boolean, slot: number) {
-  const fn = shared ? "pg_try_advisory_lock_shared" : "pg_try_advisory_lock";
-  const result = await client.query<{ locked: boolean }>(`SELECT ${fn}($1, $2) AS locked`, [LOCK_NAMESPACE, slot]);
-  return result.rows[0]?.locked === true;
+function pause(ms: number, signal?: AbortSignal) {
+  return new Promise<void>((resolve) => {
+    const finish = () => { clearTimeout(timer); signal?.removeEventListener("abort", finish); resolve(); };
+    const timer = setTimeout(finish, ms);
+    signal?.addEventListener("abort", finish, { once: true });
+    if (signal?.aborted) finish();
+  });
 }
-
-async function unlock(client: pg.PoolClient, shared: boolean, slot: number) {
-  const fn = shared ? "pg_advisory_unlock_shared" : "pg_advisory_unlock";
-  const result = await client.query<{ unlocked: boolean }>(`SELECT ${fn}($1, $2) AS unlocked`, [LOCK_NAMESPACE, slot]);
-  return result.rows[0]?.unlocked === true;
-}
-
-function lease(client: pg.PoolClient, workload: ChromiumWorkload, slot: number): ChromiumLease {
-  let released = false;
-  return {
-    workload,
-    slot,
-    async release() {
-      if (released) return;
-      released = true;
-      let clean = false;
-      try { clean = await unlock(client, false, slot); }
-      finally { client.release(!clean); }
-    },
-  };
-}
-
-/**
- * Acquire one global Chromium slot. Captures briefly take an exclusive gate
- * while looking for a slot; previews use a shared, non-waiting gate. This
- * gives scheduled monitoring preference without holding a database lock while
- * Chromium is running.
- */
-export async function acquireChromiumLease(
-  pool: Pool,
-  options: { workload: ChromiumWorkload; slots: number; waitMs?: number; signal?: AbortSignal; onWait?: () => void },
-): Promise<ChromiumLease | null> {
-  const slots = Math.max(1, Math.min(3, Math.trunc(options.slots)));
-  const waitMs = Math.max(0, options.waitMs ?? (options.workload === "capture" ? 1_000 : 0));
-  const deadline = Date.now() + waitMs;
-  // Preview waiters must not pin PostgreSQL pool connections while another
-  // process owns Chromium. Each probe releases its client before a bounded,
-  // abortable pause. Capture admission intentionally retains its exclusive
-  // priority gate, so scheduled work cannot be starved by previews.
-  if (options.workload === "preview" && waitMs > 0) {
-    do {
+export async function acquireChromiumLease(pool: Pool, options: {
+  workload: ChromiumWorkload; slots: number; waitMs?: number;
+  signal?: AbortSignal; onWait?: () => void;
+}): Promise<ChromiumLease | null> {
+  const slot = SLOTS[options.workload];
+  const deadline = Date.now() + Math.min(1000, Math.max(0, options.waitMs ?? 0));
+  do {
+    if (options.signal?.aborted) return null;
+    const client = await pool.connect();
+    let held = false, clean = true, released = false;
+    const loss = new AbortController();
+    const lost = () => { clean = false; loss.abort(); };
+    client.on?.("error", lost); client.on?.("end", lost);
+    const dispose = () => {
+      client.off?.("error", lost); client.off?.("end", lost);
+      client.release(!clean);
+    };
+    try {
       if (options.signal?.aborted) return null;
-      const acquired = await acquireChromiumLease(pool, { ...options, waitMs: 0, onWait: undefined });
-      if (acquired) return acquired;
-      if (Date.now() >= deadline) return null;
-      options.onWait?.();
-      await waitForCapacityPoll(Math.min(POLL_MS, Math.max(1, deadline - Date.now())), options.signal);
-    } while (Date.now() < deadline);
-    return null;
-  }
-  const client = await pool.connect();
-  let gateHeld = false;
-  let clean = true;
-  let leased = false;
-  try {
-    do {
-      if (options.signal?.aborted) return null;
-      if (!gateHeld) gateHeld = await tryLock(client, options.workload === "preview", PRIORITY_GATE);
-      if (!gateHeld) {
-        if (Date.now() >= deadline) return null;
-        await delay(Math.min(POLL_MS, Math.max(1, deadline - Date.now())));
-        continue;
-      }
-      for (let slot = 1; slot <= slots; slot++) {
-        if (await tryLock(client, false, slot)) {
-          if (!await unlock(client, options.workload === "preview", PRIORITY_GATE)) clean = false;
-          gateHeld = false;
-          if (!clean) {
-            await unlock(client, false, slot).catch(() => false);
-            return null;
+      const result = await client.query<{ locked: boolean }>("SELECT pg_try_advisory_lock($1, $2) AS locked", [LOCK_NAMESPACE, slot]);
+      held = result.rows[0]?.locked === true;
+      if (held) return { workload: options.workload, slot, signal: loss.signal, async release() {
+        if (released) return;
+        released = true;
+        try {
+          if (clean) {
+            const result = await client.query<{ unlocked: boolean }>("SELECT pg_advisory_unlock($1, $2) AS unlocked", [LOCK_NAMESPACE, slot]);
+            clean = result.rows[0]?.unlocked === true;
           }
-          leased = true;
-          return lease(client, options.workload, slot);
-        }
-      }
-      if (options.workload === "preview" || Date.now() >= deadline) {
-        if (!await unlock(client, options.workload === "preview", PRIORITY_GATE)) clean = false;
-        gateHeld = false;
-        return null;
-      }
-      if (!clean) return null;
-      // A waiting capture retains the exclusive gate so a stream of optional
-      // previews cannot starve scheduled monitoring. The gate is released as
-      // soon as a slot is acquired or this short admission deadline expires.
-      await delay(Math.min(POLL_MS, Math.max(1, deadline - Date.now())));
-    } while (Date.now() <= deadline);
-    return null;
-  } catch (error) {
-    clean = false;
-    throw error;
-  } finally {
-    if (gateHeld) clean = await unlock(client, options.workload === "preview", PRIORITY_GATE).catch(() => false) && clean;
-    // A returned lease owns the client; otherwise release it here.
-    if (!leased) client.release(!clean);
-  }
+        } catch (error) { clean = false; throw error; }
+        finally { dispose(); }
+      } };
+    } catch (error) { clean = false; throw error; }
+    finally { if (!held) dispose(); }
+    if (Date.now() >= deadline) return null;
+    options.onWait?.();
+    await pause(Math.min(50, Math.max(1, deadline - Date.now())), options.signal);
+  } while (Date.now() < deadline);
+  return null;
 }

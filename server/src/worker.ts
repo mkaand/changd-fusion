@@ -34,7 +34,7 @@ export async function workerCycle(
         let fatalCleanup = false;
         try {
           await runMonitor(pool, cfg, monitor.id, {
-            capture: options.capture,
+            capture: options.capture ?? ((monitor, config) => capture(monitor, config, undefined, capacity?.signal)),
             onFailure: options.onFailure,
           });
         } catch (error) {

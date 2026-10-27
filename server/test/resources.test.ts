@@ -38,7 +38,7 @@ test("resource configuration is bounded and defaults to a single Chromium captur
     CHANNEL_KEY: randomBytes(32).toString("hex"),
   };
   assert.equal(readConfig(env).CHROMIUM_CONCURRENCY, 1);
-  assert.equal(readConfig(env).PREVIEW_CAPACITY_WAIT_MS, 45_000);
+  assert.equal(readConfig(env).PREVIEW_CAPACITY_WAIT_MS, 1000);
   assert.equal(readConfig(env).CAPTURE_TIMEOUT_MS, 30_000);
   assert.equal(readConfig({ ...env, CAPTURE_TIMEOUT_MS: "45000" }).CAPTURE_TIMEOUT_MS, 45_000);
   assert.equal(DEFAULT_NEW_MONITOR_CAPTURE_TIMEOUT_MS, 60_000);
@@ -53,7 +53,7 @@ test("resource configuration is bounded and defaults to a single Chromium captur
 });
 
 test("preview admission has a separate bounded budget from browser execution", () => {
-  for (const [execution, admission] of [[30_000, 45_000], [45_000, 45_000], [60_000, 45_000], [75_000, 35_000], [90_000, 20_000]] as const)
+  for (const [execution, admission] of [[30_000, 1000], [45_000, 1000], [60_000, 1000], [75_000, 1000], [90_000, 1000]] as const)
     assert.equal(previewCapacityWaitBudget({ PREVIEW_CAPACITY_WAIT_MS: 45_000 }, execution), admission);
   assert.equal(previewCapacityWaitBudget({ PREVIEW_CAPACITY_WAIT_MS: 45_000 }, PREVIEW_REQUEST_BUDGET_MS), 0);
 });

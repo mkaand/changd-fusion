@@ -310,7 +310,9 @@ export async function capture(
   m: Monitor,
   cfg: Config,
   policy = new EgressPolicy(),
+  signal?: AbortSignal,
 ): Promise<Capture> {
+  if (signal?.aborted) throw new HttpError(503, "Chromium capacity lease was lost");
   const captureTimeoutMs = effectiveCaptureTimeout(m, cfg);
   const deadline = Date.now() + captureTimeoutMs;
   let stage: CaptureStage = "target_validation";
@@ -396,6 +398,10 @@ export async function capture(
       acceptDownloads: false,
       ignoreHTTPSErrors: false,
     });
+    const stopForLeaseLoss = () => { void context.close().catch(() => {}); };
+    signal?.addEventListener("abort", stopForLeaseLoss, { once: true });
+    if (signal?.aborted) stopForLeaseLoss();
+    context.once("close", () => signal?.removeEventListener("abort", stopForLeaseLoss));
     timer = setTimeout(() => {
       deadlineElapsed = true;
       void context.close().catch(() => {});
