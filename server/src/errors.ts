@@ -52,6 +52,8 @@ export const captureFailureCodes = [
   "capacity_busy",
   "capacity_wait_timeout",
   "capacity_queue_full",
+  "coordination_lost",
+  "scheduled_recovery",
   "resource_limit",
   "capture_failed",
   "cleanup_timeout",
@@ -79,6 +81,25 @@ export class WorkerFatalError extends Error {
     super("Capture cleanup did not complete before its safety deadline.");
     this.name = "WorkerFatalError";
   }
+}
+
+// This is deliberately distinct from a site or browser failure.  A worker uses
+// it only after a durable, authenticated interactive request has asked it to
+// yield the single global Chromium reservation.
+export class SchedulingCancellation extends Error {
+  readonly reason = "interactive_priority" as const;
+  constructor() {
+    super("Scheduled capture yielded to an interactive request.");
+    this.name = "SchedulingCancellation";
+  }
+}
+
+export function isSchedulingCancellation(error: unknown): error is SchedulingCancellation {
+  return error instanceof SchedulingCancellation;
+}
+
+export class ChromiumCoordinationLost extends Error {
+  constructor() { super("Chromium coordination was lost. Retry after safe cleanup."); }
 }
 
 export function isWorkerFatalError(error: unknown): error is WorkerFatalError {

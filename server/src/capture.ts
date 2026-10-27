@@ -10,6 +10,7 @@ import {
   type CaptureTimings,
   HttpError,
   WorkerFatalError,
+  ChromiumCoordinationLost,
 } from "./errors.js";
 import { checkDimensions, pngDimensions } from "./image.js";
 import type { Config } from "./config.js";
@@ -312,13 +313,14 @@ export async function capture(
   policy = new EgressPolicy(),
   signal?: AbortSignal,
 ): Promise<Capture> {
-  if (signal?.aborted) throw new HttpError(503, "Chromium capacity lease was lost");
+  if (signal?.aborted) throw (signal.reason ?? new ChromiumCoordinationLost());
   const captureTimeoutMs = effectiveCaptureTimeout(m, cfg);
   const deadline = Date.now() + captureTimeoutMs;
   let stage: CaptureStage = "target_validation";
   const timings: CaptureTimings = {};
   let stageStarted = performance.now();
   const enterStage = (next: CaptureStage) => {
+    if (next !== "cleanup" && signal?.aborted) throw signal.reason;
     timings[stage] = Math.round((timings[stage] ?? 0) + performance.now() - stageStarted);
     stage = next;
     stageStarted = performance.now();
@@ -610,6 +612,7 @@ export async function capture(
   } catch (error) {
     finishTimings();
     if (error instanceof WorkerFatalError) { error.timings = timings; throw error; }
+    if (signal?.aborted) throw signal.reason;
     if (error instanceof AttentionFailure) { error.timings = timings; throw error; }
     const failure = error instanceof StepFailure ? captureFailure(error, stage) : deadlineElapsed
       ? new CaptureFailure(stage, (stage as string) === "screenshot_rasterization" ? "screenshot_timeout" : "timeout",

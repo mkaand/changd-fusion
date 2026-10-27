@@ -41,6 +41,7 @@ import { TextPicker } from "./TextPicker";
 import { SelectedAreaPicker } from "./SelectedAreaPicker";
 import { isValidCaptureArea } from "./capture-area";
 import { MonitorUrlActions } from "./MonitorUrlActions";
+import { ManualRunStatus } from "./ManualRunStatus";
 const History = lazy(() =>
   import("./History").then((m) => ({ default: m.History })),
 );
@@ -500,6 +501,7 @@ export default function FusionApp() {
                     <Button onClick={() => void action(current.id, "reset")}>Reset baseline</Button>
                   </div>
                 </header>
+                <ManualRunStatus id={current.id} refresh={historyRefresh} />
                 <Card>
                   <Space wrap className="monitor-detail-meta">
                     <Tag

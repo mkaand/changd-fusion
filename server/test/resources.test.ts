@@ -7,7 +7,9 @@ import { closeServer } from "./helpers/server.js";
 import { readConfig } from "../src/config.js";
 import { stableElementBounds } from "../src/capture.js";
 import { DEFAULT_NEW_MONITOR_CAPTURE_TIMEOUT_MS, effectiveCaptureTimeout, previewExecutionTimeout } from "../src/capture-timeout.js";
-import { PREVIEW_REQUEST_BUDGET_MS, previewCapacityWaitBudget } from "../src/region-picker.js";
+import { PREVIEW_REQUEST_BUDGET_MS, previewCapacityWaitBudget, previewRegion } from "../src/region-picker.js";
+import { EgressPolicy } from "../src/egress.js";
+import { CaptureFailure } from "../src/errors.js";
 test("fixture cleanup closes active keep-alive sockets even when responses never end", async () => {
   const server = http.createServer((_req, res) => {
     res.writeHead(200);
@@ -38,7 +40,7 @@ test("resource configuration is bounded and defaults to a single Chromium captur
     CHANNEL_KEY: randomBytes(32).toString("hex"),
   };
   assert.equal(readConfig(env).CHROMIUM_CONCURRENCY, 1);
-  assert.equal(readConfig(env).PREVIEW_CAPACITY_WAIT_MS, 1000);
+  assert.equal(readConfig(env).PREVIEW_CAPACITY_WAIT_MS, 15_000);
   assert.equal(readConfig(env).CAPTURE_TIMEOUT_MS, 30_000);
   assert.equal(readConfig({ ...env, CAPTURE_TIMEOUT_MS: "45000" }).CAPTURE_TIMEOUT_MS, 45_000);
   assert.equal(DEFAULT_NEW_MONITOR_CAPTURE_TIMEOUT_MS, 60_000);
@@ -53,9 +55,26 @@ test("resource configuration is bounded and defaults to a single Chromium captur
 });
 
 test("preview admission has a separate bounded budget from browser execution", () => {
-  for (const [execution, admission] of [[30_000, 1000], [45_000, 1000], [60_000, 1000], [75_000, 1000], [90_000, 1000]] as const)
+  for (const [execution, admission] of [[30_000, 15_000], [45_000, 15_000], [60_000, 15_000], [75_000, 15_000], [90_000, 10_000]] as const)
     assert.equal(previewCapacityWaitBudget({ PREVIEW_CAPACITY_WAIT_MS: 45_000 }, execution), admission);
   assert.equal(previewCapacityWaitBudget({ PREVIEW_CAPACITY_WAIT_MS: 45_000 }, PREVIEW_REQUEST_BUDGET_MS), 0);
+});
+
+test("Preview admission subtracts target validation time and reserves browser/proxy cleanup", async () => {
+  const cfg = readConfig({ DATABASE_URL: "postgresql://localhost/fixture", JWT_SECRET: randomBytes(32).toString("hex"), CHANNEL_KEY: randomBytes(32).toString("hex") });
+  const policy = new EgressPolicy(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    return [{ address: "8.8.8.8", family: 4 }];
+  });
+  let budget = -1;
+  await assert.rejects(previewRegion({ kind: "browser", visual_enabled: true, url: "https://fixture.example", capture_timeout_ms: 90_000 } as any, cfg, undefined, policy, {
+    ownerId: "budget-fixture",
+    acquireCapacity: async (_onWait, remaining) => {
+      budget = remaining;
+      throw new CaptureFailure("browser_launch", "capacity_busy");
+    },
+  }), (e: any) => e.failure_code === "capacity_busy");
+  assert.ok(budget > 0 && budget < 10_000, "a 90-second capture leaves less than 10 seconds after validation and reserved cleanup");
 });
 
 test("Compose preserves the 30-second legacy fallback", async () => {

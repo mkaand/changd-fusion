@@ -85,6 +85,7 @@ const result = spawnSync(
     "256",
     "--shm-size",
     "256m",
+    ...(process.env.FUSION_DOCKER_DIST ? ["--mount", `type=bind,source=${path.resolve(process.env.FUSION_DOCKER_DIST)},target=/app/dist,readonly`] : []),
     "--env",
     "EXPECTED_CHROMIUM_VERSION=" + expectedVersion,
     process.env.FUSION_DOCKER_IMAGE ?? "changd-fusion-api:ci",

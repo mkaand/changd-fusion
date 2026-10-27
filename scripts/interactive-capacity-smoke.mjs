@@ -1,4 +1,5 @@
-// Synthetic concurrent resource measurement under unchanged Compose lane limits.
+// Sequential browser resource measurements under unchanged API/Worker limits.
+// PostgreSQL integration separately proves the shared-slot preemption handoff.
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import path from "node:path";
@@ -40,7 +41,7 @@ try {
 `;
 function run(lane, cpu, memory, pids, shm) {
   return new Promise((resolve, reject) => {
-    const child = spawn("docker", ["run", "--rm", "-i", "--init", "--network", "none", "--security-opt", `seccomp=${path.resolve("docker/chromium-seccomp.json")}`, "--cpus", cpu, "--memory", memory, "--pids-limit", pids, "--shm-size", shm, "--tmpfs", "/tmp:rw,nosuid,nodev,size=134217728,mode=1777", "-e", `TEST_LANE=${lane}`, image, "node", "--input-type=module"], { stdio: ["pipe", "pipe", "pipe"] });
+    const child = spawn("docker", ["run", "--rm", "-i", "--init", "--network", "none", "--security-opt", `seccomp=${path.resolve("docker/chromium-seccomp.json")}`, "--cpus", cpu, "--memory", memory, "--pids-limit", pids, "--shm-size", shm, "--tmpfs", "/tmp:rw,nosuid,nodev,size=134217728,mode=1777", ...(process.env.FUSION_DOCKER_DIST ? ["--mount", `type=bind,source=${path.resolve(process.env.FUSION_DOCKER_DIST)},target=/app/dist,readonly`] : []), "-e", `TEST_LANE=${lane}`, image, "node", "--input-type=module"], { stdio: ["pipe", "pipe", "pipe"] });
     let stdout = "", stderr = "";
     child.stdout.on("data", data => { stdout += data; }); child.stderr.on("data", data => { stderr += data; });
     const timer = setTimeout(() => child.kill("SIGTERM"), 90000);
@@ -49,7 +50,9 @@ function run(lane, cpu, memory, pids, shm) {
     child.stdin.end(script);
   });
 }
-const results = await Promise.all([run("preview", "0.75", "640m", "192", "64m"), run("capture", "1", "1g", "256", "256m")]);
-assert.ok(Math.min(...results.map(r => r.finished)) > Math.max(...results.map(r => r.started)) + 3000, "lanes ran concurrently");
+const results = [];
+results.push(await run("preview", "0.75", "640m", "192", "64m"));
+results.push(await run("capture", "1", "1g", "256", "256m"));
+assert.ok(results[1].started >= results[0].finished, "resource fixtures never overlap Chromium trees");
 for (const result of results) console.log(JSON.stringify(result));
-console.log("PASS: simultaneous rootless Preview/Worker fit existing CPU, RAM, PID and SHM limits");
+console.log("PASS: sequential rootless Preview/Worker fit existing CPU, RAM, PID and SHM limits");

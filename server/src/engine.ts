@@ -15,6 +15,8 @@ import { AttentionFailure } from "./attention.js";
 import {
   captureFailure,
   isWorkerFatalError,
+  isSchedulingCancellation,
+  ChromiumCoordinationLost,
   type CaptureStage,
   publicFailure,
 } from "./errors.js";
@@ -40,6 +42,8 @@ export type RunMonitorOptions = {
   capture?: typeof capture;
   comparator?: VisualComparator;
   force?: boolean;
+  signal?: AbortSignal;
+  manualRunId?: string;
   onFailure?: (diagnostic: CaptureFailureDiagnostic) => void;
 };
 
@@ -142,11 +146,18 @@ export async function runMonitor(
       )
     ).rows[0].locked;
     if (!locked) return false;
+    if (options.manualRunId) {
+      const run = await c.query("UPDATE fusion_manual_runs SET status='running',updated_at=now() WHERE id=$1 AND monitor_id=$2 AND status IN ('queued','running') RETURNING id", [options.manualRunId, id]);
+      if (!run.rowCount) return false;
+    }
     const result = await c.query(
       "SELECT * FROM fusion_monitors WHERE id=$1 AND enabled AND NOT paused AND ($2 OR next_run<=now())",
       [id, !!options.force],
     );
-    if (!result.rowCount) return false;
+    if (!result.rowCount) {
+      if (options.manualRunId) await c.query("UPDATE fusion_manual_runs SET status='cancelled',updated_at=now() WHERE id=$1", [options.manualRunId]);
+      return false;
+    }
     const m: Monitor = result.rows[0];
     const started = Date.now();
     await c.query("UPDATE fusion_monitors SET last_run=now() WHERE id=$1", [
@@ -170,7 +181,8 @@ export async function runMonitor(
         m.private_values = openValues(vault, cfg.CHANNEL_KEY, m);
       }
       stage = "unknown";
-      const current: Capture = await (options.capture ?? capture)(m, cfg);
+      const current: Capture = await (options.capture ?? capture)(m, cfg, undefined, options.signal);
+      if (options.signal?.aborted) throw options.signal.reason;
       if (
         (m.text_enabled && current.text === null) ||
         (m.visual_enabled && !current.screenshot)
@@ -237,6 +249,7 @@ export async function runMonitor(
         m.text_enabled &&
         (!before || extractionTransition);
       stage = "database";
+      if (options.signal?.aborted) throw options.signal.reason;
       await c.query("BEGIN");
       try {
         await c.query(
@@ -295,6 +308,10 @@ export async function runMonitor(
           else
             await c.query("UPDATE fusion_events SET notification_state='direction_filtered',notification_fingerprint=$2 WHERE id=$1", [event.rows[0].id, fingerprint]);
         }
+        // Cancellation before commit rolls back every capture/event/outbox write.
+        // After COMMIT, success remains success even if the signal arrives later.
+        if (options.signal?.aborted) throw options.signal.reason;
+        if (options.manualRunId) await c.query("UPDATE fusion_manual_runs SET status='completed',updated_at=now() WHERE id=$1", [options.manualRunId]);
         await c.query("COMMIT");
       } catch (e) {
         await c.query("ROLLBACK");
@@ -306,6 +323,21 @@ export async function runMonitor(
       // the finally block below still releases this monitor's DB locks.
       if (isWorkerFatalError(e)) throw e;
       for (const file of saved) await storage.remove(file);
+      if (e instanceof ChromiumCoordinationLost) throw e;
+      // A preempted scheduled capture did not observe a website failure.  Keep
+      // all health, baseline and notification state exactly as it was.
+      if (isSchedulingCancellation(e)) {
+        await c.query("BEGIN");
+        try {
+          await c.query("UPDATE fusion_monitors SET next_run=now()+least(interval_seconds,30)*interval '1 second' WHERE id=$1", [id]);
+          await c.query("INSERT INTO fusion_events(monitor_id,status,warning_code,execution_ms) VALUES($1,'skipped','interactive_priority',$2)", [id, Date.now() - started]);
+          await c.query("COMMIT");
+          return false;
+        } catch (skipError) {
+          await c.query("ROLLBACK");
+          throw skipError;
+        }
+      }
       const diagnostic =
         e instanceof AttentionFailure
           ? null
@@ -346,6 +378,7 @@ export async function runMonitor(
         );
         if (shouldNotify)
           await queueNotification(c, m, event.rows[0].id, createHash("sha256").update(JSON.stringify({ state, error: publicFailure(e), ...(failureAlertMode === "every" ? { failureOrdinal, eventId: event.rows[0].id } : {}) })).digest("hex"));
+        if (options.manualRunId) await c.query("UPDATE fusion_manual_runs SET status='failed',updated_at=now() WHERE id=$1", [options.manualRunId]);
         await c.query("COMMIT");
         if (diagnostic)
           options.onFailure?.({
@@ -396,6 +429,8 @@ export async function retainHistory(pool: Pool, cfg: Config) {
     await guard.query(
       "DELETE FROM fusion_sessions WHERE expires_at<now()-interval '1 day' OR revoked_at<now()-interval '1 day'",
     );
+    await guard.query("DELETE FROM fusion_manual_runs WHERE status IN ('completed','failed','cancelled') AND updated_at<now()-$1*interval '1 day'", [cfg.HISTORY_DAYS]);
+    await guard.query("DELETE FROM fusion_chromium_priority_intents i WHERE expires_at<now()-interval '1 day' AND NOT EXISTS(SELECT 1 FROM fusion_manual_runs r WHERE r.priority_intent_id=i.id)");
     // Retain events with pending/failed deliveries, and captures used by current baselines/latest captures.
     await guard.query(
       "DELETE FROM fusion_events e WHERE created_at<now()-$1*interval '1 day' AND NOT EXISTS(SELECT 1 FROM fusion_outbox o WHERE o.event_id=e.id AND o.status<>'sent')",
