@@ -3865,17 +3865,23 @@ test("another replica cannot cancel a disabled running manual request before its
 });
 
 test("manual queue bounds apply atomically without creating priority for rejected requests", async () => {
+  // Keep the real 120/minute HTTP protection, but do not share its window with
+  // every unrelated scenario: fast CI otherwise exhausts it during cleanup and
+  // a generic limiter 429 could falsely satisfy the queue-overflow assertion.
+  const queueAgent = request.agent(createApp(pool, cfg));
+  await queueAgent.post("/api/v1/login").set("X-Fusion-Request", "1").send({ email: "owner@example.com", password }).expect(200);
   const owner = (await pool.query("SELECT user_id FROM users WHERE email='owner@example.com'")).rows[0].user_id;
   const ids: string[] = [];
   for (let index = 0; index < 5; index++) ids.push((await pool.query("INSERT INTO fusion_monitors(user_id,name,url,kind,next_run) VALUES($1,'Bounded manual queue','https://example.com','html',now()+interval '1 day') RETURNING id", [owner])).rows[0].id);
   try {
-    await Promise.all(ids.slice(0, 4).map((id) => ownerAgent.post(`/api/v1/jobs/${id}/run`).set("X-Fusion-Request", "1").send({}).expect(202)));
+    await Promise.all(ids.slice(0, 4).map((id) => queueAgent.post(`/api/v1/jobs/${id}/run`).set("X-Fusion-Request", "1").send({}).expect(202)));
     const intents = (await pool.query("SELECT count(*)::int AS n FROM fusion_chromium_priority_intents")).rows[0].n;
-    await ownerAgent.post(`/api/v1/jobs/${ids[4]}/run`).set("X-Fusion-Request", "1").send({}).expect(429);
+    const full = await queueAgent.post(`/api/v1/jobs/${ids[4]}/run`).set("X-Fusion-Request", "1").send({}).expect(429);
+    assert.equal(full.body.failure_code, "capacity_queue_full", "the durable queue, not the shared HTTP rate window, rejects excess manual work");
     assert.equal((await pool.query("SELECT count(*)::int AS n FROM fusion_chromium_priority_intents")).rows[0].n, intents);
     assert.equal((await pool.query("SELECT count(*)::int AS n FROM fusion_manual_runs WHERE monitor_id=ANY($1::uuid[]) AND status='queued'", [ids])).rows[0].n, 4);
   } finally {
-    for (const id of ids) await ownerAgent.delete(`/api/v1/jobs/${id}/run`).set("X-Fusion-Request", "1").expect(204);
+    for (const id of ids) await queueAgent.delete(`/api/v1/jobs/${id}/run`).set("X-Fusion-Request", "1").expect(204);
   }
 });
 

@@ -74,11 +74,14 @@ try {
   await docker(["network", "create", "--internal", network]);
   networkCreated = true;
   pgId = await docker(["run", "--detach", "--rm", "--network", network, "--network-alias", "crash-db", "--memory", "256m", "--pids-limit", "128", "--env", "POSTGRES_HOST_AUTH_METHOD=trust", postgresImage], 60000);
-  await until(async () => { try { await docker(["exec", pgId, "pg_isready", "-U", "postgres"]); return true; } catch { return false; } }, "disposable PostgreSQL ready");
+  // The image's temporary init server accepts Unix sockets before the final
+  // server listens on TCP. A socket-only pg_isready races fast CI hosts.
+  await until(async () => { try { await docker(["exec", pgId, "pg_isready", "--host", "127.0.0.1", "-U", "postgres"]); return true; } catch { return false; } }, "disposable PostgreSQL TCP ready");
   const address = await docker(["inspect", "--format", "{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}", pgId]);
   // This is the Docker host reaching its own isolated test bridge, not host
   // networking or a route around the managed environment's outbound policy.
   pool = makePool(`postgresql://postgres@${address}:5432/postgres`);
+  await until(async () => { try { await pool.query("SELECT 1"); return true; } catch { return false; } }, "Docker-host PostgreSQL TCP readiness");
   assert.match((await pool.query("SHOW server_version")).rows[0].server_version, /^16\.15\b/);
 
   for (const mode of ["capture", "preview", "orphan", "watchdog", "handoff"]) {
