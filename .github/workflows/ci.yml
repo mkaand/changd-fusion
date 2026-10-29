@@ -101,7 +101,7 @@ jobs:
         with:
           node-version: 24.22.1
       - name: Build production API and UI images
-        run: docker build --pull --no-cache --progress=plain -t changd-fusion-api:ci ./server && docker build --pull --no-cache --progress=plain --build-arg APP_COMMIT --build-arg APP_BRANCH --build-arg APP_SOURCE_PR -t changd-fusion-ui:ci ./frontend && docker build --pull --no-cache --progress=plain -t changd-fusion-preview:ci -f .devcontainer/Dockerfile .
+        run: docker build --pull --no-cache --progress=plain --build-arg APP_COMMIT -t changd-fusion-api:ci ./server && docker build --pull --no-cache --progress=plain --build-arg APP_COMMIT --build-arg APP_BRANCH --build-arg APP_SOURCE_PR -t changd-fusion-ui:ci ./frontend && docker build --pull --no-cache --progress=plain -t changd-fusion-preview:ci -f .devcontainer/Dockerfile .
         timeout-minutes: 10
       - name: Rootless resource limits and sandboxed Browser Steps smoke
         run: node scripts/docker-smoke.mjs
@@ -134,7 +134,7 @@ jobs:
         with:
           node-version: 24.22.1
       - name: Clean native ARM64 image builds
-        run: docker build --pull --no-cache --progress=plain -t changd-fusion-api:ci ./server && docker build --pull --no-cache --progress=plain --build-arg APP_COMMIT --build-arg APP_BRANCH --build-arg APP_SOURCE_PR -t changd-fusion-ui:ci ./frontend && docker build --pull --no-cache --progress=plain -t changd-fusion-preview:ci -f .devcontainer/Dockerfile .
+        run: docker build --pull --no-cache --progress=plain --build-arg APP_COMMIT -t changd-fusion-api:ci ./server && docker build --pull --no-cache --progress=plain --build-arg APP_COMMIT --build-arg APP_BRANCH --build-arg APP_SOURCE_PR -t changd-fusion-ui:ci ./frontend && docker build --pull --no-cache --progress=plain -t changd-fusion-preview:ci -f .devcontainer/Dockerfile .
         timeout-minutes: 10
       - name: ARM64 rootless resource limits and sandboxed Browser Steps smoke
         run: node scripts/docker-smoke.mjs

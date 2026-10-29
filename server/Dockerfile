@@ -12,7 +12,9 @@ RUN npm run build
 FROM node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205 AS runtime
 # Keep browser/common/sandbox aligned with the authenticated Bookworm security update.
 ARG CHROMIUM_VERSION=156.0.8078.47-1~deb12u1
-ENV NODE_ENV=production PLAYWRIGHT_EXECUTABLE_PATH=/usr/bin/chromium DATA_DIR=/data
+ARG APP_COMMIT=development
+ENV NODE_ENV=production PLAYWRIGHT_EXECUTABLE_PATH=/usr/bin/chromium DATA_DIR=/data APP_COMMIT=${APP_COMMIT}
+LABEL org.opencontainers.image.revision=${APP_COMMIT}
 WORKDIR /app
 COPY --chown=node:node package.json package-lock.json ./
 RUN --mount=type=secret,id=build_ca \

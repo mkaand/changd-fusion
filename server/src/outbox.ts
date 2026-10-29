@@ -7,13 +7,14 @@ export async function dispatch(
   pool: Pool,
   cfg: Config,
   send: typeof deliver = deliver,
-  options: { stopped?: () => boolean } = {},
+  options: { stopped?: () => boolean; onProgress?: () => void } = {},
 ) {
   const digestConnection = await pool.connect();
   try {
     await digestConnection.query("BEGIN");
     const due = await digestConnection.query("SELECT * FROM fusion_notification_digests WHERE due_at<=now() FOR UPDATE SKIP LOCKED");
     for (const row of due.rows) {
+      options.onProgress?.();
       const event = await digestConnection.query("INSERT INTO fusion_events(monitor_id,status,metadata,notification_state) VALUES($1,'digest',$2,'queued') RETURNING id", [row.monitor_id, JSON.stringify({ digest_count: row.event_count, period_start: row.first_event_at, period_end: row.last_event_at })]);
       await digestConnection.query("INSERT INTO fusion_outbox(event_id,channel_id) VALUES($1,$2) ON CONFLICT DO NOTHING", [event.rows[0].id, row.channel_id]);
       await digestConnection.query("DELETE FROM fusion_notification_digests WHERE monitor_id=$1 AND channel_id=$2", [row.monitor_id, row.channel_id]);
@@ -28,6 +29,7 @@ export async function dispatch(
   );
   for (const { id } of candidates.rows) {
     if (options.stopped?.()) break;
+    options.onProgress?.();
     const c = await pool.connect();
     let locked = false;
     try {
@@ -101,6 +103,7 @@ export async function dispatch(
         ),
       };
       try {
+        options.onProgress?.();
         await send(
           row.provider,
           decrypt(row.config.encrypted, cfg.CHANNEL_KEY),
@@ -128,6 +131,7 @@ export async function dispatch(
           [id],
         );
       }
+      options.onProgress?.();
     } finally {
       let clean = false;
       try {

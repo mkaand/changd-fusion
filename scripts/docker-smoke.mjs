@@ -6,6 +6,11 @@ import { readFileSync } from "node:fs";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const expectedVersion = readFileSync(path.join(root, "server/Dockerfile"), "utf8").match(/^ARG CHROMIUM_VERSION=(\S+)$/m)?.[1];
 if (!expectedVersion || !readFileSync(path.join(root, ".devcontainer/Dockerfile"), "utf8").includes(`ARG CHROMIUM_VERSION=${expectedVersion}\n`)) throw Error("Production and Dev Container Chromium pins must agree");
+const image = process.env.FUSION_DOCKER_IMAGE ?? "changd-fusion-api:ci";
+const expectedRevision = process.env.APP_COMMIT;
+if (!/^[0-9a-f]{40}$/.test(expectedRevision ?? "")) throw Error("Missing exact API image revision");
+const imageRevision = spawnSync("docker", ["image", "inspect", "--format", '{{index .Config.Labels "org.opencontainers.image.revision"}}', image], { encoding: "utf8", cwd: root });
+if (imageRevision.status !== 0 || imageRevision.stdout.trim() !== expectedRevision) throw Error("API image revision label mismatch");
 const script = String.raw`
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -88,7 +93,7 @@ const result = spawnSync(
     ...(process.env.FUSION_DOCKER_DIST ? ["--mount", `type=bind,source=${path.resolve(process.env.FUSION_DOCKER_DIST)},target=/app/dist,readonly`] : []),
     "--env",
     "EXPECTED_CHROMIUM_VERSION=" + expectedVersion,
-    process.env.FUSION_DOCKER_IMAGE ?? "changd-fusion-api:ci",
+    image,
     "node",
     "--input-type=module",
   ],

@@ -7,6 +7,13 @@ import { deliver } from "./notifications.js";
 import { acquireChromiumLease, cancelInteractivePriorityIntent, createInteractivePriorityIntent } from "./chromium-capacity.js";
 import { CaptureFailure } from "./errors.js";
 import { isWorkerFatalError } from "./errors.js";
+import { MAX_MONITOR_CAPTURE_TIMEOUT_MS } from "./capture-timeout.js";
+export type WorkerProgressEvent =
+  | { kind: "initialized" }
+  | { kind: "monitor-started"; maxDurationMs: number }
+  | { kind: "monitor-finished" }
+  | { kind: "outbox-progress" }
+  | { kind: "outbox-finished" };
 export async function workerCycle(
   pool: Pool,
   cfg: Config,
@@ -15,6 +22,7 @@ export async function workerCycle(
     send?: typeof deliver;
     stopped?: () => boolean;
     onFailure?: (diagnostic: CaptureFailureDiagnostic) => void;
+    onProgress?: (event: WorkerProgressEvent) => void;
   } = {},
 ) {
   // A different replica may still be finishing a running manual capture.
@@ -32,6 +40,7 @@ export async function workerCycle(
     ...manual.rows.map((run) => ({ ...run, id: run.monitor_id, manualRunId: run.run_id, priorityIntentId: run.priority_intent_id })),
     ...due.rows.map((monitor) => ({ ...monitor, manualRunId: undefined as string | undefined, priorityIntentId: undefined as string | undefined })),
   ];
+  options.onProgress?.({ kind: "initialized" });
   let next = 0;
   const defer = async (monitor: { id: string; manualRunId?: string }) => {
     if (!monitor.manualRunId) await pool.query("UPDATE fusion_monitors SET next_run=now()+interval '5 seconds' WHERE id=$1 AND next_run<=now()", [monitor.id]);
@@ -40,6 +49,11 @@ export async function workerCycle(
     Array.from({ length: cfg.CHROMIUM_CONCURRENCY }, async () => {
       while (next < work.length && !options.stopped?.()) {
         const monitor = work[next++];
+        options.onProgress?.({
+          kind: "monitor-started",
+          maxDurationMs: Math.max(cfg.CAPTURE_TIMEOUT_MS, MAX_MONITOR_CAPTURE_TIMEOUT_MS) + 20_000,
+        });
+        try {
         const usesChromium = monitor.kind === "browser" && (monitor.visual_enabled || (monitor.text_enabled && monitor.text_source !== "jina"));
         if (monitor.manualRunId && usesChromium) {
           const intent = await pool.query("SELECT 1 FROM fusion_chromium_priority_intents WHERE id=$1 AND cancelled_at IS NULL AND expires_at>now()", [monitor.priorityIntentId]);
@@ -92,8 +106,18 @@ export async function workerCycle(
           if (!fatalCleanup) await capacity?.release();
           if (!fatalCleanup && monitor.manualRunId && !capacity) await cancelInteractivePriorityIntent(pool, monitor.priorityIntentId);
         }
+        } finally {
+          options.onProgress?.({ kind: "monitor-finished" });
+        }
       }
     }),
   );
-  await dispatch(pool, cfg, options.send, { stopped: options.stopped });
+  try {
+    await dispatch(pool, cfg, options.send, {
+      stopped: options.stopped,
+      onProgress: () => options.onProgress?.({ kind: "outbox-progress" }),
+    });
+  } finally {
+    options.onProgress?.({ kind: "outbox-finished" });
+  }
 }
