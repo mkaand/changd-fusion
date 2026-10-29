@@ -9,7 +9,7 @@ import { WorkerReadiness } from "./worker-readiness.js";
 const cfg = readConfig(),
   pool = makePool(cfg.DATABASE_URL),
   log = pino({ level: cfg.LOG_LEVEL }),
-  readiness = WorkerReadiness.system(process.env.APP_COMMIT ?? "");
+  readiness = WorkerReadiness.system(process.env.APP_COMMIT ?? "development");
 let stopped = false;
 let cleanup = 0;
 let shutdownTimer: NodeJS.Timeout | undefined;
