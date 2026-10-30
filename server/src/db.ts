@@ -5,6 +5,9 @@ export const makePool = (url: string) => {
     max: 8,
     connectionTimeoutMillis: 5000,
     statement_timeout: 10000,
+    // Bound client-side waits as well: a paused server/network partition cannot
+    // enforce its own statement timeout. Uncertain browser leases stay fenced.
+    query_timeout: 10000,
     idle_in_transaction_session_timeout: 10000,
   });
   // Idle connection failures must not terminate the service or expose connection strings.

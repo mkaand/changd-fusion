@@ -23,7 +23,7 @@ import { previewJinaText } from "./text-picker.js";
 import pino from "pino";
 import { Decimal } from "decimal.js";
 import path from "node:path";
-import { acquireChromiumLease } from "./chromium-capacity.js";
+import { acquireChromiumLease, cancelInteractivePriorityIntent, createInteractivePriorityIntent, enqueueManualRun } from "./chromium-capacity.js";
 import { captureAreaSchema } from "./capture-area.js";
 import { captureTimeoutSchema, DEFAULT_NEW_MONITOR_CAPTURE_TIMEOUT_MS, previewExecutionTimeout } from "./capture-timeout.js";
 const uuid = z.string().uuid();
@@ -627,6 +627,8 @@ export function createApp(
     const started = performance.now();
     const cancellation = new AbortController();
     const cancelled = () => { if (!res.writableEnded) cancellation.abort(); };
+    let priorityIntentId: string | undefined;
+    let priorityLeaseHeld = false;
     req.once("aborted", cancelled);
     res.once("close", cancelled);
     try {
@@ -643,18 +645,22 @@ export function createApp(
           refresh,
           signal: cancellation.signal,
           progress: previewRequestId ? (stage) => updatePreviewProgress(previewRequestId, res.locals.user.user_id, stage) : undefined,
-          acquireCapacity: async (onWait) => {
+          acquireCapacity: async (onWait, waitBudgetMs) => {
             if (previewWaiters >= maxPreviewWaiters)
               throw new CaptureFailure("browser_launch", "capacity_queue_full", "Preview capacity is busy. Retry shortly.");
             previewWaiters++;
             try {
-              return await acquireChromiumLease(pool, {
+              priorityIntentId = await createInteractivePriorityIntent(pool, res.locals.user.user_id, "preview", monitor.id === "preview" ? undefined : monitor.id);
+              const lease = await acquireChromiumLease(pool, {
                 workload: "preview",
                 slots: cfg.CHROMIUM_CONCURRENCY,
-                waitMs: previewCapacityWaitBudget(cfg, previewExecutionTimeout(monitor, cfg)),
+                waitMs: Math.min(waitBudgetMs, previewCapacityWaitBudget(cfg, previewExecutionTimeout(monitor, cfg))),
                 signal: cancellation.signal,
                 onWait,
+                priorityIntentId,
               });
+              priorityLeaseHeld = Boolean(lease);
+              return lease;
             } finally { previewWaiters--; }
           },
         },
@@ -674,7 +680,13 @@ export function createApp(
         ...(failure.step ? { step: failure.step, action: failure.action } : {}),
         duration_ms: duration,
       });
-    } finally { req.off("aborted", cancelled); res.off("close", cancelled); }
+    } finally {
+      // A retained Preview transfers its lease (and its intent cleanup) to the
+      // owner-bound session.  Requests that reused a session or never acquired
+      // capacity must not leave a priority reservation behind.
+      if (priorityIntentId && (!priorityLeaseHeld || cancellation.signal.aborted)) await cancelInteractivePriorityIntent(pool, priorityIntentId).catch(() => {});
+      req.off("aborted", cancelled); res.off("close", cancelled);
+    }
   };
   app.post("/api/v1/region-preview", async (req, res) => {
     const body = regionPreviewInput.parse(req.body);
@@ -780,11 +792,24 @@ export function createApp(
     const monitor = await owner(id, res.locals.user.user_id);
     if (!monitor.enabled || monitor.paused)
       throw new HttpError(409, "Enable the monitor before running it");
-    await pool.query(
-      "UPDATE fusion_monitors SET next_run=now() WHERE id=$1 AND user_id=$2",
-      [id, res.locals.user.user_id],
-    );
-    res.status(202).json({ queued: true });
+    const needsBrowser = monitor.kind === "browser" && (monitor.visual_enabled || (monitor.text_enabled && monitor.text_source !== "jina"));
+    const run = await enqueueManualRun(pool, res.locals.user.user_id, id, needsBrowser);
+    res.status(202).json({ queued: run.status === "queued", running: run.status === "running", status: run.status, request_id: run.id });
+  });
+  app.get("/api/v1/jobs/:id/run", async (req, res) => {
+    const id = String(req.params.id);
+    await owner(id, res.locals.user.user_id);
+    const result = await pool.query("SELECT id,status,created_at,updated_at FROM fusion_manual_runs WHERE monitor_id=$1 AND user_id=$2 ORDER BY created_at DESC LIMIT 1", [id, res.locals.user.user_id]);
+    res.json(result.rows[0] ?? { status: "idle" });
+  });
+  app.delete("/api/v1/jobs/:id/run", async (req, res) => {
+    const id = String(req.params.id);
+    await owner(id, res.locals.user.user_id);
+    const result = await pool.query("UPDATE fusion_manual_runs SET status='cancelled',updated_at=now() WHERE monitor_id=$1 AND user_id=$2 AND status='queued' RETURNING priority_intent_id", [id, res.locals.user.user_id]);
+    for (const run of result.rows) await cancelInteractivePriorityIntent(pool, run.priority_intent_id);
+    if (!result.rowCount && (await pool.query("SELECT 1 FROM fusion_manual_runs WHERE monitor_id=$1 AND status='running'", [id])).rowCount)
+      throw new HttpError(409, "Check now is already running. Its bounded capture must finish safely.");
+    res.status(204).end();
   });
   app.post("/api/v1/jobs/:id/reset", async (req, res) => {
     const id = String(req.params.id);
@@ -898,6 +923,7 @@ export function createApp(
         "legacy",
         "test",
         "extraction_transition",
+        "skipped",
       ])
       .optional()
       .parse(req.query.status);
@@ -1267,6 +1293,7 @@ export function createApp(
   }
   app.use((_req, _res, next) => next(new HttpError(404, "Not found")));
   app.use((error: any, _req: Request, res: Response, _next: NextFunction) => {
+    if (error instanceof CaptureFailure) return res.status(error.code === "cleanup_timeout" ? 503 : 429).json({ error: error.message, failure_code: error.code, preview_stage: error.stage, request_id: res.locals.requestId });
     const status =
       error instanceof HttpError
         ? error.status

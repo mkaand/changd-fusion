@@ -16,6 +16,23 @@ function Fixture() {
   );
 }
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
+it("manual steps remain editable and saveable while Preview is pending", async () => {
+  let signal: AbortSignal | undefined;
+  vi.mocked(api).mockImplementation((_path, _method, _body, options) => {
+    signal = options?.signal;
+    return new Promise(() => {});
+  });
+  const user = userEvent.setup();
+  render(<Fixture />);
+  await user.click(screen.getByRole("button", { name: "Add step from Preview" }));
+  await user.click(screen.getByRole("button", { name: "Add browser step" }));
+  await user.type(screen.getByLabelText("Selector"), "#manual-target");
+  const values = await form.validateFields();
+  expect(values.browser_steps[0].selector).toBe("#manual-target");
+  await user.click(screen.getByRole("button", { name: "Close" }));
+  expect(signal?.aborted).toBe(true);
+  expect(form.getFieldValue("browser_steps")).toHaveLength(1);
+});
 it("accepts a 60-second step while preserving the independent workflow limit", async () => {
   render(<Fixture />);
   await userEvent.click(screen.getByRole("button", { name: "Add browser step" }));

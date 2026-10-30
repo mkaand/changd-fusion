@@ -48,13 +48,13 @@ The authenticated preview uses the same SSRF restrictions, pinned-IP egress prox
 
 For Jina Reader monitors, **Selected Text / Value** opens a dedicated safe text preview. Reader Markdown is rendered as plain text, never as remote HTML. Search the available Reader lines with case-insensitive Turkish-aware matching, select a line, refine the desired value, verify the extracted preview, and apply the server-generated contextual rule. Search results retain their original line identity. Rules contain bounded escaped context rather than executable expressions or a literal copy of the changing value; they must resolve to exactly one result on every capture. Reader previews are bounded to 2,000 safe lines and explicitly disclose when a longer response was truncated.
 
-Chromium work is admitted through PostgreSQL session advisory leases shared by the API and worker containers. Scheduled captures receive admission priority; optional previews fail quickly with a clear capacity response instead of starting another browser tree. Preview leases include the resident owner-bound session and are released on expiry, cancellation, timeout, crash, or normal cleanup. Capture diagnostics persist only bounded numeric stage durations and stable failure categories. URLs, selectors, page content, screenshots, cookies, credentials, and raw browser exceptions are never stored in diagnostic timing fields.
+Chromium work shares one PostgreSQL advisory lease across API/Worker replicas. Authenticated Preview and Check now requests register bounded priority intents; scheduled browser work yields cooperatively, closes browser/proxy resources and records an informational skipped event before the slot is handed over. Browser admission waits at most 15 seconds, within the existing transport budget. Preview sessions keep their absolute 45-second lifetime. A durable cleanup fence prevents a second browser after ambiguous cleanup or coordination loss. See [interactive scheduling, resource budgets and recovery constraints](docs/interactive-preview-capacity.md). Capture diagnostics retain only safe numeric durations and failure categories.
 
 ## Capture timeout and resource sizing
 
 New Browser monitors use a **60-second** capture timeout by default. In **Advanced settings**, each Browser monitor can select 30, 45, 60, 75, or 90 seconds. **Settings > Monitoring** controls the default for future monitors only; changing a timeout never resets an existing baseline or removes History. Older monitor rows retain their configured server fallback until edited.
 
-`CAPTURE_TIMEOUT_MS` keeps its historical 30-second fallback when it is not configured, and is not a cap on a valid per-monitor override. A new monitor stores a 60-second default, while a 90-second monitor receives a 90-second capture deadline. Browser Steps remain bounded by the smaller of their configured budget and the remaining capture deadline. Selected Element and Selected Area preview requests use the unsaved draft timeout too. The API limits preview admission plus execution to 110 seconds, so a 90-second preview has at most 20 seconds to wait for the one shared Chromium slot. A legacy fallback above 110 seconds remains available to scheduled capture but is capped at 110 seconds for preview transport safety. The selected-element resident session remains fixed at 45 seconds; selected-area previews remain stateless.
+`CAPTURE_TIMEOUT_MS` keeps its historical 30-second fallback when unconfigured and does not cap valid per-monitor overrides. New monitors default to 60 seconds and may select up to 90 seconds. Browser Steps share the remaining workflow and capture deadlines. Visual previews use the unsaved draft timeout with at most 15 seconds of shared-slot admission, reduced to reserve capture and cleanup within the existing 110-second transport ceiling. Selected-element sessions retain their absolute 45-second TTL; selected-area previews remain stateless. Abrupt owner death remains fail-closed until [operator-assisted container fencing and recovery](docs/chromium-recovery.md); a restart or expired lock alone never clears quarantine.
 
 The checked-in Compose defaults reserve `API_CPUS=0.75`, `API_MEMORY=640m`, and `API_PIDS=192` for rootless preview Chromium. Worker defaults remain `1.0` CPU, `1g`, and `256` PIDs. Tune these environment values to the server capacity before deployment, while keeping `CHROMIUM_CONCURRENCY=1` on small VPS hosts. Repeated cgroup `oom_kill` or `pids.events.max` increments indicate resource exhaustion rather than a selector problem.
 
@@ -73,6 +73,28 @@ node scripts/build-ui-with-metadata.mjs -- up -d --build
 The documented command verifies build metadata from the local Git checkout before starting Docker Compose. It embeds the package version, verified checkout commit, and a checked-out branch when one exists. Source PR provenance is intentionally unavailable for ordinary clones unless a trusted deployment controller binds a merged PR to the exact commit. A detached checkout preserves the verified commit and leaves Branch unavailable rather than guessing. `docker compose up -d --build` remains compatible, but Docker Compose cannot execute Git verification itself, so the optional metadata fields safely display `Unavailable` when that raw command is used.
 
 The public UI is served through the configured same-origin frontend. PostgreSQL and API ports should remain private behind the reverse proxy. Public registration is disabled by default.
+
+### First administrator
+
+The supported first-user path is the existing `create-admin` command; public
+registration does not create an administrator and remains disabled by default.
+After the stack is running, enter credentials interactively so that no password
+is placed in a command argument, shell history, or repository file, then run the
+compiled command in a one-shot API container:
+
+```sh
+read -r -p 'Administrator email: ' ADMIN_EMAIL
+read -r -s -p 'Administrator password: ' ADMIN_PASSWORD; printf '\n'
+export ADMIN_EMAIL ADMIN_PASSWORD
+docker compose run --rm --no-deps -e ADMIN_EMAIL -e ADMIN_PASSWORD api node dist/create-admin.js
+unset ADMIN_PASSWORD ADMIN_EMAIL
+```
+
+The command validates a 12–72 byte password, applies pending migrations
+idempotently, and creates one `user_type=2` administrator. It intentionally
+fails if that email already exists. Keep `REGISTRATION_ENABLED=false`; no
+temporary public-registration window is required. The command must run only on
+the trusted server while the Compose database service is available.
 
 ## Development and testing
 

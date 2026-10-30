@@ -186,6 +186,7 @@ export function History({ id, refresh }: { id: string; refresh: number }) {
             "changed",
             "unchanged",
             "failed",
+            "skipped",
             "baseline",
             "reset",
             "test",
@@ -215,6 +216,8 @@ export function History({ id, refresh }: { id: string; refresh: number }) {
                 color={
                   e.status === "failed"
                     ? "red"
+                    : e.status === "skipped"
+                      ? "blue"
                     : e.status === "changed"
                       ? "orange"
                       : "green"
@@ -255,6 +258,9 @@ export function History({ id, refresh }: { id: string; refresh: number }) {
                 title="Visible-text extraction updated"
                 description="The successful capture became the new text baseline. No change notification was sent."
               />
+            )}
+            {e.status === "skipped" && (
+              <Alert type="info" title="Scheduled check deferred for an interactive request" description="The browser yielded safely to Preview or Check now. Monitor health, baseline and notifications are unchanged. Scheduled monitoring resumes automatically." />
             )}
             {e.attention_state && (
               <Tag color="red">

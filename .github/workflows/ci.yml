@@ -94,24 +94,31 @@ jobs:
       - run: node scripts/privacy-scan.mjs --history=origin/master
   docker:
     runs-on: ubuntu-22.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
           node-version: 24.22.1
       - name: Build production API and UI images
-        run: docker build --pull --no-cache --progress=plain -t changd-fusion-api:ci ./server && docker build --pull --no-cache --progress=plain --build-arg APP_COMMIT --build-arg APP_BRANCH --build-arg APP_SOURCE_PR -t changd-fusion-ui:ci ./frontend && docker build --pull --no-cache --progress=plain -t changd-fusion-preview:ci -f .devcontainer/Dockerfile .
+        run: docker build --pull --no-cache --progress=plain --build-arg APP_COMMIT -t changd-fusion-api:ci ./server && docker build --pull --no-cache --progress=plain --build-arg APP_COMMIT --build-arg APP_BRANCH --build-arg APP_SOURCE_PR -t changd-fusion-ui:ci ./frontend && docker build --pull --no-cache --progress=plain -t changd-fusion-preview:ci -f .devcontainer/Dockerfile .
         timeout-minutes: 10
       - name: Rootless resource limits and sandboxed Browser Steps smoke
         run: node scripts/docker-smoke.mjs
         timeout-minutes: 2
       - name: Nginx Docker DNS recovery
+        # Admission is independently tested with PostgreSQL in Verify.
         run: node scripts/nginx-dns-smoke.mjs
         timeout-minutes: 1
+      - name: Sequential Preview and Worker resource budgets
+        run: node scripts/interactive-capacity-smoke.mjs
+        timeout-minutes: 2
       - name: Codespaces image sandbox smoke
         run: npm ci --prefix server --ignore-scripts --no-audit --no-fund && node scripts/preview-docker-smoke.mjs
         timeout-minutes: 2
+      - name: Chromium crash fencing and operator-assisted recovery
+        run: npm run build --prefix server && node scripts/chromium-crash-smoke.mjs
+        timeout-minutes: 5
       - name: Real Dev Container creation, HOME ownership and cross-UID resume
         run: npm install --prefix "$RUNNER_TEMP/fusion-devcontainer-cli" --no-audit --no-fund @devcontainers/cli@0.89.0 && node scripts/devcontainer-smoke.mjs
         env:
@@ -120,14 +127,14 @@ jobs:
   docker-arm64:
     # Native architecture validation; no privileged QEMU/binfmt setup or host policy changes.
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 25
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v6
       - uses: actions/setup-node@v6
         with:
           node-version: 24.22.1
       - name: Clean native ARM64 image builds
-        run: docker build --pull --no-cache --progress=plain -t changd-fusion-api:ci ./server && docker build --pull --no-cache --progress=plain --build-arg APP_COMMIT --build-arg APP_BRANCH --build-arg APP_SOURCE_PR -t changd-fusion-ui:ci ./frontend && docker build --pull --no-cache --progress=plain -t changd-fusion-preview:ci -f .devcontainer/Dockerfile .
+        run: docker build --pull --no-cache --progress=plain --build-arg APP_COMMIT -t changd-fusion-api:ci ./server && docker build --pull --no-cache --progress=plain --build-arg APP_COMMIT --build-arg APP_BRANCH --build-arg APP_SOURCE_PR -t changd-fusion-ui:ci ./frontend && docker build --pull --no-cache --progress=plain -t changd-fusion-preview:ci -f .devcontainer/Dockerfile .
         timeout-minutes: 10
       - name: ARM64 rootless resource limits and sandboxed Browser Steps smoke
         run: node scripts/docker-smoke.mjs
@@ -135,9 +142,15 @@ jobs:
       - name: ARM64 Nginx Docker DNS recovery
         run: node scripts/nginx-dns-smoke.mjs
         timeout-minutes: 1
+      - name: ARM64 sequential Preview and Worker resource budgets
+        run: node scripts/interactive-capacity-smoke.mjs
+        timeout-minutes: 2
       - name: ARM64 Codespaces image sandbox smoke
         run: npm ci --prefix server --ignore-scripts --no-audit --no-fund && node scripts/preview-docker-smoke.mjs
         timeout-minutes: 2
+      - name: ARM64 Chromium crash fencing and operator-assisted recovery
+        run: npm run build --prefix server && node scripts/chromium-crash-smoke.mjs
+        timeout-minutes: 5
       - name: ARM64 real Dev Container creation, HOME ownership and cross-UID resume
         run: npm install --prefix "$RUNNER_TEMP/fusion-devcontainer-cli" --no-audit --no-fund @devcontainers/cli@0.89.0 && node scripts/devcontainer-smoke.mjs
         env:

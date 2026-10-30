@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Alert, Button, InputNumber, Modal, Radio, Spin, Typography } from "antd";
+import { Alert, Button, InputNumber, Radio, Spin, Typography } from "antd";
 import { ApiError, api } from "./api";
 import {
   CAPTURE_VIEWPORT_HEIGHT,
@@ -135,6 +135,8 @@ export function SelectedAreaPicker({ monitorId, getDraft, onApply, mobilePage = 
   const apply = () => { if (!isValidCaptureArea(area)) { setError(new ApiError(`Select an area of at least ${MIN_CAPTURE_AREA_SIZE} × ${MIN_CAPTURE_AREA_SIZE} px.`)); return; } onApply(area); release(); setOpen(false); };
 
   const body = <div className="selected-area-picker">
+    {error?.status && <Typography.Paragraph>HTTP {error.status}</Typography.Paragraph>}
+    {loading && preview && <Alert type="info" title="Previously captured screenshot — refreshing, not a live DOM session" />}
     <Typography.Paragraph>Draw a fixed rectangle on the 1280 × 900 reference viewport. This area does not follow moving DOM elements; use Selected element for that.</Typography.Paragraph>
     {error && <><Alert type="error" showIcon title={error.message} />{error.failureCode && <Typography.Text type="secondary">{error.previewStage ?? "preview"} · {error.failureCode}{error.previewStep ? ` · step ${error.previewStep}${error.previewAction ? ` (${error.previewAction})` : ""}` : ""}</Typography.Text>}{error.requestId && <details><summary>Technical details</summary><code>Request ID: {error.requestId}</code></details>}</>}
     {refreshFailed && preview && <Alert type="info" showIcon title="The previous preview is still shown. Retry preview to refresh it." />}
@@ -161,10 +163,10 @@ export function SelectedAreaPicker({ monitorId, getDraft, onApply, mobilePage = 
       <div className="selected-area-coordinates" aria-label="Selected area coordinates">
         {(["x", "y", "width", "height"] as const).map((key) => <label key={key}><span>{key === "x" || key === "y" ? key.toUpperCase() : key[0].toUpperCase() + key.slice(1)}</span><InputNumber aria-label={`Selected area ${key}`} min={key === "width" || key === "height" ? MIN_CAPTURE_AREA_SIZE : 0} max={key === "x" || key === "width" ? CAPTURE_VIEWPORT_WIDTH : CAPTURE_VIEWPORT_HEIGHT} value={area?.[key]} onChange={(value) => updateNumber(key, value)} /></label>)}
       </div>
-      <div className="selected-area-actions"><Button onClick={mobilePage ? () => { cancel(); onBackMobile?.(); } : cancel}>Cancel</Button><Button onClick={() => setArea(undefined)} disabled={!area}>Clear</Button><Button type="primary" onClick={apply} disabled={!isValidCaptureArea(area)}>Apply selected area</Button></div>
+      <div className="selected-area-actions"><Button onClick={mobilePage ? () => { cancel(); onBackMobile?.(); } : cancel}>Cancel</Button><Button onClick={() => setArea(undefined)} disabled={!area}>Clear</Button><Button type="primary" onClick={apply} disabled={!isValidCaptureArea(area) || loading || refreshFailed || Boolean(error)}>Apply selected area</Button></div>
     </>}
   </div>;
 
   if (mobilePage) return <section className="mobile-region-picker-page" aria-label="Select screenshot area"><div className="mobile-editor-header"><Button type="text" onClick={() => { cancel(); onBackMobile?.(); }}>← Back</Button><Typography.Title level={4}>Select screenshot area</Typography.Title></div><div className="mobile-region-picker-body">{body}</div></section>;
-  return <><Button onClick={() => { if (compact && onRequestMobile) return onRequestMobile(); setOpen(true); resetView(); void load("initialize"); }}>Select area visually</Button>{!compact && <Modal className="region-preview-modal selected-area-modal" title="Select screenshot area" open={open} onCancel={cancel} footer={null} width={960} destroyOnHidden>{body}</Modal>}</>;
+  return <><Button onClick={() => { if (compact && onRequestMobile) return onRequestMobile(); setOpen(true); resetView(); void load("initialize"); }}>Select area visually</Button>{!compact && open && <section className="interactive-preview-panel" aria-label="Select screenshot area"><Button aria-label="Close" onClick={cancel}>Close preview and continue editing</Button>{body}</section>}</>;
 }

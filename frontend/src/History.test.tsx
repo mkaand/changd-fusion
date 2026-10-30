@@ -10,6 +10,14 @@ afterEach(() => {
   cleanup();
   vi.clearAllMocks();
 });
+it("shows skipped interactive-priority history as informational without a failed capture or comparison", async () => {
+  vi.mocked(api).mockResolvedValue({ items: [{ id: "yielded", status: "skipped", warning_code: "interactive_priority", created_at: "2026-10-27", visual_percent: null }], total: 1 });
+  render(<History id="fixture" refresh={0} />);
+  expect(await screen.findByText("Scheduled check deferred for an interactive request")).toBeInTheDocument();
+  expect(screen.getByRole("alert")).toHaveTextContent("Monitor health, baseline and notifications are unchanged");
+  expect(screen.queryByRole("slider")).not.toBeInTheDocument();
+  expect(document.querySelector(".ant-alert-error")).toBeNull();
+});
 it("comparison surface is the only keyboard-accessible slider and changes the image overlay", () => {
   render(<ImageComparison before="before.png" after="after.png" />);
   const slider = screen.getByRole("slider", {

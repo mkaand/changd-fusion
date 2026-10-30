@@ -94,6 +94,7 @@ it("preserves an unapplied area through refresh failure and retry", async () => 
   fireEvent.pointerUp(stage, { pointerId: 21, pointerType: "mouse", clientX: 420, clientY: 300 });
   await userEvent.setup().click(screen.getByRole("button", { name: "Refresh preview" }));
   expect(await screen.findByText("Preview request failed. Retry.")).toBeInTheDocument();
+  expect(screen.getByRole("button", { name: "Apply selected area" })).toBeDisabled();
   expect(screen.getByText("320 × 180 px")).toBeInTheDocument();
   await userEvent.setup().click(screen.getByRole("button", { name: "Retry preview" }));
   await waitFor(() => expect(screen.queryByText("Preview request failed. Retry.")).not.toBeInTheDocument());

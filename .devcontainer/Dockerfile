@@ -1,12 +1,21 @@
 # syntax=docker/dockerfile:1
 # Development-only image; no application credentials or checkout copied into layers.
 FROM node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
-# Keep browser/common/sandbox aligned with the authenticated Bookworm security update.
-ARG CHROMIUM_VERSION=156.0.8078.47-1~deb12u1
+# Resolve the current matching Bookworm browser set from Debian's signed indexes.
+# Exact security-version pins disappear from the live archive, so verify the
+# installed browser/common/sandbox contract instead of retaining a stale pin.
 ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    chromium=${CHROMIUM_VERSION} chromium-common=${CHROMIUM_VERSION} chromium-sandbox=${CHROMIUM_VERSION} fonts-liberation \
+    chromium chromium-common chromium-sandbox fonts-liberation \
     git curl ca-certificates python3 procps \
+    && chromium_version="$(dpkg-query -W -f='${Version}' chromium)" \
+    && chromium_common_version="$(dpkg-query -W -f='${Version}' chromium-common)" \
+    && chromium_sandbox_version="$(dpkg-query -W -f='${Version}' chromium-sandbox)" \
+    && [ "$chromium_version" = "$chromium_common_version" ] \
+    && [ "$chromium_version" = "$chromium_sandbox_version" ] \
+    && install -d -m 0755 /usr/local/share/changd-fusion \
+    && printf 'chromium=%s\nchromium-common=%s\nchromium-sandbox=%s\nexecutable=%s\n' "$chromium_version" "$chromium_common_version" "$chromium_sandbox_version" "$(/usr/bin/chromium --version)" > /usr/local/share/changd-fusion/chromium-version \
+    && cat /usr/local/share/changd-fusion/chromium-version \
     && find /var/lib/apt/lists -type f -delete
 RUN --mount=type=secret,id=build_ca \
     if [ -f /run/secrets/build_ca ]; then export CURL_CA_BUNDLE=/run/secrets/build_ca; fi; \

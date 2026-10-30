@@ -5,13 +5,13 @@ import type { Config } from "./config.js";
 import { previewExecutionTimeout } from "./capture-timeout.js";
 import { CaptureFailure, HttpError, captureFailure, type CaptureFailureCode, type CaptureStage } from "./errors.js";
 import { checkDimensions, pngDimensions } from "./image.js";
-import { navigateForCapture, type Monitor } from "./capture.js";
+import { CAPTURE_CLEANUP_TIMEOUT_MS, closeWithDeadline, navigateForCapture, type Monitor } from "./capture.js";
 import type { ChromiumLease } from "./chromium-capacity.js";
 import { runSteps, StepFailure, warningCode } from "./browser-steps.js";
 import { AttentionFailure, detectAttention } from "./attention.js";
 import { browserViewport, dismissCookieConsent, installBrowserRouting, observeMainFrameStatus } from "./browser-experience.js";
 
-type RegionPreviewCode = CaptureFailureCode | "session_expired" | "stale_preview" | "stale_configuration" | "ambiguous_selection";
+type RegionPreviewCode = CaptureFailureCode | "cancelled" | "session_expired" | "stale_preview" | "stale_configuration" | "ambiguous_selection";
 export type RegionPreviewFailure = { stage: CaptureStage; failure_code: RegionPreviewCode; status: number; message: string; step?: number; action?: string };
 type Selection = { selector: string; label: string; visible: boolean; x: number; y: number; width: number; height: number };
 export type PreviewStage = "target_validation" | "capacity_wait" | "proxy_initialization" | "browser_launch" | "browser_context" | "navigation" | "dom_ready" | "browser_steps" | "rendering_preparation" | "screenshot" | "serialization" | "ready";
@@ -24,15 +24,15 @@ type PreviewOperations = {
 export const REGION_PREVIEW_MAX_LIFETIME_MS = 45_000;
 // Keep admission plus browser work below the Nginx 120-second endpoint timeout
 // and the frontend 125-second request timeout. A 90-second monitor execution
-// therefore receives no more than 20 seconds of optional admission waiting.
+// therefore receives no more than 10 seconds of admission, reserving cleanup.
 export const PREVIEW_REQUEST_BUDGET_MS = 110_000;
 export function previewCapacityWaitBudget(
   cfg: Pick<Config, "PREVIEW_CAPACITY_WAIT_MS">,
   captureTimeoutMs: number,
 ) {
-  return Math.min(cfg.PREVIEW_CAPACITY_WAIT_MS, Math.max(0, PREVIEW_REQUEST_BUDGET_MS - captureTimeoutMs));
+  return Math.min(15_000, cfg.PREVIEW_CAPACITY_WAIT_MS, Math.max(0, PREVIEW_REQUEST_BUDGET_MS - captureTimeoutMs - 2 * CAPTURE_CLEANUP_TIMEOUT_MS));
 }
-const MAX_SESSIONS = 4;
+const MAX_SESSIONS = 1;
 const sessions = new Map<string, Session>();
 const reservations = new Map<string, string>();
 
@@ -55,10 +55,12 @@ async function closeSession(session: Session) {
   sessions.delete(session.id);
   if (session.expiryTimer) clearTimeout(session.expiryTimer);
   session.closing = (async () => {
-    try { await session.context.close(); } catch {}
-    try { await session.browser.close(); } catch {}
-    await session.proxy.close().catch(() => {});
-    await session.capacity?.release().catch(() => {});
+    const browserClosed = await closeWithDeadline(() => session.browser.close());
+    const proxyClosed = await closeWithDeadline(() => session.proxy.close());
+    // Never advertise a free slot when cleanup cannot be confirmed. Retain
+    // its lease until supervised API restart rather than oversubscribe.
+    if (browserClosed && proxyClosed) await session.capacity?.release().catch(() => {});
+    else console.error(JSON.stringify({ code: "preview_cleanup_timeout" }));
   })();
   return session.closing;
 }
@@ -82,13 +84,17 @@ export async function releaseRegionPreviewSession(ownerId: string, sessionId: st
 export async function expireRegionPreviewSessions(now: number) { await purgeExpired(now); }
 
 function previewMessage(stage: CaptureStage, code: RegionPreviewCode) {
+  if (code === "cancelled") return "Preview was cancelled. Start a new Preview when ready.";
   if (code === "session_expired") return "Preview expired. Refresh the preview and try again.";
   if (code === "stale_preview") return "The page changed after the screenshot. Refresh the preview before selecting.";
   if (code === "stale_configuration") return "Preview settings changed. Replay the preview before selecting.";
   if (code === "ambiguous_selection") return "The selected point does not identify one stable visible element. Try a nearby point.";
   if (code === "timeout") return "Preview timed out. Retry, or use viewport capture instead.";
   if (code === "capacity_busy") return "Preview capacity is busy. Retry shortly.";
-  if (code === "capacity_wait_timeout") return "No browser capacity became available in time. Retry shortly.";
+  if (code === "capacity_wait_timeout") return "Preparing the interactive browser is still waiting for safe cleanup or another active Preview. Close another Preview or retry shortly. Manual editing and saving remain available.";
+  if (code === "cleanup_timeout") return "Browser cleanup is unconfirmed. Capacity is unavailable until supervised recovery completes.";
+  if (code === "coordination_lost") return "Browser coordination was lost. Safe cleanup is in progress; retry after capacity recovers.";
+  if (code === "scheduled_recovery") return "Scheduled monitoring is completing a bounded recovery turn. Retry Preview shortly; manual editing and saving remain available.";
   if (code === "capacity_queue_full") return "Preview capacity is busy. Retry shortly.";
   if (code === "egress_denied") return "Preview destination is not permitted.";
   if (code === "selector_failed") return "The selected region is not a unique visible element.";
@@ -98,6 +104,8 @@ function previewMessage(stage: CaptureStage, code: RegionPreviewCode) {
   return "Website preview failed. Retry, or use viewport capture instead.";
 }
 export function regionPreviewFailure(error: unknown, stage: CaptureStage): RegionPreviewFailure {
+  if (error instanceof HttpError && error.status === 499)
+    return { stage, failure_code: "cancelled", status: 499, message: "Preview was cancelled. Start a new Preview when ready." };
   const safe = captureFailure(error, stage);
   const validation = error instanceof HttpError && error.status >= 400 && error.status < 500;
   const stepFailure = error instanceof StepFailure ? error : undefined;
@@ -105,7 +113,7 @@ export function regionPreviewFailure(error: unknown, stage: CaptureStage): Regio
   return {
     stage: safe.stage,
     failure_code: code,
-    status: safe.code === "timeout" ? 504 : ["capacity_busy", "capacity_wait_timeout", "capacity_queue_full"].includes(safe.code) ? 429 : validation ? error.status : 422,
+    status: safe.code === "timeout" ? 504 : ["cleanup_timeout", "coordination_lost"].includes(safe.code) ? 503 : ["capacity_busy", "capacity_wait_timeout", "capacity_queue_full", "scheduled_recovery"].includes(safe.code) ? 429 : validation ? error.status : 422,
     message: stepFailure ? stepFailure.message : previewMessage(safe.stage, code),
     ...(stepFailure ? { step: stepFailure.step, action: stepFailure.action } : {}),
   };
@@ -149,6 +157,7 @@ async function boundedPreviewOperation<T>(input: {
   stage: CaptureStage;
   signal?: AbortSignal;
 }) {
+  if (input.signal?.aborted) throw new HttpError(499, "Preview request was cancelled");
   const budget = input.remaining();
   let interruption: HttpError | CaptureFailure | undefined;
   let cancelling: Promise<void> | undefined;
@@ -241,7 +250,8 @@ export async function selectionAt(page: Page, point: { x: number; y: number }, v
   return { selection, candidates };
 }
 
-export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number; y: number }, policy = new EgressPolicy(), session?: { ownerId: string; id?: string; retain?: boolean; captureLayout?: boolean; refresh?: boolean; progress?: (stage: PreviewStage) => void; signal?: AbortSignal; operations?: PreviewOperations; acquireCapacity?: (onWait: () => void) => Promise<ChromiumLease | null> }) {
+export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number; y: number }, policy = new EgressPolicy(), session?: { ownerId: string; id?: string; retain?: boolean; captureLayout?: boolean; refresh?: boolean; progress?: (stage: PreviewStage) => void; signal?: AbortSignal; operations?: PreviewOperations; acquireCapacity?: (onWait: () => void, waitBudgetMs: number) => Promise<ChromiumLease | null> }) {
+  const requestDeadline = Date.now() + PREVIEW_REQUEST_BUDGET_MS;
   let stage: CaptureStage = "target_validation";
   const signature = createHash("sha256").update(JSON.stringify({
     url: m.url,
@@ -275,7 +285,7 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
       }
       const picked = point ? await boundedPreviewOperation({ operation: () => selectionAt(active.page, point, { width: active.width, height: active.height }), remaining: activeRemaining, cancel: () => closeSession(active), stage: "text_extraction", signal: session.signal }) : null;
       if (picked) checkDimensions({ width: Math.ceil(picked.selection.width), height: Math.ceil(picked.selection.height) }, { width: cfg.MAX_CAPTURE_WIDTH, height: cfg.MAX_CAPTURE_HEIGHT, pixels: cfg.MAX_CAPTURE_PIXELS });
-      return { session_id: active.id, image: active.image.toString("base64"), width: active.width, height: active.height, http_status: active.httpStatus, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings: active.timings, warning: active.warning, reused: true };
+      return { session_id: active.id, expires_at: active.expiresAt, image: active.image.toString("base64"), width: active.width, height: active.height, http_status: active.httpStatus, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings: active.timings, warning: active.warning, reused: true };
     } catch (error) {
       if (session.signal?.aborted || Date.now() >= active.expiresAt) await closeSession(active);
       throw regionPreviewFailure(error, stage);
@@ -293,8 +303,7 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
   let capacity: ChromiumLease | undefined;
   let reservation: ReturnType<typeof reserveSession> | undefined;
   const cancelBrowser = async () => {
-    try { await context?.close(); } catch {}
-    try { await browser?.close(); } catch {}
+    await closeWithDeadline(browser ? () => browser!.close() : undefined);
   };
   const abortBrowser = () => { void cancelBrowser(); };
   const timings: PreviewTimings = {};
@@ -310,18 +319,25 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
     if (existing) await closeSession(existing);
     if (session?.acquireCapacity) {
       enter("capacity_wait");
-      capacity = await session.acquireCapacity(() => session.progress?.("capacity_wait")) ?? undefined;
+      stage = "browser_launch";
+      const admissionBudget = Math.max(0, requestDeadline - Date.now() - captureTimeoutMs - 2 * CAPTURE_CLEANUP_TIMEOUT_MS);
+      capacity = await session.acquireCapacity(() => session.progress?.("capacity_wait"), admissionBudget) ?? undefined;
       if (session.signal?.aborted) throw new HttpError(499, "Preview request was cancelled");
       if (!capacity) throw new CaptureFailure("browser_launch", "capacity_wait_timeout", "No browser capacity became available in time. Retry shortly.");
+      if (capacity.signal?.aborted) throw new CaptureFailure("browser_launch", "coordination_lost");
     }
     if (session?.signal?.aborted) throw new HttpError(499, "Preview request was cancelled");
-    deadline = Date.now() + captureTimeoutMs;
+    deadline = Math.min(Date.now() + captureTimeoutMs, requestDeadline - 2 * CAPTURE_CLEANUP_TIMEOUT_MS);
     reservation = reserveSession(session?.ownerId ?? randomUUID(), false);
     enter("proxy_initialization");
     proxy = await browserProxy(policy);
     enter("browser_launch");
     stage = "browser_launch";
     browser = await chromium.launch({ headless: true, chromiumSandbox: true, executablePath: cfg.PLAYWRIGHT_EXECUTABLE_PATH, proxy: { server: proxy.url, bypass: "<-loopback>" }, timeout: remaining() });
+    capacity?.signal?.addEventListener("abort", abortBrowser, { once: true });
+    browser.once("disconnected", () => capacity?.signal?.removeEventListener("abort", abortBrowser));
+    if (capacity?.signal?.aborted) throw new CaptureFailure("browser_launch", "coordination_lost");
+    if (session?.signal?.aborted) throw new HttpError(499, "Preview was cancelled");
     stage = "browser_context";
     enter("browser_context");
     const viewport = browserViewport(Boolean(m.mobile_view));
@@ -390,13 +406,25 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
     active.expiryTimer = setTimeout(() => void closeSession(active), REGION_PREVIEW_MAX_LIFETIME_MS);
     active.expiryTimer.unref();
     sessions.set(active.id, active);
+    const lost = () => void closeSession(active);
+    active.capacity?.signal?.addEventListener("abort", lost, { once: true });
+    active.browser.once("disconnected", () => { active.capacity?.signal?.removeEventListener("abort", lost); void closeSession(active); });
+    if (active.capacity?.signal?.aborted || session.signal?.aborted) {
+      await closeSession(active);
+      throw new HttpError(499, "Preview was cancelled");
+    }
     browser = undefined; context = undefined; proxy = undefined; capacity = undefined;
-    return { session_id: active.id, image: encoded, width: viewport.width, height: viewport.height, http_status: navigationStatus, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings, warning, reused: false };
-  } catch (error) { throw regionPreviewFailure(error, stage); }
+    return { session_id: active.id, expires_at: active.expiresAt, image: encoded, width: viewport.width, height: viewport.height, http_status: navigationStatus, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings, warning, reused: false };
+  } catch (error) { throw regionPreviewFailure(capacity?.signal?.aborted ? new CaptureFailure(stage, "coordination_lost") : error, stage); }
   finally {
     session?.signal?.removeEventListener("abort", abortBrowser);
     if (reservation) reservations.delete(reservation.token);
-    try { await context?.close(); } catch {}
-    try { await browser?.close(); } finally { await proxy?.close(); await capacity?.release().catch(() => {}); }
+    const browserClosed = await closeWithDeadline(browser ? () => browser!.close() : undefined);
+    const proxyClosed = await closeWithDeadline(proxy ? () => proxy!.close() : undefined);
+    if (browserClosed && proxyClosed) await capacity?.release().catch(() => {});
+    else {
+      console.error(JSON.stringify({ code: "preview_cleanup_timeout" }));
+      throw regionPreviewFailure(new CaptureFailure("cleanup", "cleanup_timeout"), "cleanup");
+    }
   }
 }

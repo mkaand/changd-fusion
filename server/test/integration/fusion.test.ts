@@ -1,4 +1,4 @@
-import { test, before, after, type TestContext } from "node:test";
+import { test, before, after, mock, type TestContext } from "node:test";
 import { closeServer, listenServer } from "../helpers/server.js";
 import assert from "node:assert/strict";
 import request from "supertest";
@@ -10,7 +10,7 @@ import { dispatch } from "../../src/outbox.js";
 import { workerCycle } from "../../src/worker.js";
 import { readConfig, type Config } from "../../src/config.js";
 import { capture } from "../../src/capture.js";
-import { CaptureFailure } from "../../src/errors.js";
+import { CaptureFailure, SchedulingCancellation } from "../../src/errors.js";
 import { EgressPolicy } from "../../src/egress.js";
 import { encrypt, decrypt } from "../../src/crypto.js";
 import { PNG } from "pngjs";
@@ -26,7 +26,9 @@ import { seedPreview } from "../../src/preview-seed.js";
 import { compareVisual } from "../../src/comparison.js";
 import { telegramSummary } from "../../src/notifications.js";
 import { closeRegionPreviewSessions, expireRegionPreviewSessions, previewRegion, REGION_PREVIEW_MAX_LIFETIME_MS } from "../../src/region-picker.js";
-import { acquireChromiumLease } from "../../src/chromium-capacity.js";
+import { acquireChromiumLease, createInteractivePriorityIntent, cancelInteractivePriorityIntent } from "../../src/chromium-capacity.js";
+import { recoverChromiumQuarantine } from "../../src/chromium-recovery.js";
+import { spawn } from "node:child_process";
 import { applySelectedTextRule, generateSelectedTextRule } from "../../src/selected-text.js";
 const expectedMigrationCount = (await readdir(path.resolve(import.meta.dirname, "../../migrations"))).filter((file) => /^\d+_.+\.sql$/.test(file)).length;
 const dbURL = new URL(process.env.TEST_DATABASE_URL ?? "");
@@ -3340,13 +3342,16 @@ test("same-origin production preview preserves Secure cookies, validates Host/Or
       })
       .expect(201)
   ).body;
-  await call("post", `/api/v1/jobs/${monitor.id}/run`, cookie)
+  const manualRequest = await call("post", `/api/v1/jobs/${monitor.id}/run`, cookie)
     .send({})
     .expect(202);
   await runMonitor(pool, previewCfg, monitor.id, {
     force: true,
+    manualRunId: manualRequest.body.request_id,
     capture: async () => ({ text: "before", screenshot: image(0) }),
   });
+  const manualIntent = (await pool.query("SELECT priority_intent_id FROM fusion_manual_runs WHERE id=$1", [manualRequest.body.request_id])).rows[0].priority_intent_id;
+  await cancelInteractivePriorityIntent(pool, manualIntent);
   await runMonitor(pool, previewCfg, monitor.id, {
     force: true,
     capture: async () => ({ text: "after", screenshot: image(35) }),
@@ -3653,7 +3658,7 @@ test("region preview capacity includes initializing browsers and releases reserv
   const fixture = managedServer(t, async (req, res) => {
     if (req.url === "/blocked") {
       blockedRequests++;
-      if (blockedRequests === 4) allStarted();
+      if (blockedRequests === 1) allStarted();
       await blocked;
     }
     if (req.url === "/failure") {
@@ -3674,19 +3679,19 @@ test("region preview capacity includes initializing browsers and releases reserv
     browser_steps: [],
   }) as any;
 
-  const initializing = Array.from({ length: 4 }, (_, index) =>
+  const initializing = Array.from({ length: 1 }, (_, index) =>
     previewRegion(monitor("/blocked"), cfg, undefined, policy, { ownerId: `capacity-owner-${index}`, retain: true }),
   );
   await started;
-  assert.equal(blockedRequests, 4, "four admitted previews can reach navigation concurrently");
+  assert.equal(blockedRequests, 1, "only one initializing preview reaches navigation");
   await assert.rejects(
     previewRegion(monitor("/blocked"), cfg, undefined, policy, { ownerId: "capacity-owner-excess", retain: true }),
     (error: any) => error.failure_code === "capacity_busy" && error.status === 429,
   );
-  assert.equal(blockedRequests, 4, "the rejected preview never launches Chromium or reaches the target");
+  assert.equal(blockedRequests, 1, "the rejected preview never launches Chromium or reaches the target");
   releaseBlocked();
   const completed = await Promise.all(initializing);
-  assert.equal(completed.length, 4);
+  assert.equal(completed.length, 1);
   assert.ok(completed.every((entry) => entry.session_id), "admitted previews retain owner-bound sessions");
 
   await closeRegionPreviewSessions();
@@ -3699,31 +3704,480 @@ test("region preview capacity includes initializing browsers and releases reserv
   await closeRegionPreviewSessions();
 });
 
+test("authenticated Preview preempts a real scheduled browser through the same single slot after cleanup", async (t) => {
+  let peakTrees = 0;
+  let sample: Promise<void> = Promise.resolve();
+  let sampling = false;
+  const sampleTrees = async () => {
+    let trees = 0;
+    const pids = (await readdir("/proc")).filter((p) => /^\d+$/.test(p));
+    for (let offset = 0; offset < pids.length; offset += 64) await Promise.all(pids.slice(offset, offset + 64).map(async (pid) => {
+      try {
+        const args = (await readFile(`/proc/${pid}/cmdline`, "utf8")).split("\0");
+        if (args.includes("--remote-debugging-pipe") && !args.some((a) => a.startsWith("--type="))) trees++;
+      } catch { /* process exited between enumeration and inspection */ }
+    }));
+    peakTrees = Math.max(peakTrees, trees);
+  };
+  const sampleTimer = setInterval(() => {
+    if (!sampling) { sampling = true; sample = sampleTrees().finally(() => { sampling = false; }); }
+  }, 20);
+  t.after(async () => { clearInterval(sampleTimer); await sample; });
+  let started!: () => void;
+  const capturing = new Promise<void>((resolve) => { started = resolve; });
+  let unblock!: () => void;
+  const gate = new Promise<void>((resolve) => { unblock = resolve; });
+  const fixture = managedServer(t, async (req, res) => {
+    if (req.url === "/worker") { started(); await gate; }
+    res.end("<!doctype html><main id='target'>Single browser handoff fixture</main>");
+  });
+  await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
+  const port = (fixture.address() as AddressInfo).port;
+  const policy = new EgressPolicy(async () => [{ address: "127.0.0.1", family: 4 }], () => true, new Set([port]));
+  const owner = (await pool.query("SELECT user_id FROM users WHERE email='owner@example.com'")).rows[0].user_id;
+  const scheduledMonitor = (await pool.query("INSERT INTO fusion_monitors(user_id,name,url,kind,visual_enabled,text_enabled) VALUES($1,'Handoff fixture',$2,'browser',true,false) RETURNING *", [owner, `http://lane.fixture:${port}/worker`])).rows[0];
+  await runMonitor(pool, cfg, scheduledMonitor.id, { force: true, capture: async () => ({ text: null, screenshot: image() }) });
+  await pool.query("UPDATE fusion_monitors SET next_run=now()-interval '1 day',failure_count=2,monitor_state='temporary_failure',failure_alert_mode='every',notify_failures=true WHERE id=$1", [scheduledMonitor.id]);
+  const notificationChannel = (await pool.query("INSERT INTO fusion_channels(user_id,name,provider,config) VALUES($1,'Handoff notifications','smtp','{}') RETURNING id", [owner])).rows[0].id;
+  await pool.query("INSERT INTO fusion_monitor_channels(monitor_id,channel_id) VALUES($1,$2)", [scheduledMonitor.id, notificationChannel]);
+  const baselineEvent = (await pool.query("SELECT id FROM fusion_events WHERE monitor_id=$1", [scheduledMonitor.id])).rows[0].id;
+  await pool.query("INSERT INTO fusion_outbox(event_id,channel_id,attempts,next_attempt) VALUES($1,$2,1,now()+interval '1 day')", [baselineEvent, notificationChannel]);
+  await pool.query("INSERT INTO fusion_notification_digests(monitor_id,channel_id,first_event_at,last_event_at,latest_event_id,due_at) VALUES($1,$2,now(),now(),$3,now()+interval '1 day')", [scheduledMonitor.id, notificationChannel, baselineEvent]);
+  const before = (await pool.query("SELECT failure_count,monitor_state,baseline_id,latest_capture_id,last_success_at FROM fusion_monitors WHERE id=$1", [scheduledMonitor.id])).rows[0];
+  const outboxForMonitor = () => pool.query("SELECT o.* FROM fusion_outbox o JOIN fusion_events e ON e.id=o.event_id WHERE e.monitor_id=$1 ORDER BY o.id", [scheduledMonitor.id]);
+  const outbox = (await outboxForMonitor()).rows;
+  const digests = (await pool.query("SELECT * FROM fusion_notification_digests WHERE monitor_id=$1", [scheduledMonitor.id])).rows;
+  let cleaned = false;
+  let workerSignal: AbortSignal | undefined;
+  const workerOptions = { stopped: () => cleaned, send: async () => {}, capture: async (m: any, c: any, _policy: any, signal: any) => {
+    assert.equal(m.id, scheduledMonitor.id, "the due fixture is selected first");
+    workerSignal = signal;
+    try { return await capture(m, c, policy, signal); }
+    finally { cleaned = true; }
+  } };
+  const scheduled = workerCycle(pool, cfg, workerOptions);
+  const previewApp = createApp(pool, cfg, policy);
+  const agent = request.agent(previewApp);
+  await agent.post("/api/v1/login").set("X-Fusion-Request", "1").send({ email: "owner@example.com", password }).expect(200);
+  try {
+    await capturing;
+    await sampleTrees();
+    const preview = (await agent.post("/api/v1/region-preview").set("X-Fusion-Request", "1").send({ mode: "element", monitor: { url: `http://lane.fixture:${port}/preview`, kind: "browser", visual_enabled: true } }).expect(200)).body;
+    assert.ok(preview.image.length > 100);
+    await sampleTrees();
+    assert.ok(cleaned, "capture cleanup completed before the user browser was admitted");
+    assert.ok(workerSignal?.reason instanceof SchedulingCancellation);
+    assert.equal(await acquireChromiumLease(pool, { workload: "capture", slots: 3 }), null);
+    await scheduled;
+    assert.deepEqual((await pool.query("SELECT failure_count,monitor_state,baseline_id,latest_capture_id,last_success_at FROM fusion_monitors WHERE id=$1", [scheduledMonitor.id])).rows[0], before);
+    assert.deepEqual((await outboxForMonitor()).rows, outbox);
+    assert.deepEqual((await pool.query("SELECT * FROM fusion_notification_digests WHERE monitor_id=$1", [scheduledMonitor.id])).rows, digests);
+    const skipped = (await pool.query("SELECT * FROM fusion_events WHERE monitor_id=$1 AND status='skipped'", [scheduledMonitor.id])).rows;
+    assert.equal(skipped.length, 1);
+    assert.equal(skipped[0].warning_code, "interactive_priority");
+    assert.equal(skipped[0].after_id, null);
+    await agent.get(`/api/v1/jobs/${scheduledMonitor.id}/history?status=skipped`).expect(200);
+    await closeRegionPreviewSessions();
+    unblock();
+    cleaned = false;
+    await pool.query("UPDATE fusion_monitors SET next_run=now()-interval '1 day' WHERE id=$1", [scheduledMonitor.id]);
+    await workerCycle(pool, cfg, workerOptions);
+    assert.equal((await pool.query("SELECT failure_count FROM fusion_monitors WHERE id=$1", [scheduledMonitor.id])).rows[0].failure_count, 0, "normal scheduled capture resumes successfully after Preview cleanup");
+    await sample;
+    assert.equal(peakTrees, 1, "real sandboxed Chromium roots never overlap during handoff");
+  } finally { unblock(); await scheduled; await closeRegionPreviewSessions(); }
+});
+
+test("manual Check Now is durable, deduplicated, owner-bound and completed atomically by a restarted Worker", async (t) => {
+  let navigationStarted!: () => void;
+  const navigating = new Promise<void>((resolve) => { navigationStarted = resolve; });
+  const fixture = managedServer(t, (req, res) => {
+    if (req.url === "/blocked") { navigationStarted(); return; }
+    res.end("<main>Manual priority fixture</main>");
+  });
+  await listenServer(fixture);
+  const port = (fixture.address() as AddressInfo).port;
+  const policy = new EgressPolicy(async () => [{ address: "127.0.0.1", family: 4 }], () => true, new Set([port]));
+  const owner = (await pool.query("SELECT user_id FROM users WHERE email='owner@example.com'")).rows[0].user_id;
+  const m = (await pool.query("INSERT INTO fusion_monitors(user_id,name,url,kind,visual_enabled,text_enabled,next_run) VALUES($1,'Manual fixture',$2,'browser',true,false,now()+interval '1 day') RETURNING *", [owner, `http://manual.fixture:${port}`])).rows[0];
+  t.after(async () => {
+    const open = await pool.query("UPDATE fusion_manual_runs SET status='cancelled',updated_at=now() WHERE monitor_id=$1 AND status IN ('queued','running') RETURNING priority_intent_id", [m.id]);
+    for (const run of open.rows) await cancelInteractivePriorityIntent(pool, run.priority_intent_id);
+  });
+  const scheduled = await acquireChromiumLease(pool, { workload: "capture", slots: 1, observeInteractivePriority: true });
+  assert.ok(scheduled);
+  t.after(() => scheduled.release());
+  const interrupted = capture({ ...m, url: `http://manual.fixture:${port}/blocked` }, cfg, policy, scheduled.signal).then(() => null, (error) => error);
+  await navigating;
+  const queued = (await ownerAgent.post(`/api/v1/jobs/${m.id}/run`).set("X-Fusion-Request", "1").send({}).expect(202)).body;
+  const duplicate = (await ownerAgent.post(`/api/v1/jobs/${m.id}/run`).set("X-Fusion-Request", "1").send({}).expect(202)).body;
+  assert.equal(duplicate.request_id, queued.request_id);
+  await otherAgent.get(`/api/v1/jobs/${m.id}/run`).expect(404);
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.ok(scheduled.signal?.reason instanceof SchedulingCancellation, "explicit Check Now requests cooperative preemption");
+  assert.ok(await interrupted instanceof SchedulingCancellation, "real active Chromium work yields to Check Now");
+  await scheduled.release();
+  // Simulate a Worker death before launch: the durable running record is picked
+  // up by a replacement cycle and the per-monitor advisory lock prevents duplicates.
+  await pool.query("UPDATE fusion_manual_runs SET status='running' WHERE id=$1", [queued.request_id]);
+  await pool.query("UPDATE fusion_chromium_priority_intents SET created_at=now()-interval '30 seconds',expires_at=now()-interval '10 seconds' WHERE id=(SELECT priority_intent_id FROM fusion_manual_runs WHERE id=$1)", [queued.request_id]);
+  let calls = 0;
+  const options = { capture: async (monitor: any, config: any, _policy: any, signal: any) => {
+    if (monitor.id !== m.id) return { text: "fixture", screenshot: monitor.visual_enabled ? image() : null };
+    calls++;
+    return capture(monitor, config, policy, signal);
+  }, send: async () => {} };
+  await Promise.all([workerCycle(pool, cfg, options), workerCycle(pool, cfg, options)]);
+  // A non-blocking probe can race another replica's brief admission transaction.
+  // Model the real Worker loop's subsequent bounded cycles, without allowing
+  // duplicate captures or weakening the completed-state assertion below.
+  for (let attempt = 0; calls === 0 && attempt < 3; attempt++)
+    await workerCycle(pool, cfg, options);
+  assert.equal(calls, 1, "two replacement Workers cannot duplicate the manual capture");
+  assert.equal((await ownerAgent.get(`/api/v1/jobs/${m.id}/run`).expect(200)).body.status, "completed");
+  assert.equal((await pool.query("SELECT count(*)::int AS n FROM fusion_captures WHERE monitor_id=$1", [m.id])).rows[0].n, 1);
+  await pool.query("UPDATE fusion_monitors SET kind='html',visual_enabled=false,text_enabled=true WHERE id=$1", [m.id]);
+  await ownerAgent.post(`/api/v1/jobs/${m.id}/run`).set("X-Fusion-Request", "1").send({}).expect(202);
+  await workerCycle(pool, cfg, { capture: async () => { throw new CaptureFailure("navigation", "connection_failure"); }, send: async () => {} });
+  assert.equal((await ownerAgent.get(`/api/v1/jobs/${m.id}/run`).expect(200)).body.status, "failed", "genuine non-browser errors retain failure semantics");
+  const health = (await pool.query("SELECT failure_count,monitor_state,baseline_id,latest_capture_id FROM fusion_monitors WHERE id=$1", [m.id])).rows[0];
+  await ownerAgent.post(`/api/v1/jobs/${m.id}/run`).set("X-Fusion-Request", "1").send({}).expect(202);
+  await ownerAgent.delete(`/api/v1/jobs/${m.id}/run`).set("X-Fusion-Request", "1").expect(204);
+  assert.equal((await ownerAgent.get(`/api/v1/jobs/${m.id}/run`).expect(200)).body.status, "cancelled");
+  assert.deepEqual((await pool.query("SELECT failure_count,monitor_state,baseline_id,latest_capture_id FROM fusion_monitors WHERE id=$1", [m.id])).rows[0], health);
+});
+
+test("another replica cannot cancel a disabled running manual request before its monitor lock is released", async () => {
+  const created = (await ownerAgent.post("/api/v1/jobs").set("X-Fusion-Request", "1").send({ name: "Disabled running manual fixture", url: "https://example.com/disabled-manual", kind: "html", text_enabled: true, visual_enabled: false }).expect(201)).body;
+  const queued = (await ownerAgent.post(`/api/v1/jobs/${created.id}/run`).set("X-Fusion-Request", "1").expect(202)).body;
+  await pool.query("UPDATE fusion_manual_runs SET status='running' WHERE id=$1", [queued.request_id]);
+  await pool.query("UPDATE fusion_monitors SET enabled=false WHERE id=$1", [created.id]);
+  const active = await pool.connect();
+  try {
+    await active.query("SELECT pg_advisory_lock(hashtextextended($1,0))", [created.id]);
+    await workerCycle(pool, cfg, { stopped: () => true });
+    assert.equal((await pool.query("SELECT status FROM fusion_manual_runs WHERE id=$1", [queued.request_id])).rows[0].status, "running");
+  } finally { await active.query("SELECT pg_advisory_unlock(hashtextextended($1,0))", [created.id]); active.release(); }
+  await workerCycle(pool, cfg, { stopped: () => true });
+  assert.equal((await pool.query("SELECT status FROM fusion_manual_runs WHERE id=$1", [queued.request_id])).rows[0].status, "cancelled");
+  assert.equal((await pool.query("SELECT count(*)::int AS n FROM fusion_events WHERE monitor_id=$1", [created.id])).rows[0].n, 0);
+  assert.equal((await pool.query("SELECT failure_count FROM fusion_monitors WHERE id=$1", [created.id])).rows[0].failure_count, 0);
+});
+
+test("manual queue bounds apply atomically without creating priority for rejected requests", async () => {
+  // Keep the real 120/minute HTTP protection, but do not share its window with
+  // every unrelated scenario: fast CI otherwise exhausts it during cleanup and
+  // a generic limiter 429 could falsely satisfy the queue-overflow assertion.
+  const queueAgent = request.agent(createApp(pool, cfg));
+  await queueAgent.post("/api/v1/login").set("X-Fusion-Request", "1").send({ email: "owner@example.com", password }).expect(200);
+  const owner = (await pool.query("SELECT user_id FROM users WHERE email='owner@example.com'")).rows[0].user_id;
+  const ids: string[] = [];
+  for (let index = 0; index < 5; index++) ids.push((await pool.query("INSERT INTO fusion_monitors(user_id,name,url,kind,next_run) VALUES($1,'Bounded manual queue','https://example.com','html',now()+interval '1 day') RETURNING id", [owner])).rows[0].id);
+  try {
+    await Promise.all(ids.slice(0, 4).map((id) => queueAgent.post(`/api/v1/jobs/${id}/run`).set("X-Fusion-Request", "1").send({}).expect(202)));
+    const intents = (await pool.query("SELECT count(*)::int AS n FROM fusion_chromium_priority_intents")).rows[0].n;
+    const full = await queueAgent.post(`/api/v1/jobs/${ids[4]}/run`).set("X-Fusion-Request", "1").send({}).expect(429);
+    assert.equal(full.body.failure_code, "capacity_queue_full", "the durable queue, not the shared HTTP rate window, rejects excess manual work");
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM fusion_chromium_priority_intents")).rows[0].n, intents);
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM fusion_manual_runs WHERE monitor_id=ANY($1::uuid[]) AND status='queued'", [ids])).rows[0].n, 4);
+  } finally {
+    for (const id of ids) await queueAgent.delete(`/api/v1/jobs/${id}/run`).set("X-Fusion-Request", "1").expect(204);
+  }
+});
+
+test("browser contention defers due work without starving non-browser checks or flooding history", async () => {
+  const owner = (await pool.query("SELECT user_id FROM users WHERE email='owner@example.com'")).rows[0].user_id;
+  const browserIds: string[] = [];
+  for (let index = 0; index < 6; index++) browserIds.push((await pool.query("INSERT INTO fusion_monitors(user_id,name,url,kind,next_run) VALUES($1,'Deferred browser','https://example.com','browser',now()-interval '10 days') RETURNING id", [owner])).rows[0].id);
+  const html = (await pool.query("INSERT INTO fusion_monitors(user_id,name,url,kind,next_run) VALUES($1,'Unblocked HTML','https://example.com','html',now()-interval '9 days') RETURNING id", [owner])).rows[0].id;
+  const held = await acquireChromiumLease(pool, { workload: "preview", slots: 1 });
+  assert.ok(held);
+  let calls = 0;
+  const options = { stopped: () => calls > 0, capture: async (m: any) => { assert.equal(m.id, html); calls++; return { text: "fixture", screenshot: null }; }, send: async () => {} };
+  try {
+    await workerCycle(pool, cfg, options);
+    await workerCycle(pool, cfg, options);
+    assert.equal(calls, 1, "the next due batch reaches non-browser checks during interactive contention");
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM fusion_events WHERE monitor_id=ANY($1::uuid[])", [browserIds])).rows[0].n, 0, "work that never started does not generate skipped history");
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM fusion_monitors WHERE id=ANY($1::uuid[]) AND next_run>now()", [browserIds])).rows[0].n, 6);
+  } finally { await held.release(); await pool.query("UPDATE fusion_monitors SET enabled=false WHERE id=ANY($1::uuid[])", [[...browserIds, html]]); }
+});
+
+test("priority intents expire, remain bounded and repeated reconnects give scheduled work a recovery turn", async () => {
+  const owner = (await pool.query("SELECT user_id FROM users WHERE email='owner@example.com'")).rows[0].user_id;
+  await pool.query("UPDATE fusion_chromium_scheduler SET priority_window_until=NULL,scheduled_turn_until=NULL WHERE id=1");
+  const intent = await createInteractivePriorityIntent(pool, owner, "preview");
+  await assert.rejects(createInteractivePriorityIntent(pool, owner, "preview"), (e: any) => e.code === "capacity_queue_full");
+  assert.equal(await acquireChromiumLease(pool, { workload: "capture", slots: 1 }), null, "pending scheduled work is deferred without starting a browser");
+  await pool.query("UPDATE fusion_chromium_priority_intents SET created_at=now()-interval '30 seconds',expires_at=now()-interval '10 seconds' WHERE id=$1", [intent]);
+  const recovered = await acquireChromiumLease(pool, { workload: "capture", slots: 1 });
+  assert.ok(recovered); await recovered.release();
+  await pool.query("UPDATE fusion_chromium_scheduler SET priority_window_until=now()-interval '1 second' WHERE id=1");
+  await assert.rejects(createInteractivePriorityIntent(pool, owner, "preview"), (e: any) => e.code === "scheduled_recovery");
+  await assert.rejects(createInteractivePriorityIntent(pool, owner, "preview"), (e: any) => e.code === "scheduled_recovery");
+  const fair = await acquireChromiumLease(pool, { workload: "capture", slots: 1, observeInteractivePriority: true });
+  assert.ok(fair);
+  await pool.query("UPDATE fusion_chromium_scheduler SET scheduled_turn_until=now()-interval '1 second' WHERE id=1");
+  const afterTurn = await createInteractivePriorityIntent(pool, owner, "preview");
+  await new Promise((resolve) => setTimeout(resolve, 200));
+  assert.equal(fair.signal?.aborted, false, "a recovery capture retains its bounded capture deadline even after the admission turn ends");
+  await fair.release();
+  await cancelInteractivePriorityIntent(pool, afterTurn);
+  await cancelInteractivePriorityIntent(pool, intent);
+  await pool.query("UPDATE fusion_chromium_scheduler SET priority_window_until=NULL,scheduled_turn_until=NULL WHERE id=1");
+});
+
+test("an active Preview cannot reset an expired burst through quiet reconnects and already-running scheduled recovery completes", async () => {
+  const owner = (await pool.query("SELECT user_id FROM users WHERE email='owner@example.com'")).rows[0].user_id;
+  const reset = () => pool.query("UPDATE fusion_chromium_scheduler SET priority_window_until=NULL,last_interactive_at=NULL,scheduled_turn_until=NULL,scheduled_recovery_pending=false WHERE id=1");
+  await reset();
+  let held = await acquireChromiumLease(pool, { workload: "preview", slots: 1 });
+  let intent: string | undefined;
+  try {
+    assert.ok(held);
+    await pool.query("UPDATE fusion_chromium_scheduler SET priority_window_until=now()-interval '1 second',last_interactive_at=now()-interval '31 seconds' WHERE id=1");
+    await assert.rejects(createInteractivePriorityIntent(pool, owner, "preview"), (e: any) => e.code === "scheduled_recovery");
+    const pending = (await pool.query("SELECT scheduled_recovery_pending,scheduled_turn_until FROM fusion_chromium_scheduler WHERE id=1")).rows[0];
+    assert.equal(pending.scheduled_recovery_pending, true);
+    assert.equal(pending.scheduled_turn_until, null, "the recovery admission window starts only after confirmed Preview cleanup");
+    await held.release(); held = null;
+    const released = (await pool.query("SELECT scheduled_turn_until>now() AS turn,last_interactive_at>now()-interval '1 second' AS recent FROM fusion_chromium_scheduler WHERE id=1")).rows[0];
+    assert.deepEqual(released, { turn: true, recent: true });
+    await reset();
+    held = await acquireChromiumLease(pool, { workload: "capture", slots: 1, observeInteractivePriority: true });
+    assert.ok(held);
+    await pool.query("UPDATE fusion_chromium_scheduler SET priority_window_until=now()-interval '1 second',last_interactive_at=now() WHERE id=1");
+    await assert.rejects(createInteractivePriorityIntent(pool, owner, "preview"), (e: any) => e.code === "scheduled_recovery");
+    await new Promise(resolve => setTimeout(resolve, 250));
+    await pool.query("UPDATE fusion_chromium_scheduler SET scheduled_turn_until=now()-interval '1 second' WHERE id=1");
+    intent = await createInteractivePriorityIntent(pool, owner, "preview");
+    await new Promise(resolve => setTimeout(resolve, 250));
+    assert.equal(held.signal!.aborted, false, "a scheduled capture already running when recovery began retains its bounded deadline");
+  } finally { await held?.release(); await cancelInteractivePriorityIntent(pool, intent); await reset(); }
+});
+
+test("scheduled cancellation during real Browser Steps and stalled screenshot closes Chromium before releasing capacity", async (t) => {
+  const { chromium } = await import("playwright");
+  for (const stage of ["steps", "screenshot"] as const) {
+    let entered!: () => void;
+    const active = new Promise<void>((resolve) => { entered = resolve; });
+    const fixture = managedServer(t, (req, res) => {
+      if (req.url === "/entered") entered();
+      res.end('<button id="start" onclick="fetch(\'/entered\')">Start</button><main>Capture fixture</main>');
+    });
+    await listenServer(fixture);
+    const port = (fixture.address() as AddressInfo).port;
+    const policy = new EgressPolicy(async () => [{ address: "127.0.0.1", family: 4 }], () => true, new Set([port]));
+    const launch = chromium.launch.bind(chromium);
+    const launchMock = mock.method(chromium, "launch", async (options) => {
+      const browser = await launch(options);
+      if (stage === "screenshot") {
+        const newContext = browser.newContext.bind(browser);
+        mock.method(browser, "newContext", async (options) => {
+          const context = await newContext(options);
+          const newSession = context.newCDPSession.bind(context);
+          mock.method(context, "newCDPSession", async (page) => {
+            const session = await newSession(page);
+            const send = session.send.bind(session) as any;
+            mock.method(session, "send", (async (method: string, args: any) => {
+              if (method === "Page.captureScreenshot") {
+                entered();
+                // Real CDP work deliberately remains pending until context/browser
+                // close, exercising the same cancellation and cleanup path.
+                return send("Runtime.evaluate", { expression: "new Promise(()=>{})", awaitPromise: true });
+              }
+              return send(method, args);
+            }) as any);
+            return session;
+          });
+          return context;
+        });
+      }
+      return browser;
+    });
+    const lease = await acquireChromiumLease(pool, { workload: "capture", slots: 1 });
+    assert.ok(lease);
+    const controller = new AbortController();
+    const m = { id: randomUUID(), url: `http://cancel.fixture:${port}`, kind: "browser", text_enabled: false, visual_enabled: true, capture_mode: "viewport", mask_selectors: [], ignore_selectors: [], ignore_text: [], browser_steps: stage === "steps" ? [{ action: "click", selector: "#start", timeout_ms: 10_000 }, { action: "wait_visible", selector: "#never", timeout_ms: 60_000 }]: [], step_budget_ms: 60_000 } as any;
+    const result = capture(m, cfg, policy, AbortSignal.any([controller.signal, lease.signal!])).then(() => null, (e) => e);
+    try {
+      await active;
+      controller.abort(new SchedulingCancellation());
+      assert.ok(await result instanceof SchedulingCancellation);
+      assert.equal(await acquireChromiumLease(pool, { workload: "preview", slots: 1 }), null, "confirmed cleanup does not itself release the owner's reservation early");
+      await lease.release();
+      const next = await acquireChromiumLease(pool, { workload: "preview", slots: 1 });
+      assert.ok(next); await next.release();
+    } finally { controller.abort(new SchedulingCancellation()); await result; await lease.release(); launchMock.mock.restore(); }
+  }
+});
+
+test("cancellation rolls back capture commit preparation but cannot retroactively skip a committed success", async () => {
+  const owner = (await pool.query("SELECT user_id FROM users WHERE email='owner@example.com'")).rows[0].user_id;
+  for (const boundary of ["before_commit", "after_commit"]) {
+    const m = (await pool.query("INSERT INTO fusion_monitors(user_id,name,url,kind,visual_enabled,text_enabled) VALUES($1,'Commit boundary fixture','https://example.com','browser',false,true) RETURNING *", [owner])).rows[0];
+    await runMonitor(pool, cfg, m.id, { force: true, capture: async () => ({ text: "before", screenshot: null }) });
+    await pool.query("UPDATE fusion_monitors SET failure_count=2,monitor_state='temporary_failure' WHERE id=$1", [m.id]);
+    const baseline = (await pool.query("SELECT baseline_id FROM fusion_monitors WHERE id=$1", [m.id])).rows[0].baseline_id;
+    const controller = new AbortController();
+    const wrapped = { connect: async () => {
+      const c = await pool.connect();
+      return { query: async (sql: string, values: any[]) => {
+        const r = await c.query(sql, values);
+        if ((boundary === "before_commit" && sql.includes("SET latest_capture_id=")) || (boundary === "after_commit" && sql === "COMMIT")) controller.abort(new SchedulingCancellation());
+        return r;
+      }, release: c.release.bind(c) };
+    } } as any;
+    await runMonitor(wrapped, cfg, m.id, { force: true, signal: controller.signal, capture: async () => ({ text: "after", screenshot: null }) });
+    const current = (await pool.query("SELECT * FROM fusion_monitors WHERE id=$1", [m.id])).rows[0];
+    const events = (await pool.query("SELECT status FROM fusion_events WHERE monitor_id=$1 ORDER BY created_at", [m.id])).rows.map((e) => e.status);
+    assert.deepEqual(events, ["baseline", boundary === "before_commit" ? "skipped" : "changed"]);
+    assert.equal(current.failure_count, boundary === "before_commit" ? 2 : 0);
+    assert.equal(current.baseline_id === baseline, boundary === "before_commit");
+    assert.equal((await pool.query("SELECT count(*)::int AS n FROM fusion_captures WHERE monitor_id=$1", [m.id])).rows[0].n, boundary === "before_commit" ? 1 : 2);
+  }
+});
+
+test("database session loss aborts a resident browser and permits lane recovery", async (t) => {
+  const fixture = managedServer(t, (_req, res) => res.end("<!doctype html><main>Lease recovery fixture</main>"));
+  await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
+  const port = (fixture.address() as AddressInfo).port;
+  const policy = new EgressPolicy(async () => [{ address: "127.0.0.1", family: 4 }], () => true, new Set([port]));
+  let lease: Awaited<ReturnType<typeof acquireChromiumLease>>;
+  const monitor = { id: randomUUID(), url: `http://lease.fixture:${port}/`, kind: "browser", visual_enabled: true, text_enabled: false, browser_steps: [] } as any;
+  try {
+    const preview = await previewRegion(monitor, cfg, undefined, policy, { ownerId: "crash-recovery-owner", retain: true, acquireCapacity: async () => lease = await acquireChromiumLease(pool, { workload: "preview", slots: 1 }) });
+    const locks = await pool.query("SELECT pid FROM pg_locks WHERE locktype='advisory' AND classid=$1 AND objid=1 AND granted", [0x43484645]);
+    assert.equal(locks.rowCount, 1);
+    await pool.query("SELECT pg_terminate_backend($1)", [locks.rows[0].pid]);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    assert.ok(lease!.signal!.aborted);
+    await closeRegionPreviewSessions();
+    await assert.rejects(previewRegion(monitor, cfg, undefined, policy, { ownerId: "crash-recovery-owner", id: preview.session_id }), (e: any) => e.failure_code === "session_expired");
+    const recovered = await acquireChromiumLease(pool, { workload: "preview", slots: 1 });
+    assert.ok(recovered); await recovered.release();
+  } finally { await closeRegionPreviewSessions(); }
+});
+
+test("an unexpectedly unlocked advisory session aborts real Preview while its durable fence prevents overlap", async (t) => {
+  const fixture = managedServer(t, (_req, res) => res.end("<main>Unexpected unlock fixture</main>"));
+  await new Promise<void>(resolve => fixture.listen(0, "127.0.0.1", resolve));
+  const port = (fixture.address() as AddressInfo).port;
+  const policy = new EgressPolicy(async () => [{ address: "127.0.0.1", family: 4 }], () => true, new Set([port]));
+  const leaseClient = await pool.connect();
+  const leasePool = { connect: async () => leaseClient, query: pool.query.bind(pool) } as unknown as Pool;
+  let lease: Awaited<ReturnType<typeof acquireChromiumLease>>;
+  let allowRelease!: () => void;
+  const releaseGate = new Promise<void>(resolve => { allowRelease = resolve; });
+  try {
+    await previewRegion({ id: randomUUID(), url: `http://unlock.fixture:${port}/`, kind: "browser", visual_enabled: true, text_enabled: false, browser_steps: [] } as any, cfg, undefined, policy, {
+      ownerId: "unlock-owner", retain: true, acquireCapacity: async () => {
+        lease = await acquireChromiumLease(leasePool, { workload: "preview", slots: 1 });
+        return lease && { ...lease, release: async () => { await releaseGate; await lease!.release(); } };
+      },
+    });
+    await leaseClient.query("SELECT pg_advisory_unlock_all()");
+    // Before the owner's explicit release, its durable token protects handoff
+    // despite an otherwise available PostgreSQL session lock.
+    await assert.rejects(acquireChromiumLease(pool, { workload: "capture", slots: 1 }), (e: any) => e.code === "cleanup_timeout");
+    await new Promise(resolve => setTimeout(resolve, 250));
+    assert.ok(lease!.signal!.aborted);
+    allowRelease();
+    await closeRegionPreviewSessions();
+    const recovered = await acquireChromiumLease(pool, { workload: "capture", slots: 1 });
+    assert.ok(recovered); await recovered.release();
+  } finally { allowRelease(); await closeRegionPreviewSessions(); }
+});
+
+test("lease-only API and Worker process crashes quarantine capacity until cleanup has been independently confirmed", async () => {
+  for (const workload of ["preview", "capture"] as const) {
+    const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "-e", `
+      import {makePool} from './src/db.ts';
+      import {acquireChromiumLease} from './src/chromium-capacity.ts';
+      const pool=makePool(process.env.TEST_DATABASE_URL);
+      const lease=await acquireChromiumLease(pool,{workload:'${workload}',slots:1});
+      if(!lease)process.exit(2);
+      console.log('ready');setInterval(()=>{},1000);
+    `], { env: { ...process.env, TEST_DATABASE_URL: cfg.DATABASE_URL }, stdio: ["ignore", "pipe", "pipe"] });
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(Error("Lease subprocess did not start")), 5000);
+        child.stdout.once("data", () => { clearTimeout(timer); resolve(); });
+        child.once("error", (e) => { clearTimeout(timer); reject(e); });
+        child.once("exit", () => { clearTimeout(timer); reject(Error("Lease subprocess exited early")); });
+      });
+      const busy = await acquireChromiumLease(pool, { workload, slots: 1 });
+      if (busy) await busy.release();
+      assert.equal(busy, null);
+      await new Promise<void>((resolve) => { child.once("exit", () => resolve()); child.kill("SIGKILL"); });
+      await assert.rejects(acquireChromiumLease(pool, { workload, slots: 1 }), (error: any) => error.code === "cleanup_timeout");
+      // This subprocess intentionally never launched Chromium. The test can
+      // independently confirm cleanup; production must not clear on timeout.
+      const token = (await pool.query("SELECT active_token FROM fusion_chromium_scheduler WHERE id=1")).rows[0].active_token;
+      await recoverChromiumQuarantine(pool, token, async () => {
+        assert.ok(child.signalCode === "SIGKILL", "this fixture owned only a lease and launched no browser");
+      });
+      const recovered = await acquireChromiumLease(pool, { workload, slots: 1 });
+      assert.ok(recovered, `${workload} resumes only after confirmed recovery`);
+      await recovered.release();
+    } finally { child.kill("SIGKILL"); }
+  }
+});
+
+test("offline recovery rejects live/legacy owners, changed tokens and failed fencing without touching monitor or notification state", async () => {
+  const snapshot = async () => (await pool.query("SELECT (SELECT jsonb_agg(to_jsonb(m) ORDER BY id) FROM fusion_monitors m) AS monitors,(SELECT jsonb_agg(to_jsonb(r) ORDER BY id) FROM fusion_manual_runs r) AS manual,(SELECT jsonb_agg(to_jsonb(o) ORDER BY id) FROM fusion_outbox o) AS outbox,(SELECT jsonb_agg(to_jsonb(e) ORDER BY id) FROM fusion_events e) AS events")).rows[0];
+  const before = await snapshot();
+  const held = await acquireChromiumLease(pool, { workload: "capture", slots: 1 });
+  assert.ok(held);
+  const heldToken = (await pool.query("SELECT active_token FROM fusion_chromium_scheduler WHERE id=1")).rows[0].active_token;
+  await assert.rejects(recoverChromiumQuarantine(pool, heldToken, async () => {}), /still connected/);
+  await held.release();
+  const token = randomUUID();
+  // No browser is launched in this transaction/fencing contract test.
+  await pool.query("UPDATE fusion_chromium_scheduler SET active_token=$1,active_workload='capture',active_since=now() WHERE id=1", [token]);
+  let verified = 0;
+  await assert.rejects(recoverChromiumQuarantine(pool, randomUUID(), async () => { verified++; }), /token changed/);
+  assert.equal(verified, 0);
+  await assert.rejects(recoverChromiumQuarantine(pool, token, async () => { throw Error("Unproven process death"); }), /Unproven/);
+  const legacy = await pool.connect();
+  try {
+    await legacy.query("SELECT pg_advisory_lock($1,4)", [0x43484645]);
+    await assert.rejects(recoverChromiumQuarantine(pool, token, async () => { verified++; }), /still connected/);
+    assert.equal(verified, 0);
+  } finally { await legacy.query("SELECT pg_advisory_unlock($1,4)", [0x43484645]); legacy.release(); }
+  assert.equal((await pool.query("SELECT active_token FROM fusion_chromium_scheduler WHERE id=1")).rows[0].active_token, token);
+  await recoverChromiumQuarantine(pool, token, async () => { verified++; });
+  assert.equal(verified, 1);
+  assert.deepEqual(await snapshot(), before);
+  const recovered = await acquireChromiumLease(pool, { workload: "preview", slots: 1 });
+  assert.ok(recovered); await recovered.release();
+});
+
 test("PostgreSQL Chromium admission coordinates preview and scheduled capture leases", async () => {
   const preview = await acquireChromiumLease(pool, { workload: "preview", slots: 1 });
-  assert.ok(preview, "first preview reserves the only cross-process Chromium slot");
+  assert.ok(preview, "first preview reserves the cross-process interactive slot");
   assert.equal(await acquireChromiumLease(pool, { workload: "preview", slots: 1 }), null, "excess preview is rejected before browser launch");
   const waitingCapture = acquireChromiumLease(pool, { workload: "capture", slots: 1, waitMs: 1000 });
   await new Promise((resolve) => setTimeout(resolve, 100));
-  assert.equal(await acquireChromiumLease(pool, { workload: "preview", slots: 1 }), null, "a waiting scheduled capture has priority over a new preview");
+  assert.equal(await acquireChromiumLease(pool, { workload: "preview", slots: 1 }), null, "a second preview cannot exceed the reserved interactive slot");
   await preview!.release();
   const captureLease = await waitingCapture;
-  assert.ok(captureLease, "scheduled capture acquires capacity after the resident preview releases it");
-  await captureLease!.release();
+  assert.ok(captureLease, "scheduled capture uses the same shared slot");
   const recovered = await acquireChromiumLease(pool, { workload: "preview", slots: 1 });
-  assert.ok(recovered, "capacity is reusable after cancellation/cleanup");
-  await recovered!.release();
+  assert.equal(recovered, null, "preview cannot overlap an active capture");
+  assert.equal(await acquireChromiumLease(pool, { workload: "capture", slots: 3, waitMs: 0 }), null, "replicas and larger slot settings cannot exceed the fixed scheduled limit");
+  await captureLease!.release();
 });
 
-test("waiting previews release PostgreSQL clients between probes and acquire after scheduled work", async () => {
-  const capture = await acquireChromiumLease(pool, { workload: "capture", slots: 1, waitMs: 0 });
+test("waiting previews release PostgreSQL clients between probes and acquire after interactive work", async () => {
+  const capture = await acquireChromiumLease(pool, { workload: "preview", slots: 1, waitMs: 0 });
   assert.ok(capture);
   const controller = new AbortController();
   let waits = 0;
   const queued = acquireChromiumLease(pool, {
     // The configured admission window is long enough for a representative
     // scheduled capture; this controlled release keeps the CI test bounded.
-    workload: "preview", slots: 1, waitMs: 45_000, signal: controller.signal,
+    workload: "preview", slots: 1, waitMs: 1000, signal: controller.signal,
     onWait: () => { waits++; },
   });
   await new Promise((resolve) => setTimeout(resolve, 100));
@@ -3733,7 +4187,7 @@ test("waiting previews release PostgreSQL clients between probes and acquire aft
   assert.ok(preview, "preview acquires the released slot automatically");
   await preview!.release();
 
-  const held = await acquireChromiumLease(pool, { workload: "capture", slots: 1, waitMs: 0 });
+  const held = await acquireChromiumLease(pool, { workload: "preview", slots: 1, waitMs: 0 });
   assert.ok(held);
   const cancelled = acquireChromiumLease(pool, { workload: "preview", slots: 1, waitMs: 1_000, signal: controller.signal });
   controller.abort();
@@ -3772,9 +4226,9 @@ test("preview sessions have an absolute lifetime despite repeated selections and
   const preview = await previewRegion(monitor, cfg, undefined, policy, { ownerId: "absolute-lifetime-owner", retain: true, acquireCapacity });
   await previewRegion(monitor, cfg, { x: 120, y: 120 }, policy, { ownerId: "absolute-lifetime-owner", id: preview.session_id, retain: true });
   await previewRegion(monitor, cfg, { x: 120, y: 120 }, policy, { ownerId: "absolute-lifetime-owner", id: preview.session_id, retain: true });
-  assert.equal(await acquireChromiumLease(pool, { workload: "capture", slots: 1, waitMs: 0 }), null, "resident preview holds its slot only until its absolute expiry");
+  assert.equal(await acquireChromiumLease(pool, { workload: "preview", slots: 1, waitMs: 0 }), null, "resident preview holds its interactive slot only until its absolute expiry");
   await expireRegionPreviewSessions(Date.now() + REGION_PREVIEW_MAX_LIFETIME_MS + 1);
-  const scheduled = await acquireChromiumLease(pool, { workload: "capture", slots: 1, waitMs: 100 });
+  const scheduled = await acquireChromiumLease(pool, { workload: "preview", slots: 1, waitMs: 100 });
   assert.ok(scheduled, "absolute expiry releases capacity for a scheduled capture after repeated selections");
   await scheduled!.release();
   await closeRegionPreviewSessions();
@@ -3824,6 +4278,7 @@ test("region preview bounds slow resources, resolves deep DOM selectors and reje
   assert.ok((selected.selection?.selector.match(/ > /g) ?? []).length > 6, "selector traversal is not limited to six levels");
   assert.ok((selected.candidates?.length ?? 0) >= 2, "nested parent boundaries are available without another navigation");
 
+  await closeRegionPreviewSessions();
   const drift = await previewRegion(monitorFor("/drift"), cfg, undefined, policy, { ownerId: "drift-owner", retain: true });
   await new Promise((resolve) => setTimeout(resolve, 2200));
   await assert.rejects(previewRegion(monitorFor("/drift"), cfg, { x: 210, y: 150 }, policy, { ownerId: "drift-owner", id: drift.session_id, retain: true }), (error: any) => error.status === 409 && error.failure_code === "stale_preview");
@@ -3831,6 +4286,7 @@ test("region preview bounds slow resources, resolves deep DOM selectors and reje
   const refreshed = await previewRegion(monitorFor("/drift"), cfg, { x: 210, y: 150 }, policy, { ownerId: "drift-owner", id: drift.session_id, retain: true, refresh: true });
   assert.ok(refreshed.selection?.selector, "stale selection can refresh screenshot and DOM metadata in the existing session");
   assert.equal(documentRequests, requestsBeforeRefresh, "selection refresh does not navigate the target again");
+  await closeRegionPreviewSessions();
   const ancestor = await previewRegion(monitorFor("/ancestor-drift"), cfg, undefined, policy, { ownerId: "ancestor-drift-owner", retain: true });
   await new Promise((resolve) => setTimeout(resolve, 2200));
   const stillAccurate = await previewRegion(monitorFor("/ancestor-drift"), cfg, { x: 130, y: 150 }, policy, { ownerId: "ancestor-drift-owner", id: ancestor.session_id, retain: true });
@@ -3871,26 +4327,29 @@ test("preview and capture share cookie, status, mobile viewport and stale-workfl
     ...monitor,
     id: randomUUID(),
     url: `http://preview-parity.example:${port}/`,
+    kind: "browser", text_enabled: true, visual_enabled: true, capture_mode: "viewport", ignore_selectors: [], ignore_text: [], mask_selectors: [],
     cookie_banner_handling: true,
     browser_steps: [],
   } as any;
   const preview = await previewRegion({ ...base, visual_enabled: true }, cfg, { x: 100, y: 100 }, policy, { ownerId: "parity-owner", retain: true });
   assert.equal(preview.selection?.selector, "#target");
+  await assert.rejects(
+    previewRegion({ ...base, visual_enabled: true, browser_steps: [{ action: "wait_visible", selector: "#target", timeout_ms: 1000 }] }, cfg, { x: 100, y: 100 }, policy, { ownerId: "parity-owner", id: preview.session_id, retain: true }),
+    (failure: any) => failure.status === 409 && failure.failure_code === "stale_configuration",
+  );
+  await closeRegionPreviewSessions();
   const scheduled = await capture({ ...base, text_enabled: true, visual_enabled: false, selector: "#target" }, cfg, policy);
   assert.equal(scheduled.text, "Consistent product state", "unrelated Reject offer button is never clicked");
 
   const mobile = await previewRegion({ ...base, visual_enabled: true, mobile_view: true }, cfg, { x: 100, y: 100 }, policy, { ownerId: "mobile-parity-owner", retain: true });
   assert.deepEqual([mobile.width, mobile.height], [390, 844]);
   assert.equal(mobile.selection?.selector, "#target");
+  await closeRegionPreviewSessions();
 
   const error = await previewRegion({ ...base, url: `http://preview-parity.example:${port}/error`, visual_enabled: true, monitor_http_error_pages: true, browser_steps: [{ action: "wait_visible", selector: "#missing", timeout_ms: 100 }] }, cfg, undefined, policy, { ownerId: "error-preview-owner", retain: false });
   assert.equal(error.http_status, 403);
   assert.equal(error.warning, "browser_steps_skipped_http_error");
 
-  await assert.rejects(
-    previewRegion({ ...base, visual_enabled: true, browser_steps: [{ action: "wait_visible", selector: "#target", timeout_ms: 1000 }] }, cfg, { x: 100, y: 100 }, policy, { ownerId: "parity-owner", id: preview.session_id, retain: true }),
-    (failure: any) => failure.status === 409 && failure.failure_code === "stale_configuration",
-  );
   await closeRegionPreviewSessions();
 });
 
@@ -3953,5 +4412,10 @@ test("region preview deadline and cancellation stop browser work and release cap
   assert.match(recovered.session_id!, /^[0-9a-f-]{36}$/, "timeouts and cancellation release preview capacity");
   const selected = await previewRegion(monitorFor(), cfg, { x: 100, y: 40 }, policy, { ownerId: "recovered-owner", id: recovered.session_id, retain: true });
   assert.equal(selected.selection?.selector, "#preview-target", "a recovered session remains coordinate accurate and reusable");
+  const alreadyCancelled = new AbortController(); alreadyCancelled.abort();
+  await assert.rejects(previewRegion(monitorFor(), cfg, { x: 100, y: 40 }, policy, { ownerId: "recovered-owner", id: recovered.session_id, signal: alreadyCancelled.signal }),
+    (error: any) => error.status === 499 && error.failure_code === "cancelled");
+  await assert.rejects(previewRegion(monitorFor(), cfg, undefined, policy, { ownerId: "recovered-owner", id: recovered.session_id }),
+    (error: any) => error.status === 410 && error.failure_code === "session_expired");
   await closeRegionPreviewSessions();
 });

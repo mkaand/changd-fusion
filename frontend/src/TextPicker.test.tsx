@@ -20,7 +20,7 @@ it("shows safe Reader text and applies a server-validated contextual rule", asyn
   expect(screen.getByText("The monitor is not saved until you return to the editor and choose Save monitor.")).toBeInTheDocument();
   await user.click(screen.getByRole("button", { name: "Apply selection to editor" }));
   expect(apply).toHaveBeenCalledWith(rule);
-  await waitFor(() => expect(api).toHaveBeenLastCalledWith("/text-preview", "POST", { session_id: "session", line_index: 1, selected_value: "32.999,00 TL" }));
+  await waitFor(() => expect(api).toHaveBeenLastCalledWith("/text-preview", "POST", { session_id: "session", line_index: 1, selected_value: "32.999,00 TL" }, { signal: expect.any(AbortSignal) }));
 });
 
 it("rejects a malformed generated rule with actionable feedback", async () => {
@@ -49,5 +49,5 @@ it("searches Turkish Reader text immediately while preserving original line inde
   expect(screen.getByRole("listitem")).toHaveTextContent("İstanbul teslimat");
   await user.click(screen.getByRole("listitem"));
   await user.click(screen.getByRole("button", { name: "Generate extraction rule" }));
-  await waitFor(() => expect(api).toHaveBeenLastCalledWith("/text-preview", "POST", { session_id: "session", line_index: 2_050, selected_value: "İstanbul teslimat" }));
+  await waitFor(() => expect(api).toHaveBeenLastCalledWith("/text-preview", "POST", { session_id: "session", line_index: 2_050, selected_value: "İstanbul teslimat" }, { signal: expect.any(AbortSignal) }));
 });

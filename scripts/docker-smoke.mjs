@@ -4,8 +4,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const expectedVersion = readFileSync(path.join(root, "server/Dockerfile"), "utf8").match(/^ARG CHROMIUM_VERSION=(\S+)$/m)?.[1];
-if (!expectedVersion || !readFileSync(path.join(root, ".devcontainer/Dockerfile"), "utf8").includes(`ARG CHROMIUM_VERSION=${expectedVersion}\n`)) throw Error("Production and Dev Container Chromium pins must agree");
+for (const dockerfile of ["server/Dockerfile", ".devcontainer/Dockerfile"]) {
+  const source = readFileSync(path.join(root, dockerfile), "utf8");
+  if (source.includes("ARG CHROMIUM_VERSION=") || !source.includes("dpkg-query -W -f='${Version}' chromium"))
+    throw Error(`${dockerfile} must resolve and verify matching Chromium packages from Debian metadata`);
+}
+const image = process.env.FUSION_DOCKER_IMAGE ?? "changd-fusion-api:ci";
+const expectedRevision = process.env.APP_COMMIT;
+if (!/^[0-9a-f]{40}$/.test(expectedRevision ?? "")) throw Error("Missing exact API image revision");
+const imageRevision = spawnSync("docker", ["image", "inspect", "--format", '{{index .Config.Labels "org.opencontainers.image.revision"}}', image], { encoding: "utf8", cwd: root });
+if (imageRevision.status !== 0 || imageRevision.stdout.trim() !== expectedRevision) throw Error("API image revision label mismatch");
 const script = String.raw`
 import assert from 'node:assert/strict';
 import http from 'node:http';
@@ -19,8 +27,12 @@ import {EgressPolicy} from './dist/egress.js';
 import {readConfig} from './dist/config.js';
 import {pngDimensions} from './dist/image.js';
 assert.equal(process.getuid(),1000);
-for(const pkg of ['chromium','chromium-common','chromium-sandbox'])assert.equal(execFileSync('dpkg-query',['-W','-f='+String.fromCharCode(36)+'{Version}',pkg],{encoding:'utf8'}),process.env.EXPECTED_CHROMIUM_VERSION);
-console.log('Verified matching Debian browser/common/sandbox '+process.env.EXPECTED_CHROMIUM_VERSION+' on '+process.arch);
+const packageVersions=Object.fromEntries(['chromium','chromium-common','chromium-sandbox'].map(pkg=>[pkg,execFileSync('dpkg-query',['-W','-f='+String.fromCharCode(36)+'{Version}',pkg],{encoding:'utf8'})]));
+assert.equal(new Set(Object.values(packageVersions)).size,1,'Chromium package versions must match');
+const manifest=Object.fromEntries((await readFile('/usr/local/share/changd-fusion/chromium-version','utf8')).trim().split('\n').map(line=>line.split(/=(.*)/s)));
+for(const [pkg,version] of Object.entries(packageVersions))assert.equal(manifest[pkg],version);
+assert.match(execFileSync('/usr/bin/chromium',['--version'],{encoding:'utf8'}),/Chromium/i);
+console.log('Verified matching Debian browser/common/sandbox '+packageVersions.chromium+' on '+process.arch);
 assert.equal((await readFile('/sys/fs/cgroup/memory.max','utf8')).trim(),'1073741824');
 assert.equal((await readFile('/sys/fs/cgroup/pids.max','utf8')).trim(),'256');
 assert.equal((await readFile('/sys/fs/cgroup/cpu.max','utf8')).trim(),'100000 100000');
@@ -85,9 +97,8 @@ const result = spawnSync(
     "256",
     "--shm-size",
     "256m",
-    "--env",
-    "EXPECTED_CHROMIUM_VERSION=" + expectedVersion,
-    process.env.FUSION_DOCKER_IMAGE ?? "changd-fusion-api:ci",
+    ...(process.env.FUSION_DOCKER_DIST ? ["--mount", `type=bind,source=${path.resolve(process.env.FUSION_DOCKER_DIST)},target=/app/dist,readonly`] : []),
+    image,
     "node",
     "--input-type=module",
   ],

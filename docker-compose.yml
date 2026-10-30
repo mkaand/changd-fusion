@@ -1,6 +1,9 @@
 name: changd-fusion
 x-app: &app
-  build: ./server
+  build:
+    context: ./server
+    args:
+      APP_COMMIT: ${APP_COMMIT:-${DEPLOY_SHA:-development}}
   image: changd-fusion-api:development
   init: true
   environment: &app-env
@@ -14,7 +17,7 @@ x-app: &app
     DATA_DIR: /data
     CAPTURE_TIMEOUT_MS: ${CAPTURE_TIMEOUT_MS:-30000}
     CHROMIUM_CONCURRENCY: ${CHROMIUM_CONCURRENCY:-1}
-    PREVIEW_CAPACITY_WAIT_MS: ${PREVIEW_CAPACITY_WAIT_MS:-45000}
+    PREVIEW_CAPACITY_WAIT_MS: ${PREVIEW_CAPACITY_WAIT_MS:-15000}
     MAX_CAPTURE_WIDTH: ${MAX_CAPTURE_WIDTH:-4096}
     MAX_CAPTURE_HEIGHT: ${MAX_CAPTURE_HEIGHT:-8192}
     MAX_CAPTURE_PIXELS: ${MAX_CAPTURE_PIXELS:-8000000}
@@ -80,6 +83,12 @@ services:
     shm_size: ${WORKER_SHM:-256mb}
     restart: unless-stopped
     stop_grace_period: ${WORKER_STOP_GRACE:-180s}
+    healthcheck:
+      test: ["CMD", "node", "dist/worker-healthcheck.js", "--json"]
+      interval: 15s
+      timeout: 3s
+      start_period: 30s
+      retries: 3
   ui:
     build:
       context: ./frontend

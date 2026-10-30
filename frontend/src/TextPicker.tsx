@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Alert, Button, Input, Modal, Spin, Typography } from "antd";
+import { Alert, Button, Input, Spin, Typography } from "antd";
 import { ApiError, api } from "./api";
 import { isValidSelectedTextRule, type SelectedTextRule } from "./selected-text-rule";
 
@@ -9,6 +9,9 @@ type Preview = { session_id: string; items?: PreviewItem[]; matching_line_count?
 // Turkish-aware case folding keeps the original string offsets intact so
 // highlights never need unsafe HTML or approximate index conversion.
 const searchKey = (value: string) => value.toLocaleLowerCase("tr-TR");
+const safeError = (cause: unknown, fallback: string) => cause instanceof ApiError
+  ? [cause.message, cause.status && `HTTP ${cause.status}`, cause.previewStage, cause.failureCode, cause.requestId && `Request ID: ${cause.requestId}`].filter(Boolean).join(" · ")
+  : fallback;
 function Highlight({ text, query }: { text: string; query: string }) {
   if (!query) return <>{text}</>;
   const source = searchKey(text), needle = searchKey(query), parts: React.ReactNode[] = [];
@@ -34,41 +37,51 @@ export function TextPicker({ monitorId, getDraft, onApply, mobilePage = false, o
   const [compact, setCompact] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches);
   const [open, setOpen] = useState(false), [loading, setLoading] = useState(false), [error, setError] = useState(""), [preview, setPreview] = useState<Preview>(), [lineIndex, setLineIndex] = useState<number>(), [value, setValue] = useState(""), [query, setQuery] = useState("");
   const searchRequest = useRef(0);
+  const controller = useRef<AbortController | undefined>(undefined);
+  const cancel = () => { controller.current?.abort(); searchRequest.current++; setLoading(false); };
+  useEffect(() => () => { controller.current?.abort(); searchRequest.current++; }, []);
   useEffect(() => { const media = matchMedia("(max-width: 767px)"); const update = () => setCompact(media.matches); update(); media.addEventListener("change", update); return () => media.removeEventListener("change", update); }, []);
   const load = async () => {
+    searchRequest.current++;
+    controller.current?.abort();
+    const pending = new AbortController(); controller.current = pending;
     const draft = getDraft();
     if (!draft.url || draft.text_source !== "jina") { setError("Choose Jina Reader and enter a valid URL before opening text preview."); return; }
     setLoading(true); setError(""); setLineIndex(undefined); setValue(""); setQuery("");
-    try { setPreview(await api("/text-preview", "POST", { monitor_id: monitorId, url: draft.url }, { timeoutMs: 90000 })); }
-    catch (cause) { setError(cause instanceof ApiError ? cause.message : "Text preview failed. Retry."); }
-    finally { setLoading(false); }
+    setPreview((current) => current ? { ...current, rule: undefined, extracted: undefined } : current);
+    try { const result = await api<Preview>("/text-preview", "POST", { monitor_id: monitorId, url: draft.url }, { timeoutMs: 90000, signal: pending.signal }); if (!pending.signal.aborted) setPreview(result); }
+    catch (cause) { if (!pending.signal.aborted) setError(safeError(cause, "Text preview failed. Retry.")); }
+    finally { if (!pending.signal.aborted) setLoading(false); }
   };
   const search = async (nextQuery: string, offset = 0, append = false) => {
     if (!preview?.session_id) return;
     const request = ++searchRequest.current;
     setLoading(true); setError("");
     try {
-      const result = await api<Preview>("/text-preview", "POST", { session_id: preview.session_id, query: nextQuery, offset, limit: 100 });
+      const result = await api<Preview>("/text-preview", "POST", { session_id: preview.session_id, query: nextQuery, offset, limit: 100 }, { signal: controller.current?.signal });
       if (request !== searchRequest.current) return;
       setPreview((current) => current ? { ...current, ...result, items: append ? [...(current.items ?? []), ...(result.items ?? [])] : result.items, rule: undefined, extracted: undefined, description: undefined } : result);
-    } catch (cause) { if (request === searchRequest.current) setError(cause instanceof ApiError ? cause.message : "Reader search failed. Retry."); }
+    } catch (cause) { if (request === searchRequest.current) setError(safeError(cause, "Reader search failed. Retry.")); }
     finally { if (request === searchRequest.current) setLoading(false); }
   };
   const generate = async () => {
     if (!preview || lineIndex === undefined) return;
+    const pending = controller.current;
     setLoading(true); setError("");
     try {
-      const generated = await api<Preview>("/text-preview", "POST", { session_id: preview.session_id, line_index: lineIndex, selected_value: value });
+      const generated = await api<Preview>("/text-preview", "POST", { session_id: preview.session_id, line_index: lineIndex, selected_value: value }, { signal: pending?.signal });
+      if (pending?.signal.aborted) return;
       if (!isValidSelectedTextRule(generated.rule) || generated.extracted !== value.trim()) {
         setError("The generated extraction rule is invalid. Refresh the preview and try again.");
         return;
       }
       setPreview((current) => ({ ...current!, ...generated }));
     }
-    catch (cause) { setError(cause instanceof ApiError ? cause.message : "A stable extraction rule could not be generated."); }
-    finally { setLoading(false); }
+    catch (cause) { if (!pending?.signal.aborted) setError(safeError(cause, "A stable extraction rule could not be generated.")); }
+    finally { if (!pending?.signal.aborted) setLoading(false); }
   };
   const body = <div className="text-picker-body">
+    {preview && (loading || error) && <Typography.Paragraph>Previously fetched Reader output. Refresh successfully before generating a new selection.</Typography.Paragraph>}
     <Alert type="info" showIcon title="Select the content you want to monitor" description="This is the current normalized Jina Reader output. Remote Markdown is displayed as plain text and is never executed." />
     {error && <Alert type="error" showIcon title={error} action={<Button onClick={() => void load()}>Refresh preview</Button>} />}
     {loading && !preview && <div className="region-preview-loading"><Spin /><strong>Loading Reader output</strong></div>}
@@ -77,6 +90,6 @@ export function TextPicker({ monitorId, getDraft, onApply, mobilePage = false, o
     {preview?.rule && <div className="text-picker-result" role="status"><strong>Extracted preview</strong><p>{preview.extracted}</p><Typography.Text type="secondary">{preview.description}</Typography.Text><Button type="primary" onClick={() => { if (!isValidSelectedTextRule(preview.rule)) { setError("The extraction rule is no longer valid. Generate it again."); return; } onApply(preview.rule); setOpen(false); }}>Apply selection to editor</Button><Typography.Text type="secondary">The monitor is not saved until you return to the editor and choose Save monitor.</Typography.Text></div>}
   </div>;
   useEffect(() => { if (mobilePage) void load(); }, [mobilePage]);
-  if (mobilePage) return <section className="mobile-text-picker-page" aria-label="Select Reader text"><div className="mobile-editor-header"><Button type="text" onClick={onBackMobile}>← Back</Button><Typography.Title level={4}>Select Reader text</Typography.Title></div>{body}</section>;
-  return <><Button onClick={() => { if (compact && onRequestMobile) return onRequestMobile(); setOpen(true); void load(); }}>Select text from preview</Button>{!compact && <Modal title="Select Reader text" open={open} onCancel={() => setOpen(false)} footer={null} width={850} destroyOnHidden>{body}</Modal>}</>;
+  if (mobilePage) return <section className="mobile-text-picker-page" aria-label="Select Reader text"><div className="mobile-editor-header"><Button type="text" onClick={() => { cancel(); onBackMobile?.(); }}>← Back</Button><Typography.Title level={4}>Select Reader text</Typography.Title></div>{body}</section>;
+  return <><Button onClick={() => { if (compact && onRequestMobile) return onRequestMobile(); setOpen(true); void load(); }}>Select text from preview</Button>{!compact && open && <section className="interactive-preview-panel" aria-label="Select Reader text"><Button aria-label="Close" onClick={() => { cancel(); setOpen(false); }}>Close preview and continue editing</Button>{body}</section>}</>;
 }
