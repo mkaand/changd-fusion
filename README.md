@@ -74,6 +74,28 @@ The documented command verifies build metadata from the local Git checkout befor
 
 The public UI is served through the configured same-origin frontend. PostgreSQL and API ports should remain private behind the reverse proxy. Public registration is disabled by default.
 
+### First administrator
+
+The supported first-user path is the existing `create-admin` command; public
+registration does not create an administrator and remains disabled by default.
+After the stack is running, enter credentials interactively so that no password
+is placed in a command argument, shell history, or repository file, then run the
+compiled command in a one-shot API container:
+
+```sh
+read -r -p 'Administrator email: ' ADMIN_EMAIL
+read -r -s -p 'Administrator password: ' ADMIN_PASSWORD; printf '\n'
+export ADMIN_EMAIL ADMIN_PASSWORD
+docker compose run --rm --no-deps -e ADMIN_EMAIL -e ADMIN_PASSWORD api node dist/create-admin.js
+unset ADMIN_PASSWORD ADMIN_EMAIL
+```
+
+The command validates a 12–72 byte password, applies pending migrations
+idempotently, and creates one `user_type=2` administrator. It intentionally
+fails if that email already exists. Keep `REGISTRATION_ENABLED=false`; no
+temporary public-registration window is required. The command must run only on
+the trusted server while the Compose database service is available.
+
 ## Development and testing
 
 ```sh
