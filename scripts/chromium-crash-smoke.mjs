@@ -51,6 +51,7 @@ async function start(mode) {
     "--mount", `type=bind,source=${dist},target=/app/dist,readonly`,
     "--mount", `type=bind,source=${path.resolve("server/migrations")},target=/app/migrations,readonly`,
     "--mount", `type=bind,source=${path.resolve("scripts/fixtures/chromium-crash-container.mjs")},target=/app/crash-fixture.mjs,readonly`,
+    "--mount", `type=bind,source=${path.resolve("scripts/fixtures/chromium-process-roots.mjs")},target=/app/chromium-process-roots.mjs,readonly`,
     "--env", "DATABASE_URL=postgresql://postgres@crash-db/postgres", "--env", `CRASH_MODE=${mode}`, image, "node", "crash-fixture.mjs"], 60000);
   const fence = { daemonId, project, containerIds: [runtime] };
   let ready;
@@ -106,7 +107,8 @@ try {
       assert.equal(waiter.exited, true);
       assert.ok((await state()).roots.length <= 1, "waiting API replica never launches a second tree");
     }
-    assert.equal((await state()).peakRoots, 1, "continuous process sampling detects no browser overlap");
+    const finalState = await state();
+    assert.equal(finalState.peakRoots, 1, `continuous process sampling detects no browser overlap; roots=${JSON.stringify(finalState.rootSamples)} lifecycle=${JSON.stringify(finalState.lifecycle)}`);
     await assert.rejects(acquireChromiumLease(pool, { workload: "preview", slots: 1 }), e => e.code === "cleanup_timeout");
     await assert.rejects(recoverChromiumQuarantine(pool, randomUUID(), async () => {}), /token changed/);
     await assert.rejects(recoverChromiumQuarantine(pool, expected, () => verifyStoppedContainers(fence)), /not conclusively stopped/);

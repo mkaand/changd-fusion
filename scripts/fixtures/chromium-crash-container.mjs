@@ -7,11 +7,13 @@ import { randomBytes } from "node:crypto";
 import { makePool } from "/app/dist/db.js";
 import { migrate } from "/app/dist/migrate.js";
 import { enqueueManualRun } from "/app/dist/chromium-capacity.js";
+import { browserProcessRoots } from "./chromium-process-roots.mjs";
 
 const pool = makePool(process.env.DATABASE_URL);
 assert.equal(process.getuid(), 1000, "crash fixtures must retain rootless production execution");
 await migrate(pool);
-const state = { ready: false, aborted: false, result: null, actorPid: null, actorExit: null, waiterResult: null, peakRoots: 0 };
+const state = { ready: false, aborted: false, result: null, actorPid: null, actorExit: null, waiterResult: null, peakRoots: 0, rootSamples: [], lifecycle: [] };
+const event = (name, detail = {}) => state.lifecycle.push({ at: new Date().toISOString(), name, ...detail });
 const fixture = http.createServer((req, res) => {
   if (req.url === "/stall" || mode === "manual-crash") { state.ready = true; return; }
   res.end("<!doctype html><main>Crash recovery fixture</main>");
@@ -74,33 +76,42 @@ function startActor(actorMode, waiter = false) {
   const child = spawn(process.execPath, ["--input-type=module", "-e", actorScript], { env: { ...process.env, ACTOR_MODE: actorMode, OWNER_ID: owner }, stdio: ["ignore", "pipe", "pipe"] });
   child.stderr.pipe(process.stderr);
   if (!waiter) state.actorPid = child.pid;
+  event("actor-start", { actorMode, waiter, pid: child.pid });
   let pending = "";
   child.stdout.on("data", data => {
     pending += data;
     const lines = pending.split("\n"); pending = lines.pop();
     for (const line of lines) try {
       const value = JSON.parse(line);
-      if (waiter) state.waiterResult = value;
-      else Object.assign(state, value);
+      if (waiter) { state.waiterResult = value; event("waiter-message", value); }
+      else { Object.assign(state, value); event("actor-message", value); }
     } catch { /* Only structured synthetic fixture diagnostics are collected. */ }
   });
   child.on("exit", (code, signal) => {
     if (waiter && !state.waiterResult) state.waiterResult = { exited: true, code, signal };
     if (!waiter) state.actorExit = { code, signal };
+    event("actor-exit", { waiter, pid: child.pid, code, signal });
   });
   return child;
 }
 const actor = startActor(mode);
 async function browserRoots() {
-  const roots = [];
+  const candidates = [];
   for (const pid of await readdir("/proc")) if (/^\d+$/.test(pid)) try {
     const command = await readFile(`/proc/${pid}/cmdline`, "utf8");
     if (/\/(?:chromium|chrome)$/.test(command.split("\0")[0]) && (command.includes("--remote-debugging-pipe") || command.includes("--remote-debugging-port=9222")) && !command.includes("--type=")) {
       if (command.includes("--no-sandbox")) throw Error("Sandbox disabled in crash fixture");
-      roots.push(Number(pid));
+      const [stat, cgroup] = await Promise.all([readFile(`/proc/${pid}/stat`, "utf8"), readFile(`/proc/${pid}/cgroup`, "utf8")]);
+      const fields = stat.split(" ");
+      candidates.push({ pid: Number(pid), ppid: Number(fields[3]), startTicks: fields[21], cgroup: cgroup.trim(), command: command.replaceAll("\0", " ").trim() });
     }
   } catch (error) { if (error.message === "Sandbox disabled in crash fixture") throw error; }
+  const roots = browserProcessRoots(candidates);
   state.peakRoots = Math.max(state.peakRoots, roots.length);
+  if (roots.length > 1) {
+    state.rootSamples = [...state.rootSamples, { at: new Date().toISOString(), roots }].slice(-8);
+    event("browser-overlap", { roots });
+  }
   return roots;
 }
 let sampling = false;
