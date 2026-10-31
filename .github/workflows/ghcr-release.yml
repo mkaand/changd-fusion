@@ -1,0 +1,150 @@
+name: GHCR immutable release
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: "Authorized 40-character master commit SHA to publish"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  checks: read
+
+concurrency:
+  group: ghcr-release-master
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    # A manual dispatch from another ref must never publish an image.
+    if: github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      checks: read
+      packages: write
+    env:
+      SOURCE_SHA: ${{ inputs.source_sha }}
+      APP_VERSION: "0.3.0"
+      API_IMAGE: ghcr.io/mkaand/changd-fusion-api
+      UI_IMAGE: ghcr.io/mkaand/changd-fusion-ui
+    steps:
+      - name: Validate authorized source SHA
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+
+      - name: Check out trusted master history
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Verify source belongs to master
+        shell: bash
+        run: |
+          set -euo pipefail
+          git cat-file -e "${SOURCE_SHA}^{commit}"
+          git merge-base --is-ancestor "$SOURCE_SHA" origin/master
+          printf 'SOURCE_TREE=%s
+' "$(git rev-parse "${SOURCE_SHA}^{tree}")" >> "$GITHUB_ENV"
+
+      - name: Require successful CI for the exact source
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          checks="$(curl --fail-with-body --silent --show-error \
+            -H "Authorization: Bearer ${GH_TOKEN}" \
+            -H 'X-GitHub-Api-Version: 2022-11-28' \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/commits/${SOURCE_SHA}/check-runs?per_page=100")"
+          for required in verify privacy docker docker-arm64; do
+            jq -e --arg required "$required" '
+              any(.check_runs[]; .name == $required and .conclusion == "success" and .app.slug == "github-actions")
+            ' <<<"$checks" >/dev/null || {
+              echo "Required successful GitHub Actions check missing for ${SOURCE_SHA}: ${required}" >&2
+              exit 1
+            }
+          done
+
+      - name: Check out the authorized source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ inputs.source_sha }}
+          fetch-depth: 1
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435
+
+      - name: Log in to GHCR
+        uses: docker/login-action@9780b0c442fbb1117ed29e0efdff1e18412f7567
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and publish API and Worker image
+        id: api
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83
+        with:
+          context: ./server
+          push: true
+          platforms: linux/amd64
+          build-args: |
+            APP_COMMIT=${{ inputs.source_sha }}
+          tags: ${{ env.API_IMAGE }}:${{ env.APP_VERSION }}-${{ inputs.source_sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ inputs.source_sha }}
+            org.opencontainers.image.version=${{ env.APP_VERSION }}
+          provenance: mode=max
+
+      - name: Build and publish UI image
+        id: ui
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83
+        with:
+          context: ./frontend
+          push: true
+          platforms: linux/amd64
+          build-args: |
+            APP_COMMIT=${{ inputs.source_sha }}
+            APP_BRANCH=master
+            APP_SOURCE_PR=
+          tags: ${{ env.UI_IMAGE }}:${{ env.APP_VERSION }}-${{ inputs.source_sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ inputs.source_sha }}
+            org.opencontainers.image.version=${{ env.APP_VERSION }}
+          provenance: mode=max
+
+      - name: Write immutable release manifest
+        shell: bash
+        env:
+          API_DIGEST: ${{ steps.api.outputs.digest }}
+          UI_DIGEST: ${{ steps.ui.outputs.digest }}
+        run: |
+          set -euo pipefail
+          jq -n \
+            --arg source_sha "$SOURCE_SHA" \
+            --arg source_tree "$SOURCE_TREE" \
+            --arg api_uri "${API_IMAGE}@${API_DIGEST}" \
+            --arg ui_uri "${UI_IMAGE}@${UI_DIGEST}" \
+            --arg architecture "linux/amd64" \
+            --arg workflow_run "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --arg ci_evidence "verify, privacy, docker, docker-arm64 successful for exact source SHA" \
+            --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{source_sha:$source_sha,source_tree:$source_tree,api_image:$api_uri,ui_image:$ui_uri,architecture:$architecture,api_worker_shared_image:$api_uri,workflow_run:$workflow_run,ci_evidence:$ci_evidence,created_at:$created_at}' \
+            > release-manifest.json
+          cat release-manifest.json | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload release manifest
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: ghcr-release-manifest-${{ inputs.source_sha }}
+          path: release-manifest.json
+          if-no-files-found: error
