@@ -7,6 +7,7 @@ import { randomBytes } from "node:crypto";
 import { makePool } from "/app/dist/db.js";
 import { migrate } from "/app/dist/migrate.js";
 import { enqueueManualRun } from "/app/dist/chromium-capacity.js";
+import { browserProcessRoots } from "./chromium-process-roots.mjs";
 
 const pool = makePool(process.env.DATABASE_URL);
 assert.equal(process.getuid(), 1000, "crash fixtures must retain rootless production execution");
@@ -95,16 +96,17 @@ function startActor(actorMode, waiter = false) {
 }
 const actor = startActor(mode);
 async function browserRoots() {
-  const roots = [];
+  const candidates = [];
   for (const pid of await readdir("/proc")) if (/^\d+$/.test(pid)) try {
     const command = await readFile(`/proc/${pid}/cmdline`, "utf8");
     if (/\/(?:chromium|chrome)$/.test(command.split("\0")[0]) && (command.includes("--remote-debugging-pipe") || command.includes("--remote-debugging-port=9222")) && !command.includes("--type=")) {
       if (command.includes("--no-sandbox")) throw Error("Sandbox disabled in crash fixture");
       const [stat, cgroup] = await Promise.all([readFile(`/proc/${pid}/stat`, "utf8"), readFile(`/proc/${pid}/cgroup`, "utf8")]);
       const fields = stat.split(" ");
-      roots.push({ pid: Number(pid), ppid: Number(fields[3]), startTicks: fields[21], cgroup: cgroup.trim(), command: command.replaceAll("\0", " ").trim() });
+      candidates.push({ pid: Number(pid), ppid: Number(fields[3]), startTicks: fields[21], cgroup: cgroup.trim(), command: command.replaceAll("\0", " ").trim() });
     }
   } catch (error) { if (error.message === "Sandbox disabled in crash fixture") throw error; }
+  const roots = browserProcessRoots(candidates);
   state.peakRoots = Math.max(state.peakRoots, roots.length);
   if (roots.length > 1) {
     state.rootSamples = [...state.rootSamples, { at: new Date().toISOString(), roots }].slice(-8);

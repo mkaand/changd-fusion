@@ -51,6 +51,7 @@ async function start(mode) {
     "--mount", `type=bind,source=${dist},target=/app/dist,readonly`,
     "--mount", `type=bind,source=${path.resolve("server/migrations")},target=/app/migrations,readonly`,
     "--mount", `type=bind,source=${path.resolve("scripts/fixtures/chromium-crash-container.mjs")},target=/app/crash-fixture.mjs,readonly`,
+    "--mount", `type=bind,source=${path.resolve("scripts/fixtures/chromium-process-roots.mjs")},target=/app/chromium-process-roots.mjs,readonly`,
     "--env", "DATABASE_URL=postgresql://postgres@crash-db/postgres", "--env", `CRASH_MODE=${mode}`, image, "node", "crash-fixture.mjs"], 60000);
   const fence = { daemonId, project, containerIds: [runtime] };
   let ready;
