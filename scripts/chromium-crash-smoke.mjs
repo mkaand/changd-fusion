@@ -106,7 +106,8 @@ try {
       assert.equal(waiter.exited, true);
       assert.ok((await state()).roots.length <= 1, "waiting API replica never launches a second tree");
     }
-    assert.equal((await state()).peakRoots, 1, "continuous process sampling detects no browser overlap");
+    const finalState = await state();
+    assert.equal(finalState.peakRoots, 1, `continuous process sampling detects no browser overlap; roots=${JSON.stringify(finalState.rootSamples)} lifecycle=${JSON.stringify(finalState.lifecycle)}`);
     await assert.rejects(acquireChromiumLease(pool, { workload: "preview", slots: 1 }), e => e.code === "cleanup_timeout");
     await assert.rejects(recoverChromiumQuarantine(pool, randomUUID(), async () => {}), /token changed/);
     await assert.rejects(recoverChromiumQuarantine(pool, expected, () => verifyStoppedContainers(fence)), /not conclusively stopped/);
