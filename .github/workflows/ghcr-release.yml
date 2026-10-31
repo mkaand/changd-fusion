@@ -50,8 +50,7 @@ jobs:
           set -euo pipefail
           git cat-file -e "${SOURCE_SHA}^{commit}"
           git merge-base --is-ancestor "$SOURCE_SHA" origin/master
-          printf 'SOURCE_TREE=%s
-' "$(git rev-parse "${SOURCE_SHA}^{tree}")" >> "$GITHUB_ENV"
+          echo "SOURCE_TREE=$(git rev-parse ${SOURCE_SHA}^{tree})" >> "$GITHUB_ENV"
 
       - name: Require successful CI for the exact source
         shell: bash
