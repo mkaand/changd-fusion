@@ -75,8 +75,17 @@ const CONSENT_ROOTS = [
   '[id*="consent" i]',
   '[class*="cookie" i]',
   '[class*="consent" i]',
+  '#ccc-notify',
+  '#ccc',
+  '[id*="cookiecontrol" i]',
+  '[class*="ccc-notify" i]',
 ].join(",");
-const REJECT_NAMES = /^(?:reject(?: all)?|decline(?: all)?|deny(?: all)?|only necessary|necessary only|continue without accepting|dismiss)$/i;
+const REJECT_NAMES = /^(?:reject(?: all| optional cookies?)?|decline(?: all)?|deny(?: all)?|(?:i do not|do not|don't) accept|only necessary(?: cookies)?|necessary only|use (?:only )?necessary cookies|continue without accepting|dismiss)$/i;
+const CONSENT_ACTIONS = 'button, [role="button"], input[type="button"], input[type="submit"]';
+
+function consentActionName(value: string | null | undefined) {
+  return value?.replace(/\s+/g, " ").trim() ?? "";
+}
 
 export function hasManualCookieStep(steps: BrowserStep[] | undefined) {
   return Boolean(steps?.some((step) => step.action === "dismiss_cookie"));
@@ -92,9 +101,18 @@ export async function dismissCookieConsent(
   for (const root of await page.locator(CONSENT_ROOTS).all()) {
     try {
       if (!(await root.isVisible({ timeout: Math.min(250, timeout) }))) continue;
-      const button = root.getByRole("button", { name: REJECT_NAMES }).first();
-      if (await button.count()) {
-        await button.click({ timeout });
+      const actions = root.locator(CONSENT_ACTIONS);
+      const count = Math.min(await actions.count(), 12);
+      for (let index = 0; index < count; index++) {
+        const action = actions.nth(index);
+        if (!(await action.isVisible({ timeout: Math.min(250, timeout) }))) continue;
+        const name = consentActionName(
+          await action.getAttribute("aria-label")
+          ?? await action.getAttribute("value")
+          ?? await action.textContent(),
+        );
+        if (!REJECT_NAMES.test(name)) continue;
+        await action.click({ timeout });
         return true;
       }
     } catch {

@@ -168,7 +168,7 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
     {preview && <>
       {preview.http_status && preview.http_status >= 400 && <Alert type="warning" showIcon title={`HTTP ${preview.http_status} error page`} description="The preview was captured successfully, but the origin returned an unsuccessful HTTP status." />}
       {preview.warning && <Alert type="warning" showIcon title={preview.warning === "browser_steps_skipped_http_error" ? "Browser steps were skipped because the initial response was an HTTP error page." : `Browser step warning: ${preview.warning}`} />}
-      <Typography.Paragraph>Use +/− or pinch to zoom. Drag to pan while zoomed, then click or tap a visible element. The preview uses the current form URL through the normal SSRF, TLS, and sandbox restrictions.</Typography.Paragraph>
+      <Typography.Paragraph>This is a captured screenshot, not a live page. Use +/− or pinch to zoom. Drag to pan while zoomed, then click or tap a visible element. Use Browser Steps to reveal page content before Preview, or Full Page capture for content outside the viewport. The preview uses the current form URL through the normal SSRF, TLS, and sandbox restrictions.</Typography.Paragraph>
       <div className="region-preview-toolbar" aria-label="Preview zoom controls">
         <Button aria-label="Zoom out" onClick={() => changeZoom(zoom - ZOOM_STEP)} disabled={zoom <= MIN_ZOOM}>−</Button>
         <output aria-label="Current zoom">{Math.round(zoom * 100)}%</output>

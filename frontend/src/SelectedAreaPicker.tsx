@@ -32,7 +32,8 @@ export function SelectedAreaPicker({ monitorId, getDraft, onApply, mobilePage = 
 }) {
   const [compact, setCompact] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches);
   const [open, setOpen] = useState(false), [preview, setPreview] = useState<Preview | undefined>(undefined), [loading, setLoading] = useState(false), [error, setError] = useState<ApiError | undefined>(undefined), [refreshFailed, setRefreshFailed] = useState(false), [zoom, setZoom] = useState(1), [tool, setTool] = useState<Tool>("draw"), [area, setArea] = useState<CaptureArea>(), [progress, setProgress] = useState("target_validation");
-  const canvas = useRef<HTMLDivElement>(null), image = useRef<HTMLImageElement>(null), controller = useRef<AbortController | undefined>(undefined), requestVersion = useRef(0), previewRef = useRef<Preview | undefined>(undefined), mounted = useRef(true), pointers = useRef(new Map<number, { x: number; y: number }>()), interaction = useRef<Interaction | undefined>(undefined);
+  const canvas = useRef<HTMLDivElement>(null), image = useRef<HTMLImageElement>(null), controller = useRef<AbortController | undefined>(undefined), requestVersion = useRef(0), previewRef = useRef<Preview | undefined>(undefined), draftRef = useRef(getDraft), mounted = useRef(true), pointers = useRef(new Map<number, { x: number; y: number }>()), interaction = useRef<Interaction | undefined>(undefined);
+  draftRef.current = getDraft;
 
   useEffect(() => { const media = window.matchMedia("(max-width: 767px)"); const update = () => setCompact(media.matches); update(); media.addEventListener("change", update); return () => media.removeEventListener("change", update); }, []);
   const setCurrentPreview = useCallback((value: Preview | undefined) => { previewRef.current = value; setPreview(value); }, []);
@@ -45,7 +46,7 @@ export function SelectedAreaPicker({ monitorId, getDraft, onApply, mobilePage = 
 
   const load = useCallback(async (reason: "initialize" | "refresh" | "retry" = "initialize") => {
     if (controller.current) return;
-    const draft = getDraft();
+    const draft = draftRef.current();
     if (!draft.url || draft.kind !== "browser" || !draft.visual_enabled) { setError(new ApiError("Enter a valid Browser URL and enable Visual detection before selecting an area.")); return; }
     if (draft.mobile_view) { setError(new ApiError("Selected Area uses fixed 1280 × 900 desktop coordinates. Turn off Mobile view or choose another capture mode.")); return; }
     if (reason === "initialize") setArea(isValidCaptureArea(draft.capture_area) ? draft.capture_area : undefined);
@@ -70,7 +71,7 @@ export function SelectedAreaPicker({ monitorId, getDraft, onApply, mobilePage = 
       window.clearInterval(timer);
       if (isCurrent()) { controller.current = undefined; setLoading(false); }
     }
-  }, [getDraft, monitorId, setCurrentPreview]);
+  }, [monitorId, setCurrentPreview]);
 
   useEffect(() => { if (mobilePage) void load("initialize"); }, [mobilePage, load]);
   const point = (clientX: number, clientY: number) => image.current ? capturePoint(clientX, clientY, image.current.getBoundingClientRect()) : { x: 0, y: 0 };
@@ -137,7 +138,7 @@ export function SelectedAreaPicker({ monitorId, getDraft, onApply, mobilePage = 
   const body = <div className="selected-area-picker">
     {error?.status && <Typography.Paragraph>HTTP {error.status}</Typography.Paragraph>}
     {loading && preview && <Alert type="info" title="Previously captured screenshot — refreshing, not a live DOM session" />}
-    <Typography.Paragraph>Draw a fixed rectangle on the 1280 × 900 reference viewport. This area does not follow moving DOM elements; use Selected element for that.</Typography.Paragraph>
+    <Typography.Paragraph>Draw a fixed rectangle on the 1280 × 900 reference viewport. This is a captured screenshot, not a live page: pinch or use Pan to inspect it. This area does not follow moving DOM elements; use Selected element for that, Browser Steps to reveal content, or Full Page capture for content outside the viewport.</Typography.Paragraph>
     {error && <><Alert type="error" showIcon title={error.message} />{error.failureCode && <Typography.Text type="secondary">{error.previewStage ?? "preview"} · {error.failureCode}{error.previewStep ? ` · step ${error.previewStep}${error.previewAction ? ` (${error.previewAction})` : ""}` : ""}</Typography.Text>}{error.requestId && <details><summary>Technical details</summary><code>Request ID: {error.requestId}</code></details>}</>}
     {refreshFailed && preview && <Alert type="info" showIcon title="The previous preview is still shown. Retry preview to refresh it." />}
     {loading && !preview && <div className="region-preview-loading" role="status"><Spin /><strong>{progressLabels[progress] ?? "Preparing preview"}</strong></div>}

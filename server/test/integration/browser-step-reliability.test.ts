@@ -31,7 +31,7 @@ test("mobile Preview header and editor spacing stay bounded with a simulated iOS
     try {
       // Use the production CSS with deterministic inset values; native Safari
       // still needs acceptance on an actual iPhone.
-      await page.setContent(`<style>body{margin:0}*{box-sizing:border-box}${css.replaceAll("env(safe-area-inset-top)", "44px")}</style><header class="header">Application</header><main class="content"><section class="mobile-region-picker-page"><div class="mobile-editor-header"><button class="ant-btn">← Back</button><h4 class="ant-typography">Add browser step</h4></div></section><section class="browser-steps-editor"><button class="ant-btn">Add step from Preview</button><button class="ant-btn">Add browser step</button></section><div id="capture">Screenshot capture mode</div></main>`);
+      await page.setContent(`<style>body{margin:0}*{box-sizing:border-box}${css.replaceAll("env(safe-area-inset-top)", "44px")}</style><header class="header">Application</header><main class="content"><section class="mobile-region-picker-page"><div class="mobile-editor-header"><button class="ant-btn">← Back</button><h4 class="ant-typography">Add browser step</h4></div><div class="mobile-region-picker-body"><div class="region-preview-canvas"><div class="region-preview-stage">Screenshot preview</div></div><div style="height:1200px">Below-preview controls</div></div></section><section class="browser-steps-editor"><button class="ant-btn">Add step from Preview</button><button class="ant-btn">Add browser step</button></section><div id="capture">Screenshot capture mode</div></main>`);
       const box = (selector: string) => page.locator(selector).boundingBox();
       const app = (await box(".header"))!, header = (await box(".mobile-editor-header"))!;
       assert.ok(header.y >= app.y + app.height, "preview header does not overlap application header");
@@ -41,6 +41,8 @@ test("mobile Preview header and editor spacing stay bounded with a simulated iOS
       assert.equal((await box("#capture"))!.y - second.y - second.height, 24);
       assert.ok(await page.locator(".mobile-editor-header button").isVisible());
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
+      assert.equal(await page.locator(".mobile-region-picker-page").evaluate((element) => { element.scrollTop = 100; return element.scrollTop > 0; }), true, "mobile preview page scrolls vertically");
+      assert.equal(await page.locator(".region-preview-canvas").evaluate((element) => getComputedStyle(element).touchAction), "none", "screenshot canvas retains pointer-based pan and pinch handling");
     } finally { await page.close(); }
   } finally { await browser.close(); }
 });

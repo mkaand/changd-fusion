@@ -6,7 +6,7 @@ workflow rejects any SHA outside `master` history and requires successful
 `verify`, `privacy`, `docker`, and `docker-arm64` GitHub Actions checks for
 that exact SHA before it builds or publishes.
 
-For v0.3.0 it publishes Linux AMD64 images tagged with the version and exact
+For v0.3.1 it publishes Linux AMD64 images tagged with the version and exact
 source SHA. The release manifest records immutable digest references. Deploy
 only these references, never a mutable tag:
 

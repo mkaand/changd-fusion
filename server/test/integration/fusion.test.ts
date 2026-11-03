@@ -4318,7 +4318,7 @@ test("preview and capture share cookie, status, mobile viewport and stale-workfl
       res.end(`<main id="error">Synthetic forbidden page</main>`);
       return;
     }
-    res.end(`<!doctype html><style>body{margin:0}#consent{position:fixed;inset:0;background:#fff;z-index:3}#target{position:absolute;left:40px;top:80px;width:180px;height:60px;background:#0f0}</style><div id="consent" role="dialog" aria-modal="true" aria-label="Cookie consent"><button id="reject-cookies" onclick="this.parentElement.remove()">Reject all</button></div><button id="reject-offer" onclick="document.querySelector('#target').remove()">Reject offer</button><main id="target">Consistent product state</main>`);
+    res.end(`<!doctype html><style>body{margin:0}#ccc-notify{position:fixed;inset:0;background:#fff;z-index:3}#target{position:absolute;left:40px;top:80px;width:180px;height:60px;background:#0f0}</style><div id="ccc-notify" role="dialog" aria-modal="true" aria-label="Cookie preferences"><input type="button" value="I do not accept" onclick="this.parentElement.remove()"></div><button id="reject-offer" onclick="document.querySelector('#target').remove()">Reject offer</button><main id="target">Consistent product state</main>`);
   });
   await listenServer(fixture);
   const port = (fixture.address() as AddressInfo).port;

@@ -43,6 +43,15 @@ it("draws and applies fixed viewport coordinates with the real mobile picker", a
   expect(vi.mocked(api).mock.calls[0][2]).not.toHaveProperty("session_id");
 });
 
+it("starts only one automatic mobile preview when the editor rerenders", async () => {
+  mockPreview();
+  const view = render(<SelectedAreaPicker mobilePage getDraft={() => draft} onApply={vi.fn()} onBackMobile={vi.fn()} />);
+  await screen.findByAltText("Secure selected area preview");
+  view.rerender(<SelectedAreaPicker mobilePage getDraft={() => ({ ...draft })} onApply={vi.fn()} onBackMobile={vi.fn()} />);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  expect(vi.mocked(api).mock.calls.filter(([path]) => path === "/region-preview")).toHaveLength(1);
+});
+
 it("keeps the saved area unchanged on Back and cancels an in-flight preview", async () => {
   let signal: AbortSignal | undefined;
   vi.mocked(api).mockImplementation((_path: string, _method?: string, _body?: unknown, options?: { signal?: AbortSignal }) => {
