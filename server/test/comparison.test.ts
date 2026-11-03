@@ -21,10 +21,13 @@ export function image(changed = 0, width = 100, height = 100) {
 }
 test("zero, tiny changes, 0.35%, equality and 100% are evaluated without rounding", () => {
   const baseline = image();
-  assert.equal(compareVisual(baseline, baseline, "0", 0.1).changed, false);
+  const identical = compareVisual(baseline, baseline, "0", 0.1);
+  assert.equal(identical.changed, false);
+  assert.equal(identical.diff, null);
   const tiny = compareVisual(baseline, image(1), "0", 0.1);
   assert.equal(tiny.percent, "0.0100000000");
   assert.equal(tiny.changed, true);
+  assert.ok(Buffer.isBuffer(tiny.diff));
   const precise = compareVisual(baseline, image(35), "0.34", 0.1);
   assert.equal(precise.percent, "0.3500000000");
   assert.equal(precise.changed, true);
@@ -60,6 +63,10 @@ test("literal ignore rules, normalization and highlighted text differences", () 
   assert.equal(result.changed, true);
   assert.ok(result.parts.some((p) => p.added));
   assert.ok(result.parts.some((p) => p.removed));
+  assert.deepEqual(compareText("unchanged", "unchanged"), {
+    changed: false,
+    parts: [],
+  });
 });
 
 test("keyword presence uses literal Unicode-aware case-insensitive whole words and phrases", () => {

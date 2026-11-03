@@ -41,7 +41,7 @@ export function compareVisual(
     dimensionChanged: false,
     beforeDimensions,
     afterDimensions,
-    diff: PNG.sync.write(diff),
+    diff: pixels === 0 ? null : PNG.sync.write(diff),
   };
 }
 export function normalizeText(
@@ -62,7 +62,7 @@ export function normalizeText(
 export function compareText(before: string, after: string) {
   return {
     changed: before !== after,
-    parts: diffLines(before, after).map(({ value, added, removed }) => ({
+    parts: (before === after ? [] : diffLines(before, after)).map(({ value, added, removed }) => ({
       value,
       added: !!added,
       removed: !!removed,
