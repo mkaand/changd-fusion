@@ -63,7 +63,11 @@ test("literal ignore rules, normalization and highlighted text differences", () 
   assert.equal(result.changed, true);
   assert.ok(result.parts.some((p) => p.added));
   assert.ok(result.parts.some((p) => p.removed));
-  assert.deepEqual(compareText("unchanged", "unchanged"), {
+  assert.deepEqual(compareText("unchanged text", "unchanged text"), {
+    changed: false,
+    parts: [{ value: "unchanged text", added: false, removed: false }],
+  });
+  assert.deepEqual(compareText("", ""), {
     changed: false,
     parts: [],
   });

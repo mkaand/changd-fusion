@@ -60,9 +60,12 @@ export function normalizeText(
   return text;
 }
 export function compareText(before: string, after: string) {
+  const unchanged = before === after;
   return {
-    changed: before !== after,
-    parts: (before === after ? [] : diffLines(before, after)).map(({ value, added, removed }) => ({
+    changed: !unchanged,
+    // Preserve diffLines' legacy neutral entry for equal non-empty text without
+    // paying its CPU cost; equal empty text has always produced no entries.
+    parts: (unchanged ? (before ? [{ value: before, added: false, removed: false }] : []) : diffLines(before, after)).map(({ value, added, removed }) => ({
       value,
       added: !!added,
       removed: !!removed,
