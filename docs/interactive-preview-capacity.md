@@ -1,4 +1,4 @@
-# User-first Chromium scheduling (0.3.0)
+# User-first Chromium scheduling (0.3.1)
 
 API and Worker replicas share exactly one CHFE/1 PostgreSQL session advisory lock.
 `CHROMIUM_CONCURRENCY=1` is enforced. There is no separate Preview reservation.
@@ -144,4 +144,4 @@ fencing/exact-token recovery. Its destructive operations target only its own
 disposable test containers; existing images, volumes and services are untouched.
 The smoke's bounded 128 MiB test-only /tmp tmpfs is charged within the same RAM
 ceiling; production mounts and all resource limits are unchanged. Node 24 LTS,
-sandbox, SSRF/DNS/TLS safeguards and 0.3.0 package/provenance behavior are retained.
+sandbox, SSRF/DNS/TLS safeguards and 0.3.1 package/provenance behavior are retained.

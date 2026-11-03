@@ -668,12 +668,12 @@ details {
 @media (max-width: 767px) {
   .browser-steps-editor { display:flex; flex-direction:column; align-items:stretch; gap:12px; }
   .browser-steps-editor > .ant-btn { align-self:flex-start; margin-inline-end:0; }
-  .mobile-region-picker-page { min-height:calc(100dvh - 56px - env(safe-area-inset-top)); margin:-16px max(-12px, calc(-1 * env(safe-area-inset-right))) calc(-16px - env(safe-area-inset-bottom)) max(-12px, calc(-1 * env(safe-area-inset-left))); background:var(--fusion-page-bg, #f5f7fa); }
+  .mobile-region-picker-page { height:calc(100dvh - 56px - env(safe-area-inset-top)); min-height:calc(100dvh - 56px - env(safe-area-inset-top)); margin:-16px max(-12px, calc(-1 * env(safe-area-inset-right))) calc(-16px - env(safe-area-inset-bottom)) max(-12px, calc(-1 * env(safe-area-inset-left))); overflow-y:auto; overscroll-behavior-y:contain; -webkit-overflow-scrolling:touch; background:var(--fusion-page-bg, #f5f7fa); }
   /* The application header already consumes the top safe area. */
   .mobile-region-picker-page .mobile-editor-header { top:env(safe-area-inset-top); padding:8px max(16px, env(safe-area-inset-right)) 8px max(16px, env(safe-area-inset-left)); }
   .mobile-region-picker-page .mobile-editor-header .ant-btn { flex-shrink:0; }
   .mobile-region-picker-page .mobile-editor-header .ant-typography { min-width:0; overflow-wrap:anywhere; }
-  .mobile-region-picker-body { padding:16px max(16px, env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
+  .mobile-region-picker-body { min-width:0; padding:16px max(16px, env(safe-area-inset-right)) calc(24px + env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left)); }
   .mobile-region-picker-page .region-preview-canvas { max-height:58dvh; }
   .region-preview-toolbar { padding:8px max(8px, env(safe-area-inset-right)) 8px max(8px, env(safe-area-inset-left)); }
   .region-preview-toolbar .ant-btn { min-width:44px; min-height:44px; }

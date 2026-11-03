@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { EventEmitter } from "node:events";
-import { browserViewport, hasManualCookieStep, isTrackerHostname, observeMainFrameStatus } from "../src/browser-experience.js";
+import { browserViewport, dismissCookieConsent, hasManualCookieStep, isTrackerHostname, observeMainFrameStatus } from "../src/browser-experience.js";
 
 test("tracker matching is hostname-bound and does not block first-party lookalikes", () => {
   assert.equal(isTrackerHostname("doubleclick.net"), true);
@@ -19,6 +19,33 @@ test("desktop and mobile preview viewports are explicit and scale-independent", 
 test("manual cookie dismissal takes precedence over automatic consent handling", () => {
   assert.equal(hasManualCookieStep([{ action: "dismiss_cookie", selector: "#reject", selector_type: "css", timeout_ms: 5000, continue_on_error: true }]), true);
   assert.equal(hasManualCookieStep([{ action: "click", selector: "#other", selector_type: "css", timeout_ms: 5000, continue_on_error: false }]), false);
+});
+
+test("automatic consent handling clicks only reject-only controls inside a consent root", async () => {
+  const clicked: string[] = [];
+  const actions = [
+    { label: "Accept all", value: null },
+    { label: "Reject offer", value: null },
+    { label: null, value: "I do not accept" },
+  ];
+  const page = {
+    locator: () => ({ all: async () => [{
+      isVisible: async () => true,
+      locator: () => ({
+        count: async () => actions.length,
+        nth: (index: number) => ({
+          isVisible: async () => true,
+          getAttribute: async (name: string) => name === "aria-label" ? actions[index].label : name === "value" ? actions[index].value : null,
+          textContent: async () => actions[index].label,
+          click: async () => { clicked.push(actions[index].label ?? actions[index].value ?? ""); },
+        }),
+      }),
+    }] }),
+  } as any;
+  assert.equal(await dismissCookieConsent(page, Date.now() + 1_000, []), true);
+  assert.deepEqual(clicked, ["I do not accept"]);
+  assert.equal(await dismissCookieConsent(page, Date.now() + 1_000, [{ action: "dismiss_cookie", selector: "#manual", selector_type: "css", timeout_ms: 1_000, continue_on_error: false }]), false);
+  assert.deepEqual(clicked, ["I do not accept"]);
 });
 
 test("main-frame status observer retains the final step-triggered navigation status", () => {

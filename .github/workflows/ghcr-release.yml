@@ -28,7 +28,7 @@ jobs:
       packages: write
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
-      APP_VERSION: "0.3.0"
+      APP_VERSION: "0.3.1"
       API_IMAGE: ghcr.io/mkaand/changd-fusion-api
       UI_IMAGE: ghcr.io/mkaand/changd-fusion-ui
     steps:
