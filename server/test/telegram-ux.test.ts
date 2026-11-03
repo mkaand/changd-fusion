@@ -84,6 +84,12 @@ test("notification fingerprints are stable for ignored hydration and distinguish
   assert.notEqual(statusTo403, statusTo200);
   assert.notEqual(statusTo403, notificationFingerprint([], null));
 });
+test("neutral unchanged text parts do not affect notification behavior", () => {
+  const neutral = [{ value: "unchanged", added: false, removed: false }];
+  assert.equal(notificationFingerprint(neutral), notificationFingerprint([]));
+  assert.equal(textDirectionMatches(neutral, "added"), false);
+  assert.equal(textDirectionMatches(neutral, "removed"), false);
+});
 test("status-only notifications identify origin health without claiming capture failure", () => {
   const text = summary({ ...event, textChanged: false, visualChanged: false, httpStatusChanged: true, previousHttpStatus: 200, httpStatus: 403 });
   assert.match(text, /HTTP status changed: 200 → 403/);

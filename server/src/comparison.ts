@@ -41,7 +41,7 @@ export function compareVisual(
     dimensionChanged: false,
     beforeDimensions,
     afterDimensions,
-    diff: PNG.sync.write(diff),
+    diff: pixels === 0 ? null : PNG.sync.write(diff),
   };
 }
 export function normalizeText(
@@ -60,9 +60,12 @@ export function normalizeText(
   return text;
 }
 export function compareText(before: string, after: string) {
+  const unchanged = before === after;
   return {
-    changed: before !== after,
-    parts: diffLines(before, after).map(({ value, added, removed }) => ({
+    changed: !unchanged,
+    // Preserve diffLines' legacy neutral entry for equal non-empty text without
+    // paying its CPU cost; equal empty text has always produced no entries.
+    parts: (unchanged ? (before ? [{ value: before, added: false, removed: false }] : []) : diffLines(before, after)).map(({ value, added, removed }) => ({
       value,
       added: !!added,
       removed: !!removed,
