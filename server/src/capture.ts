@@ -600,7 +600,7 @@ export async function capture(
           const scroll = await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
           checkDimensions({ width: selectedArea.width, height: selectedArea.height }, limits);
           screenshot = await cdpScreenshot(context, page, { x: selectedArea.x + scroll.x, y: selectedArea.y + scroll.y, width: selectedArea.width, height: selectedArea.height });
-        } else screenshot = (captureMode === "viewport" || captureMode === "selected_area")
+        } else screenshot = (captureMode === "viewport" || captureMode === "selected_area") && !m.mask_selectors.length
           ? await cdpScreenshot(context, page)
           : await page.screenshot({ ...options, fullPage: captureMode === "full_page" });
         if (captureMode === "selected_area") {
