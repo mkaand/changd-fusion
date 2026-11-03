@@ -48,6 +48,20 @@ test("automatic consent handling clicks only reject-only controls inside a conse
   assert.deepEqual(clicked, ["I do not accept"]);
 });
 
+test("automatic consent selects only UCL's necessary-cookie control", async () => {
+  const clicked: string[] = [];
+  const actions = ["Accept all cookies", "Settings", "Accept necessary cookies"];
+  const page = { locator: () => ({ all: async () => [{
+    isVisible: async () => true,
+    locator: () => ({ count: async () => actions.length, nth: (index: number) => ({
+      isVisible: async () => true, getAttribute: async () => null,
+      textContent: async () => actions[index], click: async () => { clicked.push(actions[index]); },
+    }) }),
+  }] }) } as any;
+  assert.equal(await dismissCookieConsent(page, Date.now() + 1_000, []), true);
+  assert.deepEqual(clicked, ["Accept necessary cookies"]);
+});
+
 test("main-frame status observer retains the final step-triggered navigation status", () => {
   const emitter = new EventEmitter();
   const frame = {};

@@ -6,4 +6,4 @@ Changd Fusion follows semantic versioning for public releases:
 - **Minor** releases contain backward-compatible features.
 - **Major** releases contain breaking architectural changes that require an explicit migration plan.
 
-Version `0.3.1` is a patch release: it fixes preview behavior, mobile screenshot interaction, and reject-only cookie-consent handling without changing production runtime configuration.
+Version `0.3.2` is a patch release: it fixes cookie-consent handling and selected-area capture efficiency without changing production runtime configuration.

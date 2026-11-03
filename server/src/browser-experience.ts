@@ -80,7 +80,9 @@ const CONSENT_ROOTS = [
   '[id*="cookiecontrol" i]',
   '[class*="ccc-notify" i]',
 ].join(",");
-const REJECT_NAMES = /^(?:reject(?: all| optional cookies?)?|decline(?: all)?|deny(?: all)?|(?:i do not|do not|don't) accept|only necessary(?: cookies)?|necessary only|use (?:only )?necessary cookies|continue without accepting|dismiss)$/i;
+// "Accept" is safe only when the control explicitly limits consent to
+// necessary cookies; neighbouring "Accept all" controls never match.
+const REJECT_NAMES = /^(?:reject(?: all| optional cookies?)?|decline(?: all)?|deny(?: all)?|(?:i do not|do not|don't) accept|(?:accept |use )?(?:only )?(?:strictly )?necessary cookies?|necessary only|continue without accepting|dismiss)$/i;
 const CONSENT_ACTIONS = 'button, [role="button"], input[type="button"], input[type="submit"]';
 
 function consentActionName(value: string | null | undefined) {

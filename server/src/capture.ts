@@ -593,13 +593,19 @@ export async function capture(
             : viewport;
         checkDimensions(size, limits);
         enterStage("screenshot_rasterization");
-        screenshot = (captureMode === "viewport" || captureMode === "selected_area") && !m.mask_selectors.length
+        const selectedArea = captureMode === "selected_area" ? captureAreaSchema.parse(m.capture_area) : undefined;
+        // Chromium can rasterize an unmasked viewport rectangle directly. The
+        // existing PNG crop remains the correctness fallback for masks.
+        if (selectedArea && !m.mask_selectors.length) {
+          const scroll = await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
+          checkDimensions({ width: selectedArea.width, height: selectedArea.height }, limits);
+          screenshot = await cdpScreenshot(context, page, { x: selectedArea.x + scroll.x, y: selectedArea.y + scroll.y, width: selectedArea.width, height: selectedArea.height });
+        } else screenshot = (captureMode === "viewport" || captureMode === "selected_area")
           ? await cdpScreenshot(context, page)
           : await page.screenshot({ ...options, fullPage: captureMode === "full_page" });
         if (captureMode === "selected_area") {
           enterStage("image_validation");
-          const area = captureAreaSchema.parse(m.capture_area);
-          screenshot = cropCaptureArea(screenshot, area, limits);
+          if (m.mask_selectors.length) screenshot = cropCaptureArea(screenshot, selectedArea!, limits);
         }
       }
       enterStage("image_validation");
