@@ -22,7 +22,14 @@ export function deploymentPlan(release, config) {
 export async function discoverRelease(client, trusted) {
   const runs = await client.runs({ workflow: "ghcr-release.yml", repository: trusted.repository, timeoutMs: 10_000 });
   if (!Array.isArray(runs) || runs.some((r) => r.nextPage)) throw Error("ambiguous_release_listing");
-  const candidates = runs.filter((r) => r.name === "GHCR immutable release" && r.conclusion === "success" && r.repository === trusted.repository);
+  const candidates = runs.filter((r) => r.name === "GHCR immutable release"
+    && r.path === ".github/workflows/ghcr-release.yml"
+    && r.status === "completed"
+    && r.conclusion === "success"
+    && r.head_branch === "master"
+    && Number.isInteger(r.run_attempt)
+    && r.run_attempt >= 1
+    && r.repository === trusted.repository);
   if (candidates.length > 1) throw Error("ambiguous_release_runs");
   if (!candidates.length) return null;
   const run = candidates[0], manifest = await client.manifest(run, { timeoutMs: 10_000 });

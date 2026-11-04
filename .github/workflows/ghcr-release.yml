@@ -26,6 +26,8 @@ jobs:
       contents: read
       checks: read
       packages: write
+      id-token: write
+      attestations: write
     env:
       SOURCE_SHA: ${{ inputs.source_sha }}
       APP_VERSION: "0.3.3"
@@ -137,6 +139,20 @@ jobs:
             org.opencontainers.image.revision=${{ inputs.source_sha }}
             org.opencontainers.image.version=${{ env.APP_VERSION }}
           provenance: mode=max
+
+      - name: Attest API and Worker image provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with:
+          subject-name: ${{ env.API_IMAGE }}
+          subject-digest: ${{ steps.api.outputs.digest }}
+          push-to-registry: true
+
+      - name: Attest UI image provenance
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be
+        with:
+          subject-name: ${{ env.UI_IMAGE }}
+          subject-digest: ${{ steps.ui.outputs.digest }}
+          push-to-registry: true
 
       - name: Write immutable release manifest
         shell: bash
