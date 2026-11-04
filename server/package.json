@@ -34,6 +34,7 @@
     "pixelmatch": "8.0.0",
     "playwright": "1.64.0",
     "pngjs": "7.0.0",
+    "yauzl": "3.2.0",
     "zod": "4.6.7"
   },
   "devDependencies": {
@@ -46,6 +47,7 @@
     "@types/supertest": "7.2.1",
     "supertest": "7.3.1",
     "tsx": "4.23.15",
-    "typescript": "5.9.3"
+    "typescript": "5.9.3",
+    "yazl": "3.3.1"
   }
 }

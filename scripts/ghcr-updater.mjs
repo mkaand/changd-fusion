@@ -25,7 +25,7 @@ export async function discoverRelease(client, trusted) {
   const candidates = runs.filter((r) => r.name === "GHCR immutable release" && r.conclusion === "success" && r.repository === trusted.repository);
   if (candidates.length > 1) throw Error("ambiguous_release_runs");
   if (!candidates.length) return null;
-  const run = candidates[0], manifest = await client.manifest(run.id, { timeoutMs: 10_000 });
+  const run = candidates[0], manifest = await client.manifest(run, { timeoutMs: 10_000 });
   return { workflow: run, manifest, ci: await client.ci(run.head_sha, { timeoutMs: 10_000 }), masterLineage: await client.masterLineage(run.head_sha), publisher: await client.attestation(manifest) };
 }
 export function migrationGate(current, candidate) {

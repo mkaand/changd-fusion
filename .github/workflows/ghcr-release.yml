@@ -148,13 +148,14 @@ jobs:
           jq -n \
             --arg source_sha "$SOURCE_SHA" \
             --arg source_tree "$SOURCE_TREE" \
+            --arg version "$APP_VERSION" \
             --arg api_uri "${API_IMAGE}@${API_DIGEST}" \
             --arg ui_uri "${UI_IMAGE}@${UI_DIGEST}" \
             --arg architecture "linux/amd64" \
             --arg workflow_run "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
             --arg ci_evidence "verify, privacy, docker, docker-arm64 successful for exact source SHA" \
             --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            '{source_sha:$source_sha,source_tree:$source_tree,api_image:$api_uri,ui_image:$ui_uri,architecture:$architecture,api_worker_shared_image:$api_uri,workflow_run:$workflow_run,ci_evidence:$ci_evidence,created_at:$created_at}' \
+            '{source_sha:$source_sha,source_tree:$source_tree,version:$version,api_image:$api_uri,ui_image:$ui_uri,architecture:$architecture,api_worker_shared_image:$api_uri,workflow_run:$workflow_run,ci_evidence:$ci_evidence,created_at:$created_at}' \
             > release-manifest.json
           cat release-manifest.json | tee -a "$GITHUB_STEP_SUMMARY"
 
