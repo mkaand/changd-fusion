@@ -1,0 +1,11 @@
+[Unit]
+Description=Changd Fusion opt-in immutable GHCR updater
+After=docker.service network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+User=changd-fusion
+EnvironmentFile=/etc/changd-fusion/updater.env
+ExecStart=/usr/local/lib/changd-fusion/ghcr-updater
+NoNewPrivileges=yes
+PrivateTmp=yes

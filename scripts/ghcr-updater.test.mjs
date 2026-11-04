@@ -1,0 +1,7 @@
+import assert from "node:assert/strict"; import test from "node:test";
+import { deploymentPlan, runUpdater, verifyRelease } from "./ghcr-updater.mjs";
+const s="a".repeat(40), d="b".repeat(64), e="c".repeat(64);
+const evidence={manifest:{source_sha:s,version:"0.3.3",architecture:"linux/amd64",api_image:`ghcr.io/mkaand/changd-fusion-api@sha256:${d}`,ui_image:`ghcr.io/mkaand/changd-fusion-ui@sha256:${e}`,api_worker_shared_image:`ghcr.io/mkaand/changd-fusion-api@sha256:${d}`},workflow:{name:"GHCR immutable release",conclusion:"success",head_sha:s},masterLineage:true,ci:{verify:"success",privacy:"success",docker:"success","docker-arm64":"success"},publisher:{attested:true,revision:s,version:"0.3.3"}};
+test("accepts only complete attested evidence",()=>assert.equal(verifyRelease(evidence,{}).ok,true));
+test("rejects replay, bad CI and malformed images",()=>{assert.equal(verifyRelease(evidence,{source_sha:s}).reason,"replay");assert.equal(verifyRelease({...evidence,ci:{...evidence.ci,docker:"failure"}},{}).reason,"ci_evidence");assert.equal(verifyRelease({...evidence,manifest:{...evidence.manifest,ui_image:"latest"}},{}).reason,"invalid_manifest")});
+test("dry run has zero docker mutations",async()=>{let calls=0;const result=await runUpdater({evidence,state:{},config:{project:"fusion",dryRun:true},docker:{safeDrain:async()=>{calls++},projectIsExpected:async()=>true}});assert.equal(result.dryRun,true);assert.equal(calls,0);assert.equal(deploymentPlan(evidence.manifest,{project:"fusion"}).services.length,3)});
