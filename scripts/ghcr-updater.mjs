@@ -19,16 +19,34 @@ export function deploymentPlan(release, config) {
   if (!config?.project || !/^[a-z0-9][a-z0-9_-]{0,62}$/.test(config.project)) throw Error("invalid_project");
   return { project:config.project, services:["api","worker","ui"], images:{ api:release.api_image, ui:release.ui_image }, dryRun:Boolean(config.dryRun) };
 }
-export async function runUpdater({ evidence, state, config, docker }) {
+export async function discoverRelease(client, trusted) {
+  const runs = await client.runs({ workflow: "ghcr-release.yml", repository: trusted.repository, timeoutMs: 10_000 });
+  if (!Array.isArray(runs) || runs.some((r) => r.nextPage)) throw Error("ambiguous_release_listing");
+  const candidates = runs.filter((r) => r.name === "GHCR immutable release" && r.conclusion === "success" && r.repository === trusted.repository);
+  if (candidates.length > 1) throw Error("ambiguous_release_runs");
+  if (!candidates.length) return null;
+  const run = candidates[0], manifest = await client.manifest(run.id, { timeoutMs: 10_000 });
+  return { workflow: run, manifest, ci: await client.ci(run.head_sha, { timeoutMs: 10_000 }), masterLineage: await client.masterLineage(run.head_sha), publisher: await client.attestation(manifest) };
+}
+export function migrationGate(current, candidate) {
+  if (!candidate?.migrationCompatibility || candidate.migrationCompatibility !== "forward-safe") return { ok:false, reason:"unsafe_migration" };
+  if (current?.migrationVersion && candidate.migrationVersion < current.migrationVersion) return { ok:false, reason:"migration_downgrade" };
+  return { ok:true };
+}
+export async function withUpdaterLock(lock, fn) { if (!(await lock.acquire())) return { updated:false, reason:"concurrent_updater" }; try { return await fn(); } finally { await lock.release(); } }
+export async function runUpdater({ evidence, state, config, docker, lock, notify }) {
+  if (lock) return withUpdaterLock(lock, () => runUpdater({ evidence, state, config, docker, notify }));
   const checked=verifyRelease(evidence,state); if (!checked.ok) return { updated:false, ...checked };
   const plan=deploymentPlan(checked.release,config);
   if (plan.dryRun) return { updated:false, dryRun:true, plan };
   // The host wrapper must first prove its project membership and safe drain;
   // absence of either proof deliberately aborts before Compose mutation.
-  if (!(await docker.safeDrain(plan.project)) || !(await docker.projectIsExpected(plan.project, plan.services))) return { updated:false, reason:"unsafe_drain" };
+  if (!(await docker.safeDrain(plan.project)) || !(await docker.projectIsExpected(plan.project, plan.services))) { await notify?.("critical", "unsafe_drain"); return { updated:false, reason:"unsafe_drain" }; }
+  const migration=migrationGate(state, checked.release); if (!migration.ok) { await notify?.("critical", migration.reason); return { updated:false, ...migration }; }
   await docker.compose(plan.project, ["pull", ...plan.services]);
   await docker.compose(plan.project, ["up", "-d", "--no-deps", ...plan.services]);
-  if (!(await docker.healthy(plan))) return { updated:false, reason:"healthcheck_failed" };
+  if (!(await docker.healthy(plan))) { await notify?.("critical", "healthcheck_failed"); return { updated:false, reason:"healthcheck_failed" }; }
   await docker.writeStateAtomically({ source_sha:checked.release.source_sha, version:checked.release.version, api_image:checked.release.api_image, ui_image:checked.release.ui_image });
+  await notify?.("success", `updated:${checked.release.version}`);
   return { updated:true, plan };
 }
