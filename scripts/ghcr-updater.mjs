@@ -41,20 +41,45 @@ export function migrationGate(current, candidate) {
   return { ok:true };
 }
 export async function withUpdaterLock(lock, fn) { if (!(await lock.acquire())) return { updated:false, reason:"concurrent_updater" }; try { return await fn(); } finally { await lock.release(); } }
-export async function runUpdater({ evidence, state, config, docker, lock, notify, drainAuthorization }) {
-  if (lock) return withUpdaterLock(lock, () => runUpdater({ evidence, state, config, docker, notify, drainAuthorization }));
+export async function runUpdater({ evidence, state, config, docker, lock, notify, drainAuthorization, maintenance }) {
+  if (lock) return withUpdaterLock(lock, () => runUpdater({ evidence, state, config, docker, notify, drainAuthorization, maintenance }));
   const checked=verifyRelease(evidence,state); if (!checked.ok) return { updated:false, ...checked };
   const plan=deploymentPlan(checked.release,config);
   if (!(await docker.projectIsExpected(plan.project, plan.services, checked.release))) { await notify?.("critical", "unsafe_project"); return { updated:false, reason:"unsafe_project" }; }
   const migration=migrationGate(state, checked.release); if (!migration.ok) { await notify?.("critical", migration.reason); return { updated:false, ...migration }; }
   if (plan.dryRun) return { updated:false, dryRun:true, plan };
-  // Worker drain remains a separate application-level gate. The concrete host
-  // adapter must reject absent, stale, replayed or unverified authorization.
-  if (!(await docker.safeDrain(plan.project, checked.release.source_sha, drainAuthorization))) { await notify?.("critical", "unsafe_drain"); return { updated:false, reason:"unsafe_drain" }; }
-  await docker.compose(plan.project, ["pull", ...plan.services], checked.release.source_sha, checked.release);
-  await docker.compose(plan.project, ["up", "-d", "--no-deps", "--no-build", ...plan.services], checked.release.source_sha, checked.release);
-  if (!(await docker.healthy(plan))) { await notify?.("critical", "healthcheck_failed"); return { updated:false, reason:"healthcheck_failed" }; }
-  await docker.writeStateAtomically({ source_sha:checked.release.source_sha, version:checked.release.version, api_image:checked.release.api_image, ui_image:checked.release.ui_image });
-  await notify?.("success", `updated:${checked.release.version}`);
-  return { updated:true, plan };
+  let authorization = drainAuthorization;
+  try {
+    authorization ??= await maintenance?.drain({ project: plan.project, sourceSha: checked.release.source_sha });
+  } catch {
+    await notify?.("critical", "drain_failed");
+    return { updated:false, reason:"drain_failed" };
+  }
+  if (!(await docker.safeDrain(plan.project, checked.release.source_sha, authorization))) {
+    await maintenance?.fail(authorization, "unsafe_drain");
+    await notify?.("critical", "unsafe_drain");
+    return { updated:false, reason:"unsafe_drain" };
+  }
+  try {
+    await docker.compose(plan.project, ["pull", ...plan.services], checked.release.source_sha, checked.release);
+    await docker.compose(plan.project, ["up", "-d", "--no-deps", "--no-build", ...plan.services], checked.release.source_sha, checked.release);
+    if (!(await docker.healthy(plan))) {
+      await maintenance?.fail(authorization, "healthcheck_failed");
+      await notify?.("critical", "healthcheck_failed");
+      return { updated:false, reason:"healthcheck_failed" };
+    }
+    await docker.writeStateAtomically({ source_sha:checked.release.source_sha, version:checked.release.version, api_image:checked.release.api_image, ui_image:checked.release.ui_image });
+    if (maintenance && !(await maintenance.resume(authorization))) {
+      await maintenance.fail(authorization, "maintenance_resume_failed");
+      await notify?.("critical", "maintenance_resume_failed");
+      return { updated:false, reason:"maintenance_resume_failed" };
+    }
+    docker.completeDrain?.();
+    await notify?.("success", `updated:${checked.release.version}`);
+    return { updated:true, plan };
+  } catch {
+    await maintenance?.fail(authorization, "deployment_failed");
+    await notify?.("critical", "deployment_failed");
+    return { updated:false, reason:"deployment_failed" };
+  }
 }

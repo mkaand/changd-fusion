@@ -3,6 +3,7 @@ import { transaction } from "./db.js";
 import { randomUUID } from "node:crypto";
 import type { PoolClient, QueryConfig } from "pg";
 import { CaptureFailure, ChromiumCoordinationLost, SchedulingCancellation } from "./errors.js";
+import { browserAdmissionOpen } from "./maintenance.js";
 
 const LOCK_NAMESPACE = 0x43484645;
 const SLOT = 1;
@@ -27,6 +28,8 @@ function priorityBusy() {
 
 async function registerIntent(c: PoolClient, ownerId: string, kind: "preview" | "manual", monitorId?: string) {
     const state = (await c.query("SELECT *,scheduled_turn_until>now() AS scheduled_turn,priority_window_until<=now() AND (active_workload='preview' OR last_interactive_at>now()-interval '30 seconds') AS window_expired FROM fusion_chromium_scheduler WHERE id=1 FOR UPDATE")).rows[0];
+    if (!(await browserAdmissionOpen(c)))
+      throw new CaptureFailure("browser_launch", "capacity_busy", "Browser operations are temporarily paused for maintenance.");
     if (state.scheduled_turn) return null;
     if (state.scheduled_recovery_pending && state.active_workload === "preview") return null;
     if (state.window_expired) {
@@ -45,6 +48,8 @@ async function registerIntent(c: PoolClient, ownerId: string, kind: "preview" | 
 export async function enqueueManualRun(pool: Pool, ownerId: string, monitorId: string, needsBrowser: boolean) {
   const result = await transaction(pool, async (c) => {
     await c.query("SELECT id FROM fusion_chromium_scheduler WHERE id=1 FOR UPDATE");
+    if (!(await browserAdmissionOpen(c)))
+      throw new CaptureFailure("browser_launch", "capacity_busy", "Manual checks are temporarily paused for maintenance.");
     const existing = await c.query("SELECT id,status FROM fusion_manual_runs WHERE monitor_id=$1 AND status IN ('queued','running')", [monitorId]);
     if (existing.rowCount) return existing.rows[0];
     const counts = (await c.query("SELECT count(*)::int AS total,count(*) FILTER (WHERE user_id=$1)::int AS owned FROM fusion_manual_runs WHERE status IN ('queued','running')", [ownerId])).rows[0];
@@ -98,13 +103,14 @@ export async function acquireChromiumLease(pool: Pool, options: {
         await client.query("BEGIN");
         try {
           const state = (await client.query("SELECT *,scheduled_turn_until>now() AS scheduled_turn FROM fusion_chromium_scheduler WHERE id=1 FOR UPDATE")).rows[0];
+          const admissionOpen = await browserAdmissionOpen(client);
           // A DB lock disappearing does not prove that an old browser exited.
           if (state.active_token) throw new CaptureFailure("browser_launch", "cleanup_timeout", "Browser cleanup is unconfirmed. Supervised recovery is required before another browser can start.");
           const intents = await client.query("SELECT id FROM fusion_chromium_priority_intents WHERE cancelled_at IS NULL AND expires_at>now() ORDER BY created_at,id");
           const head = intents.rows[0]?.id;
-          const allowed = options.workload === "capture"
+          const allowed = admissionOpen && (options.workload === "capture"
             ? state.scheduled_turn || !head
-            : !state.scheduled_turn && (options.priorityIntentId ? head === options.priorityIntentId : !head);
+            : !state.scheduled_turn && (options.priorityIntentId ? head === options.priorityIntentId : !head));
           if (allowed && !options.signal?.aborted) {
             protectedTurn = options.workload === "capture" && Boolean(state.scheduled_turn);
             await client.query("UPDATE fusion_chromium_scheduler SET active_token=$1,active_workload=$2,active_since=now(),scheduled_recovery_pending=CASE WHEN $2='capture' THEN false ELSE scheduled_recovery_pending END WHERE id=1", [token, options.workload]);

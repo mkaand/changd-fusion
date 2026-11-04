@@ -40,10 +40,25 @@ possible. No prune, down, force-remove or volume-removal operation is exposed.
 
 Mutation additionally requires a fresh, project/source-bound, single-use drain
 authorization accepted by an injected application-level verifier. No verifier,
-expired or replayed evidence, or a mismatched source fails closed. Worker drain
-generation is deliberately not implemented yet, so the updater remains
-non-operational until that separate gate is connected. Dry-run still performs
-read-only configuration/ownership validation but suppresses every pull/up/image
+expired or replayed evidence, or a mismatched source fails closed. Migration 017
+adds a durable PostgreSQL maintenance barrier. `server/src/maintenance-cli.ts`
+and `scripts/maintenance-coordinator.mjs` establish it through a structured,
+stdin-only `docker compose exec` call; the secret owner token is never placed in
+process arguments. The coordinator is automatically attached as the adapter's
+drain verifier before project validation.
+
+Barrier creation serializes on the same scheduler row used by Chromium
+admission. New scheduled Chromium work, Preview (including retained-session
+reuse), and Manual Check requests are rejected while active work finishes
+cooperatively. Drain confirmation requires both an empty durable scheduler token
+and absence of the PostgreSQL Chromium advisory lock. The project, exact release
+SHA, deployment operation, token hash and evidence deadline remain bound in the
+database. Ownership is reverified before pull, replacement and health approval;
+the barrier opens only after health and state recording succeed. Timeout,
+ownership loss, updater interruption or deployment failure leaves
+`recovery_required` admission closed for separately verified manual recovery—an
+expired lease or process absence never opens it. Dry-run performs read-only
+configuration/ownership validation and creates no maintenance record or Docker
 mutation.
 
 Release discovery needs read-only Actions access to the trusted repository. It

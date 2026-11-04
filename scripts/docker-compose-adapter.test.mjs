@@ -7,6 +7,7 @@ import {
   createDockerComposeHostAdapter,
 } from "./docker-compose-adapter.mjs";
 import { runUpdater } from "./ghcr-updater.mjs";
+import { ComposeMaintenanceCoordinator } from "./maintenance-coordinator.mjs";
 
 const project = "fusion_adapter_test";
 const source = "a".repeat(40);
@@ -128,7 +129,7 @@ function defaultContainers() {
   return [container("api", "1"), container("db", "2"), container("ui", "3"), container("worker", "4")];
 }
 
-function fakeSpawn({ model = composeModel(), containers = defaultContainers(), fail = false } = {}) {
+function fakeSpawn({ model = composeModel(), containers = defaultContainers(), fail = false, failUpdate = false, maintenance } = {}) {
   const calls = [];
   const spawn = (command, args, options) => {
     calls.push({ command, args, options });
@@ -146,6 +147,12 @@ function fakeSpawn({ model = composeModel(), containers = defaultContainers(), f
         RepoDigests: [reference],
       }]) };
     }
+    if (args.includes("dist/maintenance-cli.js")) {
+      const action = args.at(-1);
+      if (maintenance) return { status: 0, stdout: JSON.stringify(maintenance(action, JSON.parse(options.input))) };
+      return { status: 0, stdout: JSON.stringify(action === "verify" ? { valid: true } : { resumed: true }) };
+    }
+    if (failUpdate && args.includes("up")) return { status: 1, stdout: "" };
     if (args.includes("pull") || args.includes("up")) return { status: 0, stdout: "" };
     return { status: 1, stdout: "" };
   };
@@ -161,17 +168,19 @@ function adapter(fake, overrides = {}) {
     spawn: fake.spawn,
     processEnvironment: { FIXTURE: "true", DOCKER_HOST: "tcp://foreign.invalid:2375" },
     now: () => 100_000,
-    drainVerifier: async (evidence) => evidence.proof === "verified",
+    drainVerifier: async (evidence, context) => evidence.proof === "verified" && ["authorize", "assert"].includes(context.phase),
     ...overrides,
   });
 }
 
 const authorization = () => ({
-  id: "drain_evidence_0001",
+  id: "11111111-1111-4111-8111-111111111111",
+  operation_id: "11111111-1111-4111-8111-111111111111",
   project,
   source_sha: source,
   issued_at: 90_000,
   expires_at: 200_000,
+  owner_token: "d".repeat(43),
   proof: "verified",
 });
 
@@ -243,10 +252,41 @@ test("requires fresh verified drain evidence before exact pull and no-build upda
   assert.equal(mutations.some((call) => call.args.includes("db") || call.args.includes("migrate")), false);
   assert.equal(fake.calls.filter((call) => call.args[1] === "image").length, 2);
   assert.equal(await host.healthy({ project, images: { api: release.api_image, ui: release.ui_image } }), true);
+  host.completeDrain();
   await assert.rejects(
     host.compose(project, ["pull", "api", "worker", "ui"], source, release),
     /safe_drain_required/,
   );
+});
+
+test("maintenance evidence is reverified across mutation and never exposed in subprocess arguments", async () => {
+  const phases = [];
+  const fake = fakeSpawn();
+  const host = adapter(fake, {
+    drainVerifier: async (_evidence, context) => { phases.push(context.phase); return true; },
+  });
+  await host.validateProject(release);
+  const evidence = authorization();
+  assert.equal(await host.safeDrain(project, source, evidence), true);
+  await host.compose(project, ["pull", "api", "worker", "ui"], source, release);
+  await host.compose(project, ["up", "-d", "--no-deps", "--no-build", "api", "worker", "ui"], source, release);
+  assert.equal(await host.healthy({ project, images: { api: release.api_image, ui: release.ui_image } }), true);
+  assert.deepEqual(phases, ["authorize", "assert", "assert", "assert"]);
+  host.maintenanceExec("verify", { evidence, phase: "assert" });
+  const invocation = fake.calls.at(-1);
+  assert.equal(invocation.args.join(" ").includes(evidence.owner_token), false);
+  assert.equal(invocation.options.input.includes(evidence.owner_token), true);
+});
+
+test("lost maintenance ownership blocks the next Compose mutation", async () => {
+  let valid = true;
+  const fake = fakeSpawn();
+  const host = adapter(fake, { drainVerifier: async (_evidence, context) => context.phase === "authorize" || valid });
+  await host.validateProject(release);
+  assert.equal(await host.safeDrain(project, source, authorization()), true);
+  valid = false;
+  await assert.rejects(host.compose(project, ["pull", "api", "worker", "ui"], source, release), /safe_drain_lost/);
+  assert.equal(fake.calls.some((call) => call.args.includes("pull")), false);
 });
 
 test("connects to runUpdater while retaining the concrete drain boundary", async () => {
@@ -290,6 +330,79 @@ test("connects to runUpdater while retaining the concrete drain boundary", async
   assert.equal(result.updated, true);
   assert.equal(state.source_sha, source);
   assert.equal(fake.calls.filter((call) => call.args.includes("pull") || call.args.includes("up")).length, 2);
+});
+
+test("runUpdater acquires, continuously verifies and resumes the concrete maintenance barrier", async () => {
+  const candidate = {
+    ...release, version: "0.3.3", architecture: "linux/amd64",
+    migrationCompatibility: "forward-safe", migrationVersion: 1,
+  };
+  const evidence = {
+    manifest: candidate,
+    workflow: { name: "GHCR immutable release", conclusion: "success", head_sha: source },
+    masterLineage: true,
+    ci: { verify: "success", privacy: "success", docker: "success", "docker-arm64": "success" },
+    publisher: { attested: true, revision: source, version: "0.3.3" },
+  };
+  const actions = [];
+  const authorization = {
+    id: "22222222-2222-4222-8222-222222222222",
+    operation_id: "22222222-2222-4222-8222-222222222222",
+    project, source_sha: source, issued_at: 90_000, expires_at: 200_000,
+    owner_token: "e".repeat(43),
+  };
+  const fake = fakeSpawn({ maintenance(action) {
+    actions.push(action);
+    if (action === "begin") return authorization;
+    if (action === "verify") return { valid: true };
+    if (action === "resume") return { resumed: true };
+    return { retained: true };
+  } });
+  const host = adapter(fake, { drainVerifier: undefined });
+  const maintenance = new ComposeMaintenanceCoordinator({ adapter: host, timeoutMs: 1000, evidenceTtlMs: 5000 });
+  host.writeStateAtomically = async () => {};
+  const result = await runUpdater({
+    evidence, state: { migrationVersion: 1 }, config: { project }, docker: host, maintenance,
+  });
+  assert.equal(result.updated, true);
+  assert.deepEqual(actions, ["begin", "verify", "verify", "verify", "verify", "resume"]);
+});
+
+test("an interrupted Compose replacement records recovery-required maintenance and never resumes", async () => {
+  const candidate = {
+    ...release, version: "0.3.3", architecture: "linux/amd64",
+    migrationCompatibility: "forward-safe", migrationVersion: 1,
+  };
+  const evidence = {
+    manifest: candidate,
+    workflow: { name: "GHCR immutable release", conclusion: "success", head_sha: source },
+    masterLineage: true,
+    ci: { verify: "success", privacy: "success", docker: "success", "docker-arm64": "success" },
+    publisher: { attested: true, revision: source, version: "0.3.3" },
+  };
+  const actions = [];
+  const authorization = {
+    id: "33333333-3333-4333-8333-333333333333",
+    operation_id: "33333333-3333-4333-8333-333333333333",
+    project, source_sha: source, issued_at: 90_000, expires_at: 200_000,
+    owner_token: "f".repeat(43),
+  };
+  const fake = fakeSpawn({ failUpdate: true, maintenance(action) {
+    actions.push(action);
+    if (action === "begin") return authorization;
+    if (action === "verify") return { valid: true };
+    if (action === "fail") return { retained: true };
+    return { resumed: true };
+  } });
+  const host = adapter(fake, { drainVerifier: undefined });
+  const maintenance = new ComposeMaintenanceCoordinator({ adapter: host, timeoutMs: 1000, evidenceTtlMs: 5000 });
+  host.writeStateAtomically = async () => assert.fail("failed deployment must not update state");
+  const result = await runUpdater({
+    evidence, state: { migrationVersion: 1 }, config: { project }, docker: host, maintenance,
+  });
+  assert.equal(result.reason, "deployment_failed");
+  assert.equal(actions.at(-1), "fail");
+  assert.equal(actions.includes("resume"), false);
 });
 
 test("dry-run executes read-only validation but performs zero Docker mutations", async () => {

@@ -26,6 +26,7 @@ import path from "node:path";
 import { acquireChromiumLease, cancelInteractivePriorityIntent, createInteractivePriorityIntent, enqueueManualRun } from "./chromium-capacity.js";
 import { captureAreaSchema } from "./capture-area.js";
 import { captureTimeoutSchema, DEFAULT_NEW_MONITOR_CAPTURE_TIMEOUT_MS, previewExecutionTimeout } from "./capture-timeout.js";
+import { beginRuntimeOperation, finishRuntimeOperation, type RuntimeOperation } from "./maintenance.js";
 const uuid = z.string().uuid();
 const threshold = z
   .union([
@@ -629,9 +630,15 @@ export function createApp(
     const cancelled = () => { if (!res.writableEnded) cancellation.abort(); };
     let priorityIntentId: string | undefined;
     let priorityLeaseHeld = false;
+    let runtimeOperation: RuntimeOperation | null = null;
     req.once("aborted", cancelled);
     res.once("close", cancelled);
     try {
+      // This also protects retained-session reuse, which otherwise would not
+      // create a new priority intent or acquire another Chromium lease.
+      runtimeOperation = await beginRuntimeOperation(pool, "preview");
+      if (!runtimeOperation)
+        throw new CaptureFailure("browser_launch", "capacity_busy", "Browser operations are temporarily paused for maintenance.");
       const preview = await previewRegion(
         monitor,
         cfg,
@@ -669,14 +676,15 @@ export function createApp(
       res.json(preview);
     } catch (error) {
       const failure = error as RegionPreviewFailure;
+      const captureFailure = error instanceof CaptureFailure ? error : undefined;
       const duration = Math.max(0, Math.round(performance.now() - started));
       // Deliberately structured and minimal: URL, query text, page content, selectors and raw errors stay out of logs.
       log.warn({ code: "region_preview_failed", stage: failure.stage, failure_code: failure.failure_code, step: failure.step, action: failure.action, duration_ms: duration, request_id: res.locals.requestId }, "Region preview failed");
-      res.status(failure.status ?? 422).json({
-        error: failure.message ?? "Website preview failed. Retry, or use viewport capture instead.",
+      res.status(failure.status ?? (captureFailure?.code === "capacity_busy" ? 429 : 422)).json({
+        error: captureFailure?.message ?? failure.message ?? "Website preview failed. Retry, or use viewport capture instead.",
         request_id: res.locals.requestId,
-        preview_stage: failure.stage ?? "unknown",
-        failure_code: failure.failure_code ?? "unknown",
+        preview_stage: captureFailure?.stage ?? failure.stage ?? "unknown",
+        failure_code: captureFailure?.code ?? failure.failure_code ?? "unknown",
         ...(failure.step ? { step: failure.step, action: failure.action } : {}),
         duration_ms: duration,
       });
@@ -685,6 +693,8 @@ export function createApp(
       // owner-bound session.  Requests that reused a session or never acquired
       // capacity must not leave a priority reservation behind.
       if (priorityIntentId && (!priorityLeaseHeld || cancellation.signal.aborted)) await cancelInteractivePriorityIntent(pool, priorityIntentId).catch(() => {});
+      if (runtimeOperation && !(await finishRuntimeOperation(pool, runtimeOperation).catch(() => false)))
+        log.error({ code: "preview_runtime_operation_release_failed", request_id: res.locals.requestId }, "Preview operation release failed");
       req.off("aborted", cancelled); res.off("close", cancelled);
     }
   };

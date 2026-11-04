@@ -5,6 +5,7 @@ import { spawnSync } from "node:child_process";
 
 const PROJECT = /^[a-z0-9][a-z0-9_-]{0,62}$/;
 const SHA = /^[0-9a-f]{40}$/;
+const DRAIN_ID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/;
 const CONTAINER_ID = /^[0-9a-f]{12,64}$/;
 const API_IMAGE = /^ghcr\.io\/mkaand\/changd-fusion-api@sha256:[0-9a-f]{64}$/;
 const UI_IMAGE = /^ghcr\.io\/mkaand\/changd-fusion-ui@sha256:[0-9a-f]{64}$/;
@@ -156,7 +157,14 @@ export class DockerComposeHostAdapter {
     return environment;
   }
 
-  runDocker(args, { mutating = false, environment = {} } = {}) {
+  setDrainVerifier(verifier) {
+    if (typeof verifier !== "function" || this.drainVerifier || this.validatedRelease) {
+      fail("drain_verifier_configuration");
+    }
+    this.drainVerifier = verifier;
+  }
+
+  runDocker(args, { mutating = false, environment = {}, input } = {}) {
     if (!Array.isArray(args) || args.some((value) => typeof value !== "string" || /[\0\r\n]/.test(value))) {
       fail("invalid_docker_arguments");
     }
@@ -169,6 +177,7 @@ export class DockerComposeHostAdapter {
       timeout: this.timeoutMs,
       maxBuffer: MAX_OUTPUT,
       shell: false,
+      ...(input === undefined ? {} : { input }),
     });
     if (result?.error || result?.status !== 0 || result?.signal) fail("docker_command_failed");
     if (typeof result.stdout !== "string" || Buffer.byteLength(result.stdout) > MAX_OUTPUT) {
@@ -341,6 +350,7 @@ export class DockerComposeHostAdapter {
     if (before !== this.configurationFingerprint()) fail("compose_configuration_changed");
     this.databaseContainerId = containers.db.Id;
     this.validatedRelease = releaseKey(release);
+    this.release = Object.freeze({ ...release });
     this.validatedConfiguration = before;
     return { containers };
   }
@@ -361,24 +371,31 @@ export class DockerComposeHostAdapter {
     const current = this.now();
     if (project !== this.project || !SHA.test(sourceSha ?? "") || typeof this.drainVerifier !== "function"
       || !authorization || authorization.project !== project || authorization.source_sha !== sourceSha
-      || !/^[A-Za-z0-9_-]{16,128}$/.test(authorization.id ?? "")
+      || !DRAIN_ID.test(authorization.id ?? "")
+      || authorization.operation_id !== authorization.id
+      || !/^[A-Za-z0-9_-]{43}$/.test(authorization.owner_token ?? "")
       || !Number.isInteger(authorization.issued_at) || !Number.isInteger(authorization.expires_at)
       || authorization.issued_at > current || authorization.expires_at <= current
       || authorization.expires_at - authorization.issued_at > 300_000
       || this.usedDrainEvidence.has(authorization.id)) return false;
-    if (await this.drainVerifier(Object.freeze({ ...authorization })) !== true) return false;
+    if (await this.drainVerifier(Object.freeze({ ...authorization }), {
+      phase: "authorize", project, sourceSha,
+    }) !== true) return false;
     this.usedDrainEvidence.add(authorization.id);
-    this.drainGrant = { project, sourceSha, expiresAt: authorization.expires_at };
+    this.drainGrant = { project, sourceSha, expiresAt: authorization.expires_at, authorization: Object.freeze({ ...authorization }) };
     return true;
   }
 
-  assertMutationAuthorized(sourceSha, release) {
+  async assertMutationAuthorized(sourceSha, release) {
     if (this.validatedRelease !== releaseKey(release)
       || this.validatedConfiguration !== this.configurationFingerprint()
       || !this.drainGrant || this.drainGrant.project !== this.project
       || this.drainGrant.sourceSha !== sourceSha || this.drainGrant.expiresAt <= this.now()) {
       fail("safe_drain_required");
     }
+    if (await this.drainVerifier(this.drainGrant.authorization, {
+      phase: "assert", project: this.project, sourceSha,
+    }) !== true) fail("safe_drain_lost");
   }
 
   verifyLocalImages(release) {
@@ -398,7 +415,7 @@ export class DockerComposeHostAdapter {
   async compose(project, args, sourceSha, release) {
     if (project !== this.project) fail("project_scope_violation");
     assertRelease(release);
-    this.assertMutationAuthorized(sourceSha, release);
+    await this.assertMutationAuthorized(sourceSha, release);
     const pull = ["pull", ...UPDATE_SERVICES];
     const up = ["up", "-d", "--no-deps", "--no-build", ...UPDATE_SERVICES];
     const encoded = JSON.stringify(args);
@@ -406,16 +423,12 @@ export class DockerComposeHostAdapter {
       fail("compose_operation_forbidden");
     }
     const isUp = encoded === JSON.stringify(up);
-    try {
-      const result = this.runDocker(this.composeArguments(args), {
-        mutating: true,
-        environment: this.composeEnvironment(release),
-      });
-      if (!result.dryRun && !isUp) this.verifyLocalImages(release);
-      return result;
-    } finally {
-      if (isUp) this.drainGrant = null;
-    }
+    const result = this.runDocker(this.composeArguments(args), {
+      mutating: true,
+      environment: this.composeEnvironment(release),
+    });
+    if (!result.dryRun && !isUp) this.verifyLocalImages(release);
+    return result;
   }
 
   async healthy(plan) {
@@ -427,11 +440,24 @@ export class DockerComposeHostAdapter {
         || containers.api.Config.Image !== plan.images.api
         || containers.worker.Config.Image !== plan.images.api
         || containers.ui.Config.Image !== plan.images.ui) return false;
+      await this.assertMutationAuthorized(this.drainGrant?.sourceSha, this.release);
       return true;
     } catch {
       return false;
     }
   }
+
+  maintenanceExec(action, payload) {
+    if (!this.release || !["begin", "verify", "resume", "fail"].includes(action)
+      || !payload || typeof payload !== "object") fail("invalid_maintenance_command");
+    const input = JSON.stringify(payload);
+    if (Buffer.byteLength(input) > 16 * 1024) fail("invalid_maintenance_command");
+    return this.runDocker(this.composeArguments([
+      "exec", "--no-TTY", "api", "node", "dist/maintenance-cli.js", action,
+    ]), { environment: this.composeEnvironment(this.release), input }).stdout;
+  }
+
+  completeDrain() { this.drainGrant = null; }
 }
 
 export function createDockerComposeHostAdapter(options) {
