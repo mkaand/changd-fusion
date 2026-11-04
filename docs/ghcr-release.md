@@ -6,7 +6,7 @@ workflow rejects any SHA outside `master` history and requires successful
 `verify`, `privacy`, `docker`, and `docker-arm64` GitHub Actions checks for
 that exact SHA before it builds or publishes.
 
-For v0.3.2 it publishes Linux AMD64 images tagged with the version and exact
+For v0.3.3 it publishes Linux AMD64 images tagged with the version and exact
 source SHA. The release manifest records immutable digest references. Deploy
 only these references, never a mutable tag:
 
@@ -17,8 +17,9 @@ ghcr.io/mkaand/changd-fusion-ui@sha256:...
 
 The API and Worker must use the same API digest. Both image OCI revision labels
 must equal the selected source SHA; the UI build metadata must also show that
-same SHA and `master`. Existing Chromium fencing, Worker readiness, migration
-016 approval, and default-deny controller checks remain mandatory. The private
+same SHA and `master`. Existing Chromium fencing, Worker readiness, the
+authenticated migration ledger/bootstrap approval, and default-deny controller
+checks remain mandatory. The private
 deployment controller must be rebound to the new merged `master` SHA before it
 can consume this workflow; this change does not alter that controller and never
 requires a production Docker build.

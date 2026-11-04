@@ -161,6 +161,9 @@ jobs:
           UI_DIGEST: ${{ steps.ui.outputs.digest }}
         run: |
           set -euo pipefail
+          migrations_json="$(for migration in server/migrations/*.sql; do
+            jq -n --arg name "$(basename "$migration")" --arg sha256 "$(sha256sum "$migration" | cut -d' ' -f1)" '{name:$name,sha256:$sha256}'
+          done | jq -s 'sort_by(.name)')"
           jq -n \
             --arg source_sha "$SOURCE_SHA" \
             --arg source_tree "$SOURCE_TREE" \
@@ -171,7 +174,8 @@ jobs:
             --arg workflow_run "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
             --arg ci_evidence "verify, privacy, docker, docker-arm64 successful for exact source SHA" \
             --arg created_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            '{source_sha:$source_sha,source_tree:$source_tree,version:$version,api_image:$api_uri,ui_image:$ui_uri,architecture:$architecture,api_worker_shared_image:$api_uri,workflow_run:$workflow_run,ci_evidence:$ci_evidence,created_at:$created_at}' \
+            --argjson migrations "$migrations_json" \
+            '{source_sha:$source_sha,source_tree:$source_tree,version:$version,api_image:$api_uri,ui_image:$ui_uri,architecture:$architecture,api_worker_shared_image:$api_uri,workflow_run:$workflow_run,ci_evidence:$ci_evidence,created_at:$created_at,migrations:$migrations}' \
             > release-manifest.json
           cat release-manifest.json | tee -a "$GITHUB_STEP_SUMMARY"
 

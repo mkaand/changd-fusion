@@ -53,6 +53,22 @@ jobs:
       - name: Build provenance helper safeguards
         run: node --test scripts/prepare-build-metadata.test.mjs
         timeout-minutes: 1
+      - name: Immutable updater runtime safeguards
+        run: >-
+          node --test --test-timeout=30000
+          scripts/deployment-state.test.mjs
+          scripts/docker-compose-adapter.test.mjs
+          scripts/docker-compose-override.test.mjs
+          scripts/ghcr-ci-gate.test.mjs
+          scripts/ghcr-updater-runtime.test.mjs
+          scripts/ghcr-updater.test.mjs
+          scripts/github-ancestry.test.mjs
+          scripts/github-release-client.test.mjs
+          scripts/maintenance-coordinator.test.mjs
+          scripts/release-trust.test.mjs
+          scripts/source-pr-metadata.test.mjs
+          scripts/updater-telegram.test.mjs
+        timeout-minutes: 3
       - name: Private production SSH access safeguards
         run: python3 scripts/production-access.test.py
         timeout-minutes: 1

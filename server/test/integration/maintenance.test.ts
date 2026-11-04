@@ -11,8 +11,9 @@ import { migrate } from "../../src/migrate.js";
 import { readConfig } from "../../src/config.js";
 import { createApp } from "../../src/app.js";
 import { acquireChromiumLease, createInteractivePriorityIntent, enqueueManualRun } from "../../src/chromium-capacity.js";
-import { beginMaintenanceDrain, completeMaintenance, failMaintenance, maintenanceActive, verifyDrainEvidence } from "../../src/maintenance.js";
+import { beginMaintenanceDrain, completeMaintenance, confirmUpdaterBootstrap, failMaintenance, maintenanceActive, updaterBootstrapStatus, verifyDrainEvidence } from "../../src/maintenance.js";
 import { workerCycle } from "../../src/worker.js";
+import { deploymentHealthSnapshot } from "../../src/deployment-health.js";
 
 const databaseUrl = new URL(process.env.TEST_DATABASE_URL ?? "");
 assert.ok(["127.0.0.1", "localhost"].includes(databaseUrl.hostname), "maintenance integration requires disposable local PostgreSQL");
@@ -43,8 +44,40 @@ before(async () => {
 
 afterEach(async () => {
   await pool.query("DELETE FROM fusion_maintenance");
+  await pool.query("DELETE FROM fusion_updater_bootstrap");
   await pool.query("UPDATE fusion_manual_runs SET status='cancelled',updated_at=now() WHERE status IN ('queued','running')");
   await pool.query("UPDATE fusion_chromium_priority_intents SET cancelled_at=now() WHERE cancelled_at IS NULL");
+});
+
+test("initial updater bootstrap requires explicit confirmation and a positively idle coordinator", async () => {
+  assert.deepEqual(await updaterBootstrapStatus(pool, project), { bootstrapped: false, reason: "manual_bootstrap_required" });
+  await assert.rejects(confirmUpdaterBootstrap(pool, { project, sourceSha, confirmation: "guess" }),
+    (error: any) => error.code === "bootstrap_confirmation_required");
+  const lease = await acquireChromiumLease(pool, { workload: "capture", slots: 1 });
+  assert.ok(lease);
+  await assert.rejects(confirmUpdaterBootstrap(pool, { project, sourceSha, confirmation: "I_HAVE_FENCED_V032_API_AND_WORKER" }),
+    (error: any) => error.code === "bootstrap_runtime_not_idle");
+  await lease!.release();
+  const confirmed = await confirmUpdaterBootstrap(pool, { project, sourceSha, confirmation: "I_HAVE_FENCED_V032_API_AND_WORKER" });
+  assert.equal(confirmed.bootstrapped, true);
+  assert.equal((await updaterBootstrapStatus(pool, project)).bootstrapped, true);
+  assert.equal((await updaterBootstrapStatus(pool, "another_project")).bootstrapped, false);
+  await assert.rejects(confirmUpdaterBootstrap(pool, { project, sourceSha, confirmation: "I_HAVE_FENCED_V032_API_AND_WORKER" }),
+    (error: any) => error.code === "bootstrap_already_confirmed");
+});
+
+test("deployment health baseline is read-only and keeps maintenance distinct from admission readiness", async () => {
+  const before = await deploymentHealthSnapshot(pool);
+  const evidence = await beginMaintenanceDrain(pool, { project, sourceSha, timeoutMs: 2_000 });
+  assert.equal(await verifyDrainEvidence(pool, evidence, "authorize"), true);
+  const during = await deploymentHealthSnapshot(pool);
+  for (const key of ["monitor_count", "enabled_count", "paused_count", "baseline_count", "event_count", "capture_count", "monitor_signature"] as const)
+    assert.equal(during[key], before[key]);
+  assert.deepEqual(during.migrations, before.migrations);
+  assert.equal(during.maintenance?.state, "deploying");
+  assert.equal(during.maintenance?.project, project);
+  assert.equal(await maintenanceActive(pool), true, "health succeeds while browser admission remains closed");
+  assert.equal(await completeMaintenance(pool, evidence), true);
 });
 
 after(async () => {

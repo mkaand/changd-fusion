@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 const SHA = /^[0-9a-f]{40}$/;
 const PROJECT = /^[a-z0-9][a-z0-9_-]{0,62}$/;
+const OPERATION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 function parseResult(value, key) {
   let result;
@@ -24,12 +25,14 @@ export class ComposeMaintenanceCoordinator {
     adapter.setDrainVerifier?.((evidence, context) => this.verify(evidence, context));
   }
 
-  async drain({ project, sourceSha }) {
-    if (!PROJECT.test(project ?? "") || !SHA.test(sourceSha ?? "")) throw Error("invalid_maintenance_identity");
+  async drain({ project, sourceSha, operationId = randomUUID() }) {
+    if (!PROJECT.test(project ?? "") || !SHA.test(sourceSha ?? "") || !OPERATION_ID.test(operationId)) {
+      throw Error("invalid_maintenance_identity");
+    }
     return parseResult(this.adapter.maintenanceExec("begin", {
       project,
       source_sha: sourceSha,
-      operation_id: randomUUID(),
+      operation_id: operationId,
       timeout_ms: this.timeoutMs,
       evidence_ttl_ms: this.evidenceTtlMs,
     }), "owner_token");
@@ -58,6 +61,14 @@ export class ComposeMaintenanceCoordinator {
       }), "retained");
       return result.retained === true;
     } catch { return false; }
+  }
+
+  async bootstrapStatus(project) {
+    if (!PROJECT.test(project ?? "")) return { bootstrapped: false, reason: "invalid_project" };
+    try {
+      const result = parseResult(this.adapter.maintenanceExec("bootstrap-status", { project }), "bootstrapped");
+      return result.bootstrapped === true ? result : { bootstrapped: false, reason: String(result.reason ?? "manual_bootstrap_required") };
+    } catch { return { bootstrapped: false, reason: "manual_bootstrap_required" }; }
   }
 }
 

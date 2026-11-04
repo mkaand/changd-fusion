@@ -115,6 +115,8 @@ export class DockerComposeHostAdapter {
     spawn = spawnSync,
     processEnvironment = process.env,
     drainVerifier,
+    fetchImpl = fetch,
+    uiBaseUrl = "http://127.0.0.1:3000",
     now = Date.now,
   } = {}) {
     if (!PROJECT.test(project ?? "")) fail("invalid_project");
@@ -141,6 +143,9 @@ export class DockerComposeHostAdapter {
     this.processEnvironment = processEnvironment;
     this.drainVerifier = drainVerifier;
     this.now = now;
+    if (uiBaseUrl !== "http://127.0.0.1:3000") fail("invalid_health_endpoint");
+    this.fetchImpl = fetchImpl;
+    this.uiBaseUrl = uiBaseUrl;
     this.usedDrainEvidence = new Set();
     this.drainGrant = null;
     this.validatedRelease = null;
@@ -152,6 +157,9 @@ export class DockerComposeHostAdapter {
   childEnvironment(extra = {}) {
     const environment = { ...this.processEnvironment, ...extra };
     for (const name of ["DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_TLS", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH"]) {
+      delete environment[name];
+    }
+    for (const name of ["FUSION_GITHUB_TOKEN", "FUSION_TELEGRAM_BOT_TOKEN", "FUSION_TELEGRAM_CHAT_ID", "GH_TOKEN", "GITHUB_TOKEN"]) {
       delete environment[name];
     }
     return environment;
@@ -447,8 +455,71 @@ export class DockerComposeHostAdapter {
     }
   }
 
+  healthExec() {
+    if (!this.release) fail("project_not_validated");
+    return parseJson(this.runDocker(this.composeArguments([
+      "exec", "--no-TTY", "api", "node", "dist/deployment-health-cli.js",
+    ]), { environment: this.composeEnvironment(this.release) }).stdout, "invalid_health_snapshot");
+  }
+
+  validateHealthSnapshot(snapshot) {
+    if (!snapshot || snapshot.schema !== 1 || !/^\d+\.\d+\.\d+$/.test(snapshot.version ?? "")
+      || !(SHA.test(snapshot.source_sha ?? "") || snapshot.source_sha === "development")
+      || !["monitor_count", "enabled_count", "paused_count", "baseline_count", "event_count", "capture_count"].every(
+        (key) => Number.isSafeInteger(snapshot[key]) && snapshot[key] >= 0,
+      ) || !/^[0-9a-f]{64}$/.test(snapshot.monitor_signature ?? "") || !Array.isArray(snapshot.migrations)
+      || snapshot.migrations.some((entry, index, list) => !entry || !/^\d{3}_[a-z0-9_]+\.sql$/.test(entry.name ?? "")
+        || !/^[0-9a-f]{64}$/.test(entry.sha256 ?? "") || (index > 0 && list[index - 1].name >= entry.name))) {
+      fail("invalid_health_snapshot");
+    }
+    return snapshot;
+  }
+
+  async captureBaseline() {
+    return this.validateHealthSnapshot(this.healthExec());
+  }
+
+  runtimeIdentity() {
+    const containers = this.inspectProjectContainers();
+    const snapshot = this.validateHealthSnapshot(this.healthExec());
+    const apiImage = containers.api.Config.Image;
+    const workerImage = containers.worker.Config.Image;
+    const uiImage = containers.ui.Config.Image;
+    if (!API_IMAGE.test(apiImage ?? "") || workerImage !== apiImage || !UI_IMAGE.test(uiImage ?? "")
+      || !SHA.test(snapshot.source_sha ?? "")) fail("unverified_runtime_identity");
+    return { version: snapshot.version, source_sha: snapshot.source_sha, api_image: apiImage, ui_image: uiImage };
+  }
+
+  async verifyDeploymentHealth(plan, baseline) {
+    if (!baseline) return false;
+    try {
+      const containers = this.inspectProjectContainers();
+      if (containers.db.Id !== this.databaseContainerId
+        || containers.api.Config.Image !== plan.images.api
+        || containers.worker.Config.Image !== plan.images.api
+        || containers.ui.Config.Image !== plan.images.ui) return false;
+      await this.assertMutationAuthorized(this.drainGrant?.sourceSha, this.release);
+      const current = this.validateHealthSnapshot(this.healthExec());
+      for (const key of ["monitor_count", "enabled_count", "paused_count", "baseline_count", "event_count", "capture_count", "monitor_signature"]) {
+        if (current[key] !== baseline[key]) return false;
+      }
+      if (JSON.stringify(current.migrations) !== JSON.stringify(baseline.migrations)
+        || current.source_sha !== this.release.source_sha || current.version !== this.release.version
+        || current.maintenance?.state !== "deploying" || current.maintenance?.project !== this.project) return false;
+      const signal = AbortSignal.timeout(Math.min(this.timeoutMs, 15_000));
+      const [health, ui] = await Promise.all([
+        this.fetchImpl(`${this.uiBaseUrl}/api/v1/health`, { signal, redirect: "error" }),
+        this.fetchImpl(`${this.uiBaseUrl}/`, { signal, redirect: "error" }),
+      ]);
+      if (!health.ok || !ui.ok) return false;
+      const body = await health.json();
+      return body?.status === "ok" && body.version === this.release.version
+        && body.source_sha === this.release.source_sha && body.maintenance === true;
+    } catch { return false; }
+  }
+
   maintenanceExec(action, payload) {
-    if (!this.release || !["begin", "verify", "resume", "fail"].includes(action)
+    if (!this.release || !["begin", "verify", "resume", "fail", "bootstrap-status", "bootstrap-confirm"].includes(action)
       || !payload || typeof payload !== "object") fail("invalid_maintenance_command");
     const input = JSON.stringify(payload);
     if (Buffer.byteLength(input) > 16 * 1024) fail("invalid_maintenance_command");

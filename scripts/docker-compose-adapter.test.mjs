@@ -14,11 +14,18 @@ const source = "a".repeat(40);
 const apiDigest = "b".repeat(64);
 const uiDigest = "c".repeat(64);
 const release = {
+  version: "0.3.3",
   source_sha: source,
   api_image: `ghcr.io/mkaand/changd-fusion-api@sha256:${apiDigest}`,
   ui_image: `ghcr.io/mkaand/changd-fusion-ui@sha256:${uiDigest}`,
   api_worker_shared_image: `ghcr.io/mkaand/changd-fusion-api@sha256:${apiDigest}`,
 };
+const migrationEvidence = Array.from({ length: 18 }, (_, index) => ({
+  name: `${String(index + 1).padStart(3, "0")}_fixture.sql`, sha256: String(index % 10).repeat(64),
+}));
+const healthSnapshot = (maintenance = null) => ({ schema: 1, version: "0.3.3", source_sha: source,
+  monitor_count: 4, enabled_count: 2, paused_count: 1, baseline_count: 3, event_count: 8, capture_count: 7,
+  monitor_signature: "9".repeat(64), migrations: migrationEvidence, maintenance });
 const dbImage = "postgres:16.15-alpine@sha256:f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36";
 let directory;
 let baseFile;
@@ -129,7 +136,7 @@ function defaultContainers() {
   return [container("api", "1"), container("db", "2"), container("ui", "3"), container("worker", "4")];
 }
 
-function fakeSpawn({ model = composeModel(), containers = defaultContainers(), fail = false, failUpdate = false, maintenance } = {}) {
+function fakeSpawn({ model = composeModel(), containers = defaultContainers(), fail = false, failUpdate = false, maintenance, health } = {}) {
   const calls = [];
   const spawn = (command, args, options) => {
     calls.push({ command, args, options });
@@ -152,6 +159,9 @@ function fakeSpawn({ model = composeModel(), containers = defaultContainers(), f
       if (maintenance) return { status: 0, stdout: JSON.stringify(maintenance(action, JSON.parse(options.input))) };
       return { status: 0, stdout: JSON.stringify(action === "verify" ? { valid: true } : { resumed: true }) };
     }
+    if (args.includes("dist/deployment-health-cli.js")) {
+      return { status: 0, stdout: JSON.stringify(typeof health === "function" ? health() : health ?? healthSnapshot()) };
+    }
     if (failUpdate && args.includes("up")) return { status: 1, stdout: "" };
     if (args.includes("pull") || args.includes("up")) return { status: 0, stdout: "" };
     return { status: 1, stdout: "" };
@@ -166,7 +176,7 @@ function adapter(fake, overrides = {}) {
     composeFiles: [baseFile, overrideFile],
     envFile,
     spawn: fake.spawn,
-    processEnvironment: { FIXTURE: "true", DOCKER_HOST: "tcp://foreign.invalid:2375" },
+    processEnvironment: { FIXTURE: "true", DOCKER_HOST: "tcp://foreign.invalid:2375", FUSION_GITHUB_TOKEN: "must-not-leak" },
     now: () => 100_000,
     drainVerifier: async (evidence, context) => evidence.proof === "verified" && ["authorize", "assert"].includes(context.phase),
     ...overrides,
@@ -193,6 +203,7 @@ test("validates the effective Compose project, ownership and current runtime", a
   const listing = fake.calls.find((call) => call.args[1] === "ps");
   assert.ok(listing.args.includes(`label=com.docker.compose.project=${project}`));
   assert.equal(listing.options.env.DOCKER_HOST, undefined);
+  assert.equal(listing.options.env.FUSION_GITHUB_TOKEN, undefined);
   assert.equal(listing.options.shell, false);
 });
 
@@ -257,6 +268,22 @@ test("requires fresh verified drain evidence before exact pull and no-build upda
     host.compose(project, ["pull", "api", "worker", "ui"], source, release),
     /safe_drain_required/,
   );
+});
+
+test("captures a read-only baseline and verifies images, data continuity and barrier-closed health", async () => {
+  let deploying = false;
+  const fake = fakeSpawn({ health: () => healthSnapshot(deploying ? { state: "deploying", project } : null) });
+  const host = adapter(fake, { fetchImpl: async (url) => url.endsWith("/api/v1/health")
+    ? new Response(JSON.stringify({ status: "ok", version: "0.3.3", source_sha: source, maintenance: true }), { status: 200 })
+    : new Response("ui", { status: 200 }) });
+  await host.validateProject(release);
+  const baseline = await host.captureBaseline();
+  assert.equal(baseline.paused_count, 1);
+  assert.equal(await host.safeDrain(project, source, authorization()), true);
+  deploying = true;
+  assert.equal(await host.verifyDeploymentHealth({ project, images: { api: release.api_image, ui: release.ui_image } }, baseline), true);
+  const changed = { ...baseline, monitor_count: baseline.monitor_count + 1 };
+  assert.equal(await host.verifyDeploymentHealth({ project, images: { api: release.api_image, ui: release.ui_image } }, changed), false);
 });
 
 test("maintenance evidence is reverified across mutation and never exposed in subprocess arguments", async () => {

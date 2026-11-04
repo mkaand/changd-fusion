@@ -203,3 +203,31 @@ export async function failMaintenance(pool: Pool, evidence: DrainEvidence, failu
   );
   return Boolean(result.rowCount);
 }
+
+export async function updaterBootstrapStatus(pool: Pool, project: string) {
+  if (!PROJECT.test(project)) return { bootstrapped: false, reason: "invalid_project" };
+  try {
+    const migrations = await pool.query("SELECT name FROM fusion_migrations WHERE name IN ('017_maintenance_drain.sql','018_updater_bootstrap.sql') ORDER BY name");
+    if (migrations.rowCount !== 2) return { bootstrapped: false, reason: "schema_missing" };
+    const row = (await pool.query("SELECT project,source_sha,confirmed_at FROM fusion_updater_bootstrap WHERE id=1")).rows[0];
+    if (!row || row.project !== project || !SHA.test(row.source_sha)) return { bootstrapped: false, reason: "manual_bootstrap_required" };
+    return { bootstrapped: true, project: row.project, source_sha: row.source_sha, confirmed_at: new Date(row.confirmed_at).toISOString() };
+  } catch { return { bootstrapped: false, reason: "schema_missing" }; }
+}
+
+export async function confirmUpdaterBootstrap(pool: Pool, input: { project: string; sourceSha: string; confirmation: string }) {
+  if (!validIdentity(input.project, input.sourceSha)
+    || input.confirmation !== "I_HAVE_FENCED_V032_API_AND_WORKER") throw new MaintenanceError("bootstrap_confirmation_required");
+  return transaction(pool, async (c) => {
+    await c.query("SELECT id FROM fusion_chromium_scheduler WHERE id=1 FOR UPDATE");
+    if ((await c.query("SELECT 1 FROM fusion_maintenance WHERE id=1")).rowCount || !(await chromiumIdle(c))) {
+      throw new MaintenanceError("bootstrap_runtime_not_idle");
+    }
+    const inserted = await c.query(
+      "INSERT INTO fusion_updater_bootstrap(id,project,source_sha) VALUES(1,$1,$2) ON CONFLICT (id) DO NOTHING RETURNING project,source_sha,confirmed_at",
+      [input.project, input.sourceSha],
+    );
+    if (!inserted.rowCount) throw new MaintenanceError("bootstrap_already_confirmed");
+    return { bootstrapped: true, project: input.project, source_sha: input.sourceSha, confirmed_at: new Date(inserted.rows[0].confirmed_at).toISOString() };
+  });
+}

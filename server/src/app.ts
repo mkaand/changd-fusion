@@ -26,7 +26,8 @@ import path from "node:path";
 import { acquireChromiumLease, cancelInteractivePriorityIntent, createInteractivePriorityIntent, enqueueManualRun } from "./chromium-capacity.js";
 import { captureAreaSchema } from "./capture-area.js";
 import { captureTimeoutSchema, DEFAULT_NEW_MONITOR_CAPTURE_TIMEOUT_MS, previewExecutionTimeout } from "./capture-timeout.js";
-import { beginRuntimeOperation, finishRuntimeOperation, type RuntimeOperation } from "./maintenance.js";
+import { beginRuntimeOperation, finishRuntimeOperation, maintenanceActive, type RuntimeOperation } from "./maintenance.js";
+import { APPLICATION_VERSION } from "./version.js";
 const uuid = z.string().uuid();
 const threshold = z
   .union([
@@ -278,7 +279,7 @@ export function createApp(
   });
   app.get("/api/v1/health", async (_req, res) => {
     await pool.query("SELECT 1");
-    res.json({ status: "ok" });
+    res.json({ status: "ok", version: APPLICATION_VERSION, source_sha: process.env.APP_COMMIT ?? "development", maintenance: await maintenanceActive(pool) });
   });
   const loginLimiter = rateLimit({
     windowMs: 900000,

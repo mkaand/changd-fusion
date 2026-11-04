@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { makePool } from "./db.js";
-import { beginMaintenanceDrain, completeMaintenance, failMaintenance, verifyDrainEvidence, type DrainEvidence } from "./maintenance.js";
+import { beginMaintenanceDrain, completeMaintenance, confirmUpdaterBootstrap, failMaintenance, updaterBootstrapStatus, verifyDrainEvidence, type DrainEvidence } from "./maintenance.js";
 
 const MAX_INPUT = 16 * 1024;
 
@@ -25,6 +25,10 @@ export async function runMaintenanceCli(action: string, input: Record<string, un
       project: String(input.project ?? ""), sourceSha: String(input.source_sha ?? ""),
       operationId: input.operation_id ? String(input.operation_id) : undefined,
       timeoutMs: Number(input.timeout_ms ?? 120_000), evidenceTtlMs: Number(input.evidence_ttl_ms ?? 300_000),
+    });
+    if (action === "bootstrap-status") return updaterBootstrapStatus(pool, String(input.project ?? ""));
+    if (action === "bootstrap-confirm") return confirmUpdaterBootstrap(pool, {
+      project: String(input.project ?? ""), sourceSha: String(input.source_sha ?? ""), confirmation: String(input.confirmation ?? ""),
     });
     const evidence = input.evidence as DrainEvidence;
     if (action === "verify") return { valid: await verifyDrainEvidence(pool, evidence, input.phase === "authorize" ? "authorize" : "assert") };
