@@ -8,6 +8,9 @@ const OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json";
 const DOCKER_MANIFEST = "application/vnd.docker.distribution.manifest.v2+json";
 const OCI_INDEX = "application/vnd.oci.image.index.v1+json";
 const DOCKER_INDEX = "application/vnd.docker.distribution.manifest.list.v2+json";
+const GITHUB_OIDC_ISSUER = "https://token.actions.githubusercontent.com";
+const SLSA_PROVENANCE_V1 = "https://slsa.dev/provenance/v1";
+export const SUPPORTED_GH_ATTESTATION_VERSION = "2.103.3";
 
 const sha256 = (bytes) => `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
 
@@ -153,7 +156,130 @@ export class OciRegistryClient {
   }
 }
 
-export function createGhAttestationVerifier({ token, spawn = spawnSync } = {}) {
+function versionTuple(value) {
+  const match = /^(\d+)\.(\d+)\.(\d+)$/.exec(value);
+  return match ? match.slice(1).map(Number) : null;
+}
+
+function versionAtLeast(actual, required) {
+  const left = versionTuple(actual);
+  const right = versionTuple(required);
+  if (!left || !right) return false;
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return left[index] > right[index];
+  }
+  return true;
+}
+
+function spawnVerifier(spawn, ghPath, args, token) {
+  const result = spawn(ghPath, args, {
+    encoding: "utf8",
+    timeout: 30_000,
+    maxBuffer: 2_000_000,
+    env: { ...process.env, ...(token ? { GH_TOKEN: token } : {}) },
+  });
+  if (result?.error || result?.status !== 0) throw Error("attestation_verifier_failed");
+  return result;
+}
+
+export function verifyAttestationWithGh({
+  subject,
+  expected,
+  token,
+  ghPath = "gh",
+  spawn = spawnSync,
+  bundle,
+  customTrustedRoot,
+} = {}) {
+  if (typeof subject !== "string" || (!subject.startsWith("oci://") && !subject.startsWith("/"))) {
+    throw Error("invalid_attestation_subject");
+  }
+  if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(expected?.repository ?? "")
+    || !/^\.github\/workflows\/[A-Za-z0-9_.-]+\.ya?ml$/.test(expected?.workflow ?? "")
+    || !/^[0-9a-f]{40}$/.test(expected?.sourceSha ?? "")
+    || !/^refs\/heads\/[A-Za-z0-9._/-]+$/.test(expected?.sourceRef ?? "")
+    || !["sha256", "sha512"].includes(expected?.digestAlgorithm)
+    || !new RegExp(`^[0-9a-f]{${expected?.digestAlgorithm === "sha512" ? 128 : 64}}$`).test(expected?.subjectDigest ?? "")) {
+    throw Error("invalid_attestation_policy");
+  }
+
+  const versionResult = spawnVerifier(spawn, ghPath, ["--version"], token);
+  const actualVersion = /^gh version (\d+\.\d+\.\d+)/m.exec(versionResult.stdout)?.[1];
+  if (!actualVersion || !versionAtLeast(actualVersion, SUPPORTED_GH_ATTESTATION_VERSION)) {
+    throw Error("unsupported_gh_attestation_version");
+  }
+
+  const signerWorkflow = `${expected.repository}/${expected.workflow}`;
+  const args = [
+    "attestation",
+    "verify",
+    subject,
+    "--repo",
+    expected.repository,
+    "--signer-workflow",
+    signerWorkflow,
+    "--source-digest",
+    expected.sourceSha,
+    "--source-ref",
+    expected.sourceRef,
+    "--cert-oidc-issuer",
+    GITHUB_OIDC_ISSUER,
+    "--deny-self-hosted-runners",
+    "--predicate-type",
+    SLSA_PROVENANCE_V1,
+    "--digest-alg",
+    expected.digestAlgorithm,
+    "--format",
+    "json",
+  ];
+  if (bundle) args.push("--bundle", bundle);
+  if (customTrustedRoot) args.push("--custom-trusted-root", customTrustedRoot);
+  const run = spawnVerifier(spawn, ghPath, args, token);
+
+  let output;
+  try {
+    output = JSON.parse(run.stdout);
+  } catch {
+    throw Error("invalid_attestation_output");
+  }
+  if (!Array.isArray(output) || output.length !== 1) throw Error("ambiguous_attestation");
+  const verification = output[0]?.verificationResult;
+  const certificate = verification?.signature?.certificate;
+  const timestamps = verification?.verifiedTimestamps;
+  const statement = verification?.statement;
+  if (!certificate || !Array.isArray(timestamps) || timestamps.length === 0 || !statement) {
+    throw Error("incomplete_verified_attestation");
+  }
+
+  const repositoryUrl = `https://github.com/${expected.repository}`;
+  const signerUri = `${repositoryUrl}/${expected.workflow}@${expected.sourceRef}`;
+  const certificateMatches = certificate.issuer === GITHUB_OIDC_ISSUER
+    && certificate.githubWorkflowRepository === expected.repository
+    && certificate.githubWorkflowRef === expected.sourceRef
+    && certificate.buildSignerURI === signerUri
+    && certificate.runnerEnvironment === "github-hosted"
+    && certificate.sourceRepositoryURI === repositoryUrl
+    && certificate.sourceRepositoryDigest === expected.sourceSha
+    && certificate.sourceRepositoryRef === expected.sourceRef
+    && certificate.buildConfigURI === signerUri;
+  const workflow = statement.predicate?.buildDefinition?.externalParameters?.workflow ?? {};
+  const dependencies = statement.predicate?.buildDefinition?.resolvedDependencies ?? [];
+  const builder = statement.predicate?.runDetails?.builder?.id;
+  const subjectMatches = statement.subject?.some(
+    (item) => item?.digest?.[expected.digestAlgorithm] === expected.subjectDigest,
+  );
+  const claimsMatch = statement.predicateType === SLSA_PROVENANCE_V1
+    && subjectMatches
+    && workflow.repository === repositoryUrl
+    && workflow.path === expected.workflow
+    && workflow.ref === expected.sourceRef
+    && builder === "https://github.com/actions/runner/github-hosted"
+    && dependencies.some((item) => item?.digest?.gitCommit === expected.sourceSha);
+  if (!certificateMatches || !claimsMatch) throw Error("attestation_claim_mismatch");
+  return { certificate, statement, verifiedTimestamps: timestamps };
+}
+
+export function createGhAttestationVerifier({ token, ghPath = "gh", spawn = spawnSync } = {}) {
   return async (manifest, context) => {
     const subjects = [["api", manifest.api_image], ["ui", manifest.ui_image]];
     for (const [name, reference] of subjects) {
@@ -163,50 +289,20 @@ export function createGhAttestationVerifier({ token, spawn = spawnSync } = {}) {
         || inspected?.version !== manifest.version) {
         throw Error(`unverified_oci_subject_${name}`);
       }
-      const run = spawn("gh", [
-        "attestation",
-        "verify",
-        `oci://${reference}`,
-        "--repo",
-        context.repository,
-        "--signer-workflow",
-        context.workflow,
-        "--deny-self-hosted-runners",
-        "--format",
-        "json",
-      ], {
-        encoding: "utf8",
-        timeout: 30_000,
-        maxBuffer: 2_000_000,
-        env: { ...process.env, ...(token ? { GH_TOKEN: token } : {}) },
+      verifyAttestationWithGh({
+        subject: `oci://${reference}`,
+        token,
+        ghPath,
+        spawn,
+        expected: {
+          repository: context.repository,
+          workflow: context.workflow,
+          sourceSha: manifest.source_sha,
+          sourceRef: "refs/heads/master",
+          digestAlgorithm: "sha256",
+          subjectDigest: reference.split("@sha256:")[1],
+        },
       });
-      if (run.status !== 0) throw Error(`attestation_verify_failed_${name}`);
-      let output;
-      try {
-        output = JSON.parse(run.stdout);
-      } catch {
-        throw Error("invalid_attestation_output");
-      }
-      const results = Array.isArray(output) ? output : [output];
-      const statements = results.map((item) => item?.verificationResult?.statement).filter(Boolean);
-      if (statements.length !== 1) throw Error("ambiguous_attestation");
-      const statement = statements[0];
-      const wantedDigest = reference.split("@sha256:")[1];
-      const workflow = statement.predicate?.buildDefinition?.externalParameters?.workflow ?? {};
-      const dependencies = statement.predicate?.buildDefinition?.resolvedDependencies ?? [];
-      const builder = statement.predicate?.runDetails?.builder?.id;
-      const subjectMatches = statement.subject?.some((item) => item?.digest?.sha256 === wantedDigest);
-      const sourceMatches = dependencies.some(
-        (item) => item?.digest?.gitCommit === manifest.source_sha,
-      );
-      if (!subjectMatches
-        || workflow.repository !== `https://github.com/${context.repository}`
-        || workflow.path !== context.workflow
-        || workflow.ref !== "refs/heads/master"
-        || builder !== "https://github.com/actions/runner/github-hosted"
-        || !sourceMatches) {
-        throw Error("attestation_claim_mismatch");
-      }
     }
     return { attested: true, revision: manifest.source_sha, version: manifest.version };
   };

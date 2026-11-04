@@ -79,6 +79,56 @@ jobs:
         if: always()
         run: node scripts/privacy-scan.mjs
         timeout-minutes: 1
+  attestation:
+    name: attestation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Install checksum-pinned official GitHub CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          version=2.103.3
+          archive="gh_${version}_linux_amd64.tar.gz"
+          install_dir="${RUNNER_TEMP}/gh-attestation"
+          mkdir -p "$install_dir"
+          curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+            --output "$install_dir/$archive" \
+            "https://github.com/cli/cli/releases/download/v${version}/${archive}"
+          printf '%s  %s\n' \
+            '4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d' \
+            "$archive" > "$install_dir/archive.sha256"
+          (cd "$install_dir" && sha256sum --check archive.sha256)
+          tar -xzf "$install_dir/$archive" -C "$install_dir"
+          echo "GH_ATTESTATION_BIN=$install_dir/gh_${version}_linux_amd64/bin/gh" >> "$GITHUB_ENV"
+      - name: Download immutable official signed test evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          fixture_dir="${RUNNER_TEMP}/sigstore-fixtures"
+          fixture_commit=63837fb778d6a39f02be0ce76ff89f2bc8d74bdc
+          fixture_base="https://raw.githubusercontent.com/cli/cli/${fixture_commit}/pkg/cmd/attestation/test/data"
+          mkdir -p "$fixture_dir"
+          for name in sigstore-js-2.1.0.tgz sigstore-js-2.1.0-bundle.json trusted_root.json sigstoreBundle-invalid-signature.json; do
+            curl --fail --silent --show-error --location --proto '=https' --tlsv1.2 \
+              --output "$fixture_dir/$name" "$fixture_base/$name"
+          done
+          printf '%s\n' \
+            'f0c641fce0310cb43208f4272dc1423153630e44ba8cdc0b5ce8466f724e0eed  sigstore-js-2.1.0.tgz' \
+            'cfadddd579b9fb45947530cd0e860986ec610a28f7fa6de3ef31cc051f07f761  sigstore-js-2.1.0-bundle.json' \
+            '455b3fe53e2678889f093d66ebbfda5f12ebb9d682b146c3535fa04e97689787  trusted_root.json' \
+            '4c8dae9fb3c3e0406fed7792da1b378689cc236e5c120fd05ff3de2cb15f4b7c  sigstoreBundle-invalid-signature.json' \
+            > "$fixture_dir/fixtures.sha256"
+          (cd "$fixture_dir" && sha256sum --check fixtures.sha256)
+          echo "SIGSTORE_TEST_ARTIFACT=$fixture_dir/sigstore-js-2.1.0.tgz" >> "$GITHUB_ENV"
+          echo "SIGSTORE_TEST_BUNDLE=$fixture_dir/sigstore-js-2.1.0-bundle.json" >> "$GITHUB_ENV"
+          echo "SIGSTORE_TEST_INVALID_BUNDLE=$fixture_dir/sigstoreBundle-invalid-signature.json" >> "$GITHUB_ENV"
+          echo "SIGSTORE_TEST_TRUST_ROOT=$fixture_dir/trusted_root.json" >> "$GITHUB_ENV"
+      - name: Verify real Sigstore signatures and fail-closed policy
+        run: node --test scripts/sigstore-live.test.mjs
   privacy:
     # Independent of installs, browsers and test cleanup, so failures cannot hide this scan.
     runs-on: ubuntu-22.04

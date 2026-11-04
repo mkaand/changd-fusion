@@ -4,7 +4,11 @@ import { readFile } from "node:fs/promises";
 import http from "node:http";
 import test from "node:test";
 import { GitHubReleaseClient } from "./github-release-client.mjs";
-import { OciRegistryClient, createGhAttestationVerifier } from "./release-trust.mjs";
+import {
+  OciRegistryClient,
+  createGhAttestationVerifier,
+  verifyAttestationWithGh,
+} from "./release-trust.mjs";
 
 const hash = (value) => createHash("sha256").update(value).digest("hex");
 const source = "a".repeat(40);
@@ -154,22 +158,45 @@ test("rejects wrong architecture, HTTP failures, malformed responses and timeout
   }
 });
 
-function verifiedStatement(reference, overrides = {}) {
-  return {
-    subject: [{ digest: { sha256: reference.split("@sha256:")[1] } }],
+function verifiedResult(reference, overrides = {}) {
+  const repository = overrides.repository ?? "mkaand/changd-fusion";
+  const workflowPath = ".github/workflows/ghcr-release.yml";
+  const sourceRef = "refs/heads/master";
+  const sourceSha = overrides.source ?? source;
+  const repositoryUrl = `https://github.com/${repository}`;
+  const signerUri = `${repositoryUrl}/${workflowPath}@${sourceRef}`;
+  const statement = {
+    subject: [{ digest: { sha256: overrides.subjectDigest ?? reference.split("@sha256:")[1] } }],
+    predicateType: "https://slsa.dev/provenance/v1",
     predicate: {
       buildDefinition: {
         externalParameters: { workflow: {
-          repository: "https://github.com/mkaand/changd-fusion",
-          path: ".github/workflows/ghcr-release.yml",
-          ref: "refs/heads/master",
+          repository: repositoryUrl,
+          path: workflowPath,
+          ref: sourceRef,
           ...overrides.workflow,
         } },
-        resolvedDependencies: [{ digest: { gitCommit: overrides.source ?? source } }],
+        resolvedDependencies: [{ digest: { gitCommit: sourceSha } }],
       },
       runDetails: { builder: { id: "https://github.com/actions/runner/github-hosted" } },
     },
   };
+  return [{ verificationResult: {
+    signature: { certificate: {
+      issuer: "https://token.actions.githubusercontent.com",
+      githubWorkflowRepository: repository,
+      githubWorkflowRef: sourceRef,
+      buildSignerURI: signerUri,
+      runnerEnvironment: "github-hosted",
+      sourceRepositoryURI: repositoryUrl,
+      sourceRepositoryDigest: sourceSha,
+      sourceRepositoryRef: sourceRef,
+      buildConfigURI: signerUri,
+      ...overrides.certificate,
+    } },
+    verifiedTimestamps: overrides.timestamps ?? [{ type: "transparency-log" }],
+    statement: overrides.statement ?? statement,
+  } }];
 }
 
 test("invokes the official verifier and validates its verified claims", async () => {
@@ -177,10 +204,11 @@ test("invokes the official verifier and validates its verified claims", async ()
   const calls = [];
   const spawn = (command, args, options) => {
     calls.push({ command, args, options });
+    if (args[0] === "--version") return { status: 0, stdout: "gh version 2.103.3 (fixture)\n" };
     const reference = args.find((value) => value.startsWith("oci://")).slice(6);
     return {
       status: 0,
-      stdout: JSON.stringify([{ verificationResult: { statement: verifiedStatement(reference) } }]),
+      stdout: JSON.stringify(verifiedResult(reference)),
     };
   };
   const client = new GitHubReleaseClient({
@@ -189,11 +217,14 @@ test("invokes the official verifier and validates its verified claims", async ()
   });
   const verified = await client.attestation(release);
   assert.equal(verified.attested, true);
-  assert.equal(calls.length, 2);
-  assert.deepEqual(calls[0].args.slice(0, 3), ["attestation", "verify", `oci://${api}`]);
-  assert.ok(calls[0].args.includes("--deny-self-hosted-runners"));
-  assert.equal(calls[0].args.includes("fixture-secret"), false);
-  assert.equal(calls[0].options.env.GH_TOKEN, "fixture-secret");
+  const verificationCalls = calls.filter((call) => call.args[0] === "attestation");
+  assert.equal(verificationCalls.length, 2);
+  assert.deepEqual(verificationCalls[0].args.slice(0, 3), ["attestation", "verify", `oci://${api}`]);
+  assert.ok(verificationCalls[0].args.includes("--deny-self-hosted-runners"));
+  assert.ok(verificationCalls[0].args.includes("mkaand/changd-fusion/.github/workflows/ghcr-release.yml"));
+  assert.ok(verificationCalls[0].args.includes(source));
+  assert.equal(verificationCalls[0].args.includes("fixture-secret"), false);
+  assert.equal(verificationCalls[0].options.env.GH_TOKEN, "fixture-secret");
 });
 
 test("rejects invalid signatures, wrong identity, source and subject digest", async () => {
@@ -203,25 +234,54 @@ test("rejects invalid signatures, wrong identity, source and subject digest", as
     workflow: ".github/workflows/ghcr-release.yml",
     images,
   };
-  await assert.rejects(
-    createGhAttestationVerifier({ spawn: () => ({ status: 1, stdout: "" }) })(release, context),
-    /attestation_verify_failed/,
-  );
-  for (const statement of [
-    verifiedStatement(api, { workflow: { repository: "https://github.com/evil/repo" } }),
-    verifiedStatement(api, { source: "f".repeat(40) }),
-    { ...verifiedStatement(api), subject: [{ digest: { sha256: "f".repeat(64) } }] },
+  const version = { status: 0, stdout: "gh version 2.103.3 (fixture)\n" };
+  await assert.rejects(createGhAttestationVerifier({
+    spawn: (_command, args) => args[0] === "--version" ? version : { status: 1, stdout: "" },
+  })(release, context), /attestation_verifier_failed/);
+  for (const output of [
+    verifiedResult(api, { repository: "evil/repo" }),
+    verifiedResult(api, { source: "f".repeat(40) }),
+    verifiedResult(api, { subjectDigest: "f".repeat(64) }),
+    verifiedResult(api, { certificate: { runnerEnvironment: "self-hosted" } }),
+    verifiedResult(api, { timestamps: [] }),
   ]) {
     await assert.rejects(
       createGhAttestationVerifier({
-        spawn: () => ({
-          status: 0,
-          stdout: JSON.stringify([{ verificationResult: { statement } }]),
-        }),
+        spawn: (_command, args) => args[0] === "--version"
+          ? version
+          : { status: 0, stdout: JSON.stringify(output) },
       })(release, context),
-      /attestation_claim_mismatch/,
+      /attestation_claim_mismatch|incomplete_verified_attestation/,
     );
   }
+  for (const [stdout, error] of [
+    ["not-json", /invalid_attestation_output/],
+    ["[]", /ambiguous_attestation/],
+    [JSON.stringify([...verifiedResult(api), ...verifiedResult(api)]), /ambiguous_attestation/],
+  ]) {
+    await assert.rejects(
+      createGhAttestationVerifier({
+        spawn: (_command, args) => args[0] === "--version"
+          ? version
+          : { status: 0, stdout },
+      })(release, context),
+      error,
+    );
+  }
+  assert.throws(() => verifyAttestationWithGh({
+    subject: `oci://${api}`,
+    expected: {
+      repository: "mkaand/changd-fusion",
+      workflow: ".github/workflows/ghcr-release.yml",
+      sourceSha: source,
+      sourceRef: "refs/heads/master",
+      digestAlgorithm: "sha256",
+      subjectDigest: imageDigest.slice(7),
+    },
+    spawn: () => ({ status: 0, stdout: "gh version 2.46.0 (old)\n" }),
+  }),
+    /unsupported_gh_attestation_version/,
+  );
 });
 
 test("release workflow grants attestation permissions and pins official provenance actions", async () => {
@@ -231,4 +291,8 @@ test("release workflow grants attestation permissions and pins official provenan
   const uses = workflow.match(/actions\/attest-build-provenance@[0-9a-f]{40}/g) ?? [];
   assert.equal(uses.length, 2);
   assert.equal(new Set(uses).size, 1);
+  const ci = await readFile(new URL("../.github/workflows/ci.yml", import.meta.url), "utf8");
+  assert.match(ci, /version=2\.103\.3/);
+  assert.match(ci, /node --test scripts\/sigstore-live\.test\.mjs/);
+  assert.match(ci, /permissions:\n\s+contents: read/);
 });
