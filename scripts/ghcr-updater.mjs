@@ -41,17 +41,18 @@ export function migrationGate(current, candidate) {
   return { ok:true };
 }
 export async function withUpdaterLock(lock, fn) { if (!(await lock.acquire())) return { updated:false, reason:"concurrent_updater" }; try { return await fn(); } finally { await lock.release(); } }
-export async function runUpdater({ evidence, state, config, docker, lock, notify }) {
-  if (lock) return withUpdaterLock(lock, () => runUpdater({ evidence, state, config, docker, notify }));
+export async function runUpdater({ evidence, state, config, docker, lock, notify, drainAuthorization }) {
+  if (lock) return withUpdaterLock(lock, () => runUpdater({ evidence, state, config, docker, notify, drainAuthorization }));
   const checked=verifyRelease(evidence,state); if (!checked.ok) return { updated:false, ...checked };
   const plan=deploymentPlan(checked.release,config);
-  if (plan.dryRun) return { updated:false, dryRun:true, plan };
-  // The host wrapper must first prove its project membership and safe drain;
-  // absence of either proof deliberately aborts before Compose mutation.
-  if (!(await docker.safeDrain(plan.project)) || !(await docker.projectIsExpected(plan.project, plan.services))) { await notify?.("critical", "unsafe_drain"); return { updated:false, reason:"unsafe_drain" }; }
+  if (!(await docker.projectIsExpected(plan.project, plan.services, checked.release))) { await notify?.("critical", "unsafe_project"); return { updated:false, reason:"unsafe_project" }; }
   const migration=migrationGate(state, checked.release); if (!migration.ok) { await notify?.("critical", migration.reason); return { updated:false, ...migration }; }
-  await docker.compose(plan.project, ["pull", ...plan.services]);
-  await docker.compose(plan.project, ["up", "-d", "--no-deps", ...plan.services]);
+  if (plan.dryRun) return { updated:false, dryRun:true, plan };
+  // Worker drain remains a separate application-level gate. The concrete host
+  // adapter must reject absent, stale, replayed or unverified authorization.
+  if (!(await docker.safeDrain(plan.project, checked.release.source_sha, drainAuthorization))) { await notify?.("critical", "unsafe_drain"); return { updated:false, reason:"unsafe_drain" }; }
+  await docker.compose(plan.project, ["pull", ...plan.services], checked.release.source_sha, checked.release);
+  await docker.compose(plan.project, ["up", "-d", "--no-deps", "--no-build", ...plan.services], checked.release.source_sha, checked.release);
   if (!(await docker.healthy(plan))) { await notify?.("critical", "healthcheck_failed"); return { updated:false, reason:"healthcheck_failed" }; }
   await docker.writeStateAtomically({ source_sha:checked.release.source_sha, version:checked.release.version, api_image:checked.release.api_image, ui_image:checked.release.ui_image });
   await notify?.("success", `updated:${checked.release.version}`);

@@ -16,6 +16,36 @@ The Docker socket is privileged: isolate this account and never share its
 project name with unrelated stacks. A no-update run is silent; critical drain,
 migration or health failures may use the optional Telegram notifier.
 
+The concrete host adapter is `scripts/docker-compose-adapter.mjs`. Configure an
+absolute project directory, a validated Compose project name, a local Unix
+Docker socket, the checked-in
+`docker-compose.yml` followed by `docker-compose.ghcr.yml`, and an optional
+operator-owned environment file. The adapter always selects the local Docker
+socket, removes inherited endpoint/TLS selectors from child commands, invokes
+Docker with structured arguments and bounded output/timeouts, and never uses a
+shell. The GHCR override uses Compose `!reset null` so `migrate`, API, Worker and
+UI cannot inherit local build definitions. Ordinary clone-based Compose usage is
+unchanged when the override is not supplied.
+
+Before mutation, the adapter validates the effective JSON model, exact service
+set, immutable API/UI images, shared API/Worker/migration image, project-scoped
+network and persistent volume names, UI loopback binding, seccomp settings,
+`CHROMIUM_CONCURRENCY=1`, and the checked-in API/Worker CPU, memory, PID and SHM
+limits. It then inspects only containers carrying the configured Compose project
+label and requires unambiguous service, working-directory and Compose-file
+ownership. The database container ID and named volumes are retained across the
+health gate. Pull and update are limited to `api`, `worker` and `ui`; update uses
+`--no-deps --no-build`, so the database is never recreated and no local build is
+possible. No prune, down, force-remove or volume-removal operation is exposed.
+
+Mutation additionally requires a fresh, project/source-bound, single-use drain
+authorization accepted by an injected application-level verifier. No verifier,
+expired or replayed evidence, or a mismatched source fails closed. Worker drain
+generation is deliberately not implemented yet, so the updater remains
+non-operational until that separate gate is connected. Dry-run still performs
+read-only configuration/ownership validation but suppresses every pull/up/image
+mutation.
+
 Release discovery needs read-only Actions access to the trusted repository. It
 lists `ghcr-release.yml` runs and run artifacts through `api.github.com`, then
 downloads the exact `ghcr-release-manifest-<source-sha>` ZIP from GitHub's signed
