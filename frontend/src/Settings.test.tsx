@@ -34,7 +34,8 @@ it("shows validated build metadata with commit and source PR links", () => {
 it("shows safe fallbacks when deployment metadata is unavailable", () => {
   render(<Settings {...props} buildMetadata={{ version: "0.2.0", commit: "invalid", branch: "bad branch", sourcePr: -1 }} />);
   expect(screen.getByText("0.2.0", { exact: true })).toBeInTheDocument();
-  expect(screen.getAllByText("Unavailable", { exact: true })).toHaveLength(3);
+  expect(screen.getAllByText("Unavailable", { exact: true })).toHaveLength(2);
+  expect(screen.queryByText("Source PR", { exact: true })).not.toBeInTheDocument();
   expect(screen.queryByRole("link", { name: /#/ })).not.toBeInTheDocument();
   for (const fallback of screen.getAllByText("Unavailable", { exact: true })) expect(fallback).toHaveClass("application-metadata-token");
 });
