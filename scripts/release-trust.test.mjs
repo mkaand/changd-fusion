@@ -158,6 +158,100 @@ test("rejects wrong architecture, HTTP failures, malformed responses and timeout
   }
 });
 
+
+function mockedGhcrReply(url, registryToken) {
+  if (url.pathname.includes("/manifests/" + imageDigest)) return new Response(imageIndex);
+  if (url.pathname.includes("/manifests/" + platformDigest)) return new Response(platformManifest);
+  if (url.pathname.includes("/blobs/" + configDigest)) return new Response(config);
+  throw Error("unexpected_fixture_registry_path_" + registryToken);
+}
+
+test("negotiates repository-scoped GHCR anonymous bearer and never leaks GitHub API token", async () => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ hostname: url.hostname, pathname: url.pathname, authorization: options.headers.authorization });
+    assert.equal(options.redirect, "error");
+    if (url.pathname === "/token") {
+      assert.equal(url.hostname, "ghcr.io");
+      assert.equal(url.searchParams.get("service"), "ghcr.io");
+      assert.match(url.searchParams.get("scope"), /^repository:mkaand\/changd-fusion-(api|ui):pull$/);
+      assert.equal(options.headers.authorization, undefined, "anonymous token exchange must not leak API token");
+      return new Response(JSON.stringify({ token: "scoped-public-registry-token" }));
+    }
+    const repository = /^\/v2\/(mkaand\/changd-fusion-(?:api|ui))\//.exec(url.pathname)?.[1];
+    assert.ok(repository);
+    if (!options.headers.authorization) {
+      return new Response("", { status: 401, headers: {
+        "www-authenticate": 'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:' + repository + ':pull"',
+      } });
+    }
+    assert.equal(options.headers.authorization, "Bearer scoped-public-registry-token");
+    return mockedGhcrReply(url);
+  };
+  const client = new OciRegistryClient({ fetchImpl, token: "existing-github-api-token" });
+  const result = await client.verifyReleaseImages(release);
+  assert.equal(result.api.digest, imageDigest);
+  assert.equal(result.ui.digest, imageDigest);
+  assert.equal(calls.filter((call) => call.pathname === "/token").length, 6);
+  assert.equal(calls.some((call) => String(call.authorization).includes("existing-github-api-token")), false);
+});
+
+test("private GHCR pull may reuse existing token only at pinned GHCR token endpoint", async () => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url: url.href, authorization: options.headers.authorization });
+    if (url.pathname === "/token") {
+      const authorization = options.headers.authorization;
+      if (authorization) {
+        assert.equal(Buffer.from(authorization.slice(6), "base64").toString("utf8"), "mkaand:existing-authorized-token");
+        return new Response(JSON.stringify({ access_token: "scoped-private-token" }));
+      }
+      return new Response(JSON.stringify({ token: "scoped-anonymous-token" }));
+    }
+    const repository = /^\/v2\/(mkaand\/changd-fusion-(?:api|ui))\//.exec(url.pathname)?.[1];
+    if (!options.headers.authorization) {
+      return new Response("", { status: 401, headers: {
+        "www-authenticate": 'Bearer scope="repository:' + repository + ':pull",service="ghcr.io",realm="https://ghcr.io/token"',
+      } });
+    }
+    if (options.headers.authorization === "Bearer scoped-anonymous-token") return new Response("denied", { status: 403 });
+    assert.equal(options.headers.authorization, "Bearer scoped-private-token");
+    return mockedGhcrReply(url);
+  };
+  const result = await new OciRegistryClient({ fetchImpl, token: "existing-authorized-token" }).verifyReleaseImages(release);
+  assert.equal(result.ui.revision, source);
+  assert.equal(calls.some((call) => call.authorization?.startsWith("Basic ") && !call.url.startsWith("https://ghcr.io/token?")), false);
+});
+
+test("rejects rogue token issuers, wrong repository scopes, malformed token bodies and denied access", async () => {
+  for (const challenge of [
+    'Bearer realm="https://evil.invalid/token",service="ghcr.io",scope="repository:mkaand/changd-fusion-api:pull"',
+    'Bearer realm="https://ghcr.io/token",service="evil.invalid",scope="repository:mkaand/changd-fusion-api:pull"',
+    'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:mkaand/changd-fusion-ui:pull"',
+    'Basic realm="https://ghcr.io/token",service="ghcr.io",scope="repository:mkaand/changd-fusion-api:pull"',
+  ]) {
+    let tokenCalls = 0;
+    const fetchImpl = async (url) => {
+      if (url.pathname === "/token") tokenCalls++;
+      return new Response("", { status: 401, headers: { "www-authenticate": challenge } });
+    };
+    await assert.rejects(new OciRegistryClient({ fetchImpl, token: "existing-secret" }).verifyImage(api, release), /untrusted_registry_challenge/);
+    assert.equal(tokenCalls, 0);
+  }
+
+  const challenge = 'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:mkaand/changd-fusion-api:pull"';
+  const tokenFail = async (url) => url.pathname === "/token"
+    ? new Response(JSON.stringify({ token: "bad\nvalue" }))
+    : new Response("", { status: 401, headers: { "www-authenticate": challenge } });
+  await assert.rejects(new OciRegistryClient({ fetchImpl: tokenFail }).verifyImage(api, release), /invalid_registry_token_response/);
+  const denied = async (url, options) => url.pathname === "/token"
+    ? new Response(JSON.stringify({ token: "scoped" }))
+    : options.headers.authorization
+      ? new Response("denied", { status: 403 })
+      : new Response("", { status: 401, headers: { "www-authenticate": challenge } });
+  await assert.rejects(new OciRegistryClient({ fetchImpl: denied }).verifyImage(api, release), /registry_http_403/);
+});
+
 function verifiedResult(reference, overrides = {}) {
   const repository = overrides.repository ?? "mkaand/changd-fusion";
   const workflowPath = ".github/workflows/ghcr-release.yml";
