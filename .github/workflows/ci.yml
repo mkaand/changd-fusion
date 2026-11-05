@@ -32,6 +32,7 @@ jobs:
           cache-dependency-path: |
             server/package-lock.json
             frontend/package-lock.json
+            updater/package-lock.json
       - name: Install backend
         run: npm ci
         working-directory: server
@@ -54,26 +55,28 @@ jobs:
         run: node --test scripts/prepare-build-metadata.test.mjs
         timeout-minutes: 1
       - name: Immutable updater runtime safeguards
-        run: >-
-          node --test --test-timeout=30000
-          scripts/deployment-state.test.mjs
-          scripts/docker-compose-adapter.test.mjs
-          scripts/docker-compose-override.test.mjs
-          scripts/ghcr-ci-gate.test.mjs
-          scripts/ghcr-updater-runtime.test.mjs
-          scripts/ghcr-updater.test.mjs
-          scripts/github-ancestry.test.mjs
-          scripts/github-release-client.test.mjs
-          scripts/maintenance-coordinator.test.mjs
-          scripts/release-trust.test.mjs
-          scripts/source-pr-metadata.test.mjs
-          scripts/updater-telegram.test.mjs
+        run: |
+          npm ci --prefix updater --ignore-scripts --no-audit --no-fund
+          node --test --test-timeout=30000 \
+            scripts/deployment-state.test.mjs \
+            scripts/docker-compose-adapter.test.mjs \
+            scripts/docker-compose-override.test.mjs \
+            scripts/ghcr-ci-gate.test.mjs \
+            scripts/ghcr-updater-runtime.test.mjs \
+            scripts/ghcr-updater.test.mjs \
+            scripts/github-ancestry.test.mjs \
+            scripts/github-release-client.test.mjs \
+            scripts/maintenance-coordinator.test.mjs \
+            scripts/release-trust.test.mjs \
+            scripts/source-pr-metadata.test.mjs \
+            scripts/updater-container.test.mjs \
+            scripts/updater-telegram.test.mjs
         timeout-minutes: 3
       - name: Private production SSH access safeguards
         run: python3 scripts/production-access.test.py
         timeout-minutes: 1
       - name: Dependency audits
-        run: npm --prefix server audit --audit-level=moderate && npm --prefix frontend audit --audit-level=moderate
+        run: npm --prefix server audit --audit-level=moderate && npm --prefix frontend audit --audit-level=moderate && npm --prefix updater audit --audit-level=moderate
         timeout-minutes: 2
       - name: PostgreSQL and browser integration
         run: npm run test:integration
@@ -167,8 +170,16 @@ jobs:
         with:
           node-version: 24.22.1
       - name: Build production API and UI images
-        run: docker build --pull --no-cache --progress=plain --build-arg APP_COMMIT -t changd-fusion-api:ci ./server && docker build --pull --no-cache --progress=plain --build-arg APP_COMMIT --build-arg APP_BRANCH --build-arg APP_SOURCE_PR -t changd-fusion-ui:ci ./frontend && docker build --pull --no-cache --progress=plain -t changd-fusion-preview:ci -f .devcontainer/Dockerfile .
+        run: |
+          docker build --pull --no-cache --progress=plain --build-arg APP_COMMIT -t changd-fusion-api:ci ./server
+          docker build --pull --no-cache --progress=plain --build-arg APP_COMMIT --build-arg APP_BRANCH --build-arg APP_SOURCE_PR -t changd-fusion-ui:ci ./frontend
+          docker build --pull --no-cache --progress=plain -t changd-fusion-preview:ci -f .devcontainer/Dockerfile .
+          updater_version="$(node -p "require('./updater/package.json').version")"
+          docker build --pull --no-cache --progress=plain --build-arg APP_COMMIT --build-arg APP_VERSION="$updater_version" -t changd-fusion-updater:ci -f updater/Dockerfile .
         timeout-minutes: 10
+      - name: Containerized updater toolchain and privilege boundary
+        run: node scripts/updater-image-smoke.mjs
+        timeout-minutes: 1
       - name: Rootless resource limits and sandboxed Browser Steps smoke
         run: node scripts/docker-smoke.mjs
         timeout-minutes: 2

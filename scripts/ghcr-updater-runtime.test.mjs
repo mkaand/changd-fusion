@@ -21,6 +21,8 @@ const client = { runs: async () => [run], manifest: async () => manifest,
   ci: async () => ({ verify: "success", privacy: "success", docker: "success", "docker-arm64": "success" }),
   masterLineage: async () => true, attestation: async () => ({ attested: true, revision: source, version: "0.3.3" }) };
 const environment = (directory) => ({ FUSION_COMPOSE_PROJECT: project, FUSION_PROJECT_DIRECTORY: directory,
+  FUSION_COMPOSE_BASE_FILE: path.join(directory, "compose.yml"),
+  FUSION_COMPOSE_OVERRIDE_FILE: path.join(directory, "docker-compose.ghcr.yml"),
   FUSION_UPDATER_STATE_DIRECTORY: path.join(directory, "state"), FUSION_COMPOSE_ENV_FILE: path.join(directory, "fixture.env"),
   FUSION_UPDATER_DRY_RUN: "0" });
 const baseline = { migrations, monitor_count: 2, enabled_count: 1, paused_count: 1, baseline_count: 2,
@@ -168,6 +170,7 @@ test("runtime configuration fails closed on ambiguous mutation mode, relative pa
   const valid = environment(directory);
   assert.equal(runtimeConfiguration(valid).dryRun, false);
   for (const changed of [{ FUSION_UPDATER_DRY_RUN: "true" }, { FUSION_COMPOSE_ENV_FILE: "relative.env" },
+    { FUSION_COMPOSE_BASE_FILE: "compose.yml" }, { FUSION_COMPOSE_OVERRIDE_FILE: "override.yml" },
     { FUSION_TRUSTED_REPOSITORY: "foreign/project" }]) {
     assert.throws(() => runtimeConfiguration({ ...valid, ...changed }), /invalid_updater_configuration/);
   }
