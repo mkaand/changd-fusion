@@ -94,7 +94,7 @@ function composeModel() {
 
 const id = (character) => character.repeat(64);
 
-function container(service, character) {
+function container(service, character, configFiles = `${baseFile},${overrideFile}`) {
   const images = { api: release.api_image, worker: release.api_image, ui: release.ui_image, db: dbImage };
   const application = ["api", "worker"].includes(service);
   const limits = service === "api"
@@ -110,7 +110,7 @@ function container(service, character) {
         "com.docker.compose.project": project,
         "com.docker.compose.service": service,
         "com.docker.compose.project.working_dir": directory,
-        "com.docker.compose.project.config_files": `${baseFile},${overrideFile}`,
+        "com.docker.compose.project.config_files": configFiles,
       },
     },
     State: {
@@ -205,6 +205,31 @@ test("validates the effective Compose project, ownership and current runtime", a
   assert.equal(listing.options.env.DOCKER_HOST, undefined);
   assert.equal(listing.options.env.FUSION_GITHUB_TOKEN, undefined);
   assert.equal(listing.options.shell, false);
+});
+
+test("accepts the configured production compose basename and first-update ownership labels", async () => {
+  const productionBase = path.join(directory, "compose.yml");
+  await writeFile(productionBase, "services: {}\n");
+  const containers = [
+    container("api", "1", productionBase),
+    container("db", "2", productionBase),
+    container("ui", "3", productionBase),
+    container("worker", "4", productionBase),
+  ];
+  const host = adapter(fakeSpawn({ containers }), {
+    composeFiles: [productionBase, overrideFile],
+    ownershipComposeFiles: [productionBase],
+  });
+  assert.equal(await host.projectIsExpected(project, ["api", "worker", "ui"], release), true);
+  const foreign = containers.map((entry, index) => index === 0
+    ? container("api", "5", path.join(directory, "foreign.yml"))
+    : entry);
+  const rejected = adapter(fakeSpawn({ containers: foreign }), {
+    composeFiles: [productionBase, overrideFile],
+    ownershipComposeFiles: [productionBase],
+  });
+  assert.equal(await rejected.projectIsExpected(project, ["api", "worker", "ui"], release), false);
+  assert.equal(rejected.lastFailure, "project_validation_failed");
 });
 
 test("rejects missing, duplicate and foreign project service containers", async () => {

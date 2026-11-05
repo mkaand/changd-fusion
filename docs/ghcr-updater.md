@@ -1,26 +1,28 @@
 # Opt-in GHCR updater
 
-The updater is disabled by default. It requires a dedicated unprivileged host
-account, the checked-in authenticated GitHub/GHCR release client, immutable
-GHCR digest access, and an explicitly configured Compose project. It rejects
+The updater is disabled by default. The host needs only Docker Engine and
+systemd: Docker Compose v2, Node.js 24, GitHub CLI 2.103.3 and the updater
+runtime are packaged in an immutable GHCR image. It requires immutable GHCR digest
+access and an explicitly configured Compose project. It rejects
 missing/ambiguous provenance, non-attested publishers, replay/downgrade, unsafe
 drain and failed health checks. It never prunes Docker, removes volumes, clears
 leases, or touches other Compose projects. Run dry-run first; enable the timer
 only after operator review. Database rollback is manual unless migration
 compatibility is independently proven.
 
-Use the checked-in bounded systemd service, a locked-down environment file
-(0600), and the host adapter that supplies authenticated GitHub/GHCR evidence,
+Use the checked-in container launcher and bounded systemd service, a locked-down
+environment file (0600), and the host adapter that supplies authenticated GitHub/GHCR evidence,
 project-scoped Compose operations, atomic state writes, safe worker drain and
 health probes.
-The Docker socket is privileged: isolate this account and never share its
+The Docker socket is root-equivalent: restrict host access and never share the
 project name with unrelated stacks. A no-update run is silent; critical drain,
 migration or health failures may use the optional Telegram notifier.
 
 The concrete host adapter is `scripts/docker-compose-adapter.mjs`. Configure an
 absolute project directory, a validated Compose project name, a local Unix
-Docker socket, the checked-in
-`docker-compose.yml` followed by `docker-compose.ghcr.yml`, and an explicit
+Docker socket, the configured production Compose file (including a legacy name
+such as `compose.yml`) followed by the image-bundled
+`docker-compose.ghcr.yml`, and an explicit
 operator-owned environment file. The adapter always selects the local Docker
 socket, removes inherited endpoint/TLS selectors from child commands, invokes
 Docker with structured arguments and bounded output/timeouts, and never uses a
@@ -34,7 +36,11 @@ network and persistent volume names, UI loopback binding, seccomp settings,
 `CHROMIUM_CONCURRENCY=1`, and the checked-in API/Worker CPU, memory, PID and SHM
 limits. It then inspects only containers carrying the configured Compose project
 label and requires unambiguous service, working-directory and Compose-file
-ownership. The database container ID and named volumes are retained across the
+ownership. A first update may find labels containing only the configured base
+file; later updater-owned application containers may contain the base plus the
+immutable override. No other file set is accepted, and the configured project
+name (including `changd-fusion-v030`) is never rewritten. The database container
+ID and named volumes are retained across the
 health gate. Pull and update are limited to `api`, `worker` and `ui`; update uses
 `--no-deps --no-build`, so the database is never recreated and no local build is
 possible. No prune, down, force-remove or volume-removal operation is exposed.
@@ -108,7 +114,7 @@ maintenance coordinator, durable deployment state and optional Telegram
 transport. Required settings are documented in
 `systemd/changd-fusion-updater.env.example`. The trusted repository is fixed to
 `mkaand/changd-fusion`; paths and the Compose project remain host-configurable.
-An hourly no-update check produces no notification or normal output.
+A periodic no-update check produces no notification or normal output.
 
 The state directory must be owned by the updater account and mode 0700. State is
 written mode 0600 using a same-directory exclusive temporary file, file fsync,
@@ -229,23 +235,65 @@ safe-stops and recovery-required states include only sanitized stage/category
 data. Delivery failure is recorded separately and cannot change deployment
 success, reopen admission or initiate rollback. No-update runs are silent.
 
-Supported hosts require Linux with systemd, Node.js 24, Docker Engine and Docker
-Compose v2, a local Unix Docker socket, PostgreSQL 16 application deployment,
-GitHub CLI 2.103.3 or newer, CA trust and HTTPS access to GitHub/GHCR/Sigstore
-(and Telegram only when enabled). Install the reviewed repository under
-`/usr/local/lib/changd-fusion`, keep the actual Compose project in the configured
-project directory, create `/var/lib/changd-fusion-updater` mode 0700 owned by the
-dedicated account, and install the example environment file as mode 0600. The
+Supported hosts require Linux with systemd, Docker Engine, a local Unix Docker
+socket, PostgreSQL 16 application deployment, CA trust and
+HTTPS access to GitHub/GHCR/Sigstore (and Telegram only when enabled). The image
+contains Node.js 24, checksum-pinned official GitHub CLI and pinned Docker/Compose
+clients. Keep the actual Compose project in the configured project directory,
+create `/var/lib/changd-fusion-updater` mode 0700 owned by container UID/GID
+10001, and install the environment file as mode 0600. The
 optional read-only GitHub credential needs Actions/contents/package read access;
 private GHCR pulls additionally require an operator-created, mode-0600 Docker
 credential configuration under `/etc/changd-fusion/docker`. GitHub never receives
-host SSH credentials. The Docker socket is root-equivalent; restrict account
-membership and host access.
+host SSH credentials.
 
-Leave `FUSION_UPDATER_DRY_RUN=1`, install but do not enable the service/timer,
-then run the oneshot manually and inspect the read-only plan. Activation requires
-separate approval: change dry-run to `0`, run `systemctl daemon-reload`, and enable
-the timer. The repository never performs these host actions automatically. On
+The systemd launcher runs as host root only to start Docker, then runs the
+updater process as UID/GID 10001 with a read-only root filesystem, all Linux
+capabilities dropped and `no-new-privileges`. This is not a sandbox boundary:
+the mounted Docker socket can control the host daemon and therefore remains
+root-equivalent. The launcher mounts only the socket, configured project
+read-only, updater state read-write and Docker credentials read-only. Host and
+container project paths are intentionally identical so Compose ownership labels
+remain stable and auditable.
+
+### Clean-host installation (disabled by default)
+
+1. Install Docker Engine and systemd. Do not install Node.js, npm, GitHub CLI,
+   Docker Compose or build tools on the host.
+2. Obtain the immutable updater reference from the successful `GHCR updater
+   release` run and verify its digest and attestation on an administration
+   workstation:
+
+   ```sh
+   gh attestation verify \
+     oci://ghcr.io/mkaand/changd-fusion-updater@sha256:REVIEWED_DIGEST \
+     --repo mkaand/changd-fusion \
+     --source-ref refs/heads/master \
+     --signer-workflow .github/workflows/ghcr-updater-release.yml
+   ```
+
+3. Run the checked-in installer with the existing Compose identity and paths:
+
+   ```sh
+   sudo scripts/install-ghcr-updater.sh \
+     --image ghcr.io/mkaand/changd-fusion-updater@sha256:REVIEWED_DIGEST \
+     --project changd-fusion-v030 \
+     --project-dir /opt/changd-fusion-v030 \
+     --compose-file /opt/changd-fusion-v030/compose.yml \
+     --compose-env /opt/changd-fusion-v030/.env
+   ```
+
+4. Configure optional read-only GitHub/Telegram credentials in the mode-0600
+   environment file. Keep `FUSION_UPDATER_DRY_RUN=1`, run
+   `systemctl start changd-fusion-updater.service`, and inspect its zero-mutation
+   plan.
+5. Activation requires separate approval: change dry-run to `0`, repeat the
+   reviewed oneshot, then run
+   `systemctl enable --now changd-fusion-updater.timer`. The timer checks about
+   every five minutes with a bounded randomized delay. No-update runs are silent.
+
+The installer performs `daemon-reload` but never starts or enables the service
+or timer. On
 `FAILED`, correct the pre-mutation issue and retry. On `RECOVERY_REQUIRED`, stop
 the timer, preserve state/database/captures, inspect journal and immutable image
 identities, and follow a separately approved manual recovery; do not edit the

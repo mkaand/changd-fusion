@@ -20,16 +20,18 @@ function required(environment, name) {
 export function runtimeConfiguration(environment = process.env) {
   const project = required(environment, "FUSION_COMPOSE_PROJECT");
   const projectDirectory = required(environment, "FUSION_PROJECT_DIRECTORY");
+  const baseFile = required(environment, "FUSION_COMPOSE_BASE_FILE");
+  const overrideFile = required(environment, "FUSION_COMPOSE_OVERRIDE_FILE");
   const stateDirectory = required(environment, "FUSION_UPDATER_STATE_DIRECTORY");
   const envFile = required(environment, "FUSION_COMPOSE_ENV_FILE");
   const dryRun = required(environment, "FUSION_UPDATER_DRY_RUN");
   const repository = environment.FUSION_TRUSTED_REPOSITORY ?? TRUSTED_REPOSITORY;
-  if (!PROJECT.test(project) || !path.isAbsolute(projectDirectory) || !path.isAbsolute(stateDirectory) || !path.isAbsolute(envFile)
+  if (!PROJECT.test(project) || ![projectDirectory, baseFile, overrideFile, stateDirectory, envFile].every(path.isAbsolute)
     || !["0", "1"].includes(dryRun)
     || repository !== TRUSTED_REPOSITORY) throw Error("invalid_updater_configuration");
   return Object.freeze({
     project, projectDirectory, stateDirectory, repository,
-    envFile,
+    baseFile, overrideFile, envFile,
     dryRun: dryRun === "1",
     githubToken: environment.FUSION_GITHUB_TOKEN || undefined,
     telegramToken: environment.FUSION_TELEGRAM_BOT_TOKEN || undefined,
@@ -68,7 +70,8 @@ export async function executeUpdaterRuntime({
     docker ??= new DockerComposeHostAdapter({
       project: config.project,
       projectDirectory: config.projectDirectory,
-      composeFiles: ["docker-compose.yml", "docker-compose.ghcr.yml"],
+      composeFiles: [config.baseFile, config.overrideFile],
+      ownershipComposeFiles: [config.baseFile],
       envFile: config.envFile,
       dryRun: config.dryRun,
     });

@@ -16,6 +16,18 @@ ghcr.io/mkaand/changd-fusion-api@sha256:...
 ghcr.io/mkaand/changd-fusion-ui@sha256:...
 ```
 
+The separate `GHCR updater release` workflow also runs only after successful
+trusted master CI (or a master-only reviewed recovery dispatch). It publishes
+and attests the host runtime toolchain as:
+
+```text
+ghcr.io/mkaand/changd-fusion-updater@sha256:...
+```
+
+That image contains Node.js 24, the checksum-pinned GitHub CLI and pinned
+Docker/Compose clients. Production consumes its immutable digest; it never
+builds updater or application images on the server.
+
 The API and Worker must use the same API digest. Both image OCI revision labels
 must equal the selected source SHA; the UI build metadata must also show that
 same SHA and `master`. Existing Chromium fencing, Worker readiness, the

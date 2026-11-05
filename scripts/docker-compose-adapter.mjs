@@ -84,14 +84,25 @@ function releaseKey(release) {
   return `${release.source_sha}:${release.api_image}:${release.ui_image}`;
 }
 
-function safeFile(projectDirectory, candidate, expectedName) {
+function safeFile(projectDirectory, candidate) {
   const resolved = realpathSync(candidate);
   const relative = path.relative(projectDirectory, resolved);
   if (!statSync(resolved).isFile() || relative.startsWith("..") || path.isAbsolute(relative)
-    || path.basename(resolved) !== expectedName) {
+    || relative === "") {
     fail("invalid_compose_file");
   }
   return resolved;
+}
+
+function absoluteFile(candidate) {
+  if (!path.isAbsolute(candidate ?? "")) fail("invalid_compose_file");
+  const resolved = realpathSync(candidate);
+  if (!statSync(resolved).isFile()) fail("invalid_compose_file");
+  return resolved;
+}
+
+function samePathSet(left, right) {
+  return JSON.stringify([...left].sort()) === JSON.stringify([...right].sort());
 }
 
 function parseJson(value, code) {
@@ -107,6 +118,7 @@ export class DockerComposeHostAdapter {
     project,
     projectDirectory,
     composeFiles,
+    ownershipComposeFiles,
     envFile,
     dockerBinary = "docker",
     socket = "unix:///var/run/docker.sock",
@@ -125,12 +137,11 @@ export class DockerComposeHostAdapter {
     if (!Array.isArray(composeFiles) || composeFiles.length !== 2) fail("invalid_compose_files");
     this.project = project;
     this.projectDirectory = directory;
-    this.composeFiles = [
-      safeFile(directory, composeFiles[0], "docker-compose.yml"),
-      safeFile(directory, composeFiles[1], "docker-compose.ghcr.yml"),
-    ];
-    this.envFile = envFile ? realpathSync(envFile) : undefined;
-    if (this.envFile && !statSync(this.envFile).isFile()) fail("invalid_env_file");
+    this.composeFiles = [safeFile(directory, composeFiles[0]), absoluteFile(composeFiles[1])];
+    this.ownershipComposeFiles = (ownershipComposeFiles ?? [composeFiles[0]]).map((file) => safeFile(directory, file));
+    if (!this.ownershipComposeFiles.length || this.ownershipComposeFiles.length > this.composeFiles.length
+      || this.ownershipComposeFiles.some((file) => !this.composeFiles.includes(file))) fail("invalid_ownership_files");
+    this.envFile = envFile ? safeFile(directory, envFile) : undefined;
     if (!Number.isInteger(timeoutMs) || timeoutMs < 1_000 || timeoutMs > 300_000) fail("invalid_timeout");
     const socketPath = typeof socket === "string" ? socket.slice("unix://".length) : "";
     if (!UNIX_SOCKET.test(socket ?? "") || !path.isAbsolute(socketPath)
@@ -289,7 +300,8 @@ export class DockerComposeHostAdapter {
       }
       const configFiles = String(labels["com.docker.compose.project.config_files"] ?? "")
         .split(",").filter(Boolean).map((file) => realpathSync(file)).sort();
-      if (JSON.stringify(configFiles) !== JSON.stringify([...this.composeFiles].sort())) {
+      if (!samePathSet(configFiles, this.ownershipComposeFiles)
+        && !samePathSet(configFiles, this.composeFiles)) {
         fail("foreign_compose_configuration");
       }
       const entries = byService.get(service) ?? [];
