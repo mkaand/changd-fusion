@@ -76,7 +76,11 @@ export async function executeUpdaterRuntime({
       dryRun: config.dryRun,
     });
     maintenance ??= new ComposeMaintenanceCoordinator({ adapter: docker });
-    const installed = startupState.current ?? docker.runtimeIdentity();
+    // Do not inspect a potentially incompatible old runtime before its
+    // mandatory maintenance bootstrap guard passes.
+    const installedBootstrap = await maintenance.bootstrapStatus(config.project);
+    const installed = installedBootstrap?.bootstrapped
+      ? (startupState.current ?? docker.runtimeIdentity()) : null;
     if (installed?.version === evidence.manifest.version
       && installed.source_sha !== evidence.manifest.source_sha) {
       // A same-version CI publication is not a rollback when the installed
