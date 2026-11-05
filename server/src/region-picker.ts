@@ -5,7 +5,7 @@ import type { Config } from "./config.js";
 import { previewExecutionTimeout } from "./capture-timeout.js";
 import { CaptureFailure, HttpError, captureFailure, type CaptureFailureCode, type CaptureStage } from "./errors.js";
 import { checkDimensions, pngDimensions } from "./image.js";
-import { CAPTURE_CLEANUP_TIMEOUT_MS, closeWithDeadline, navigateForCapture, type Monitor } from "./capture.js";
+import { CAPTURE_CLEANUP_TIMEOUT_MS, closeWithDeadline, installCaptureStabilityStyle, navigateForCapture, type Monitor } from "./capture.js";
 import type { ChromiumLease } from "./chromium-capacity.js";
 import { runSteps, StepFailure, warningCode } from "./browser-steps.js";
 import { AttentionFailure, detectAttention } from "./attention.js";
@@ -361,7 +361,7 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
     const initialStatus = await navigateForCapture(page, m.url, deadline, Boolean(m.monitor_http_error_pages));
     statusObserver.setInitial(initialStatus);
     enter("dom_ready");
-    await page.addStyleTag({ content: "* { animation:none !important; transition:none !important; caret-color:transparent !important; }" });
+    await installCaptureStabilityStyle(context, page, Boolean(m.disable_javascript));
     stage = "browser_steps";
     enter("browser_steps");
     const skipStepsForErrorPage = Boolean(m.monitor_http_error_pages && initialStatus >= 400);
