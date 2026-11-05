@@ -84,7 +84,11 @@ test("rejects replay, downgrade, same-version conflict, bad CI and malformed ima
 
 
 test("allows same-version master forward movement only with proof bound to installed SHA", () => {
-  const next = release({ sourceSha: newerSource, version: "0.3.3" });
+  const fixture = release({ sourceSha: newerSource, version: "0.3.3" });
+  const next = {
+    manifest: fixture.manifest, workflow: fixture.run, ci: fixture.ci,
+    masterLineage: fixture.lineage, publisher: fixture.publisher,
+  };
   const installed = { source_sha: s, version: "0.3.3" };
   assert.equal(verifyRelease(next, installed).reason, "same_version_conflict");
   assert.equal(verifyRelease({
