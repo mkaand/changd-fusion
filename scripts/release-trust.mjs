@@ -4,6 +4,31 @@ import { spawnSync } from "node:child_process";
 const IMAGE_REFERENCE = /^ghcr\.io\/mkaand\/changd-fusion-(api|ui)@sha256:([0-9a-f]{64})$/;
 const DIGEST = /^sha256:[0-9a-f]{64}$/;
 const MAX_REGISTRY_RESPONSE = 2_000_000;
+const MAX_REGISTRY_TOKEN_RESPONSE = 8192;
+const GHCR_TOKEN_URL = "https://ghcr.io/token";
+const OCI_READ_PATH = /^\/v2\/(mkaand\/changd-fusion-(?:api|ui))\/(?:manifests|blobs)\/sha256:[0-9a-f]{64}$/;
+
+// GitHub Actions API tokens are not GHCR registry bearer tokens. Only a
+// repository-scoped token from a pinned GHCR challenge may authorize reads.
+function parseGhcrChallenge(header, path) {
+  const repository = OCI_READ_PATH.exec(path)?.[1];
+  if (!repository || typeof header !== "string" || !/^Bearer\s/.test(header)) {
+    throw Error("untrusted_registry_challenge");
+  }
+  const parameters = header.replace(/^Bearer\s+/, "");
+  const expression = /([a-z][a-z-]*)="([^"\r\n]*)"/g;
+  const entries = [...parameters.matchAll(expression)];
+  const extra = parameters.replace(expression, "").replace(/[\s,]/g, "");
+  if (entries.length !== 3 || extra) throw Error("untrusted_registry_challenge");
+  const attributes = new Map(entries.map((entry) => [entry[1], entry[2]]));
+  if (attributes.size !== 3 || attributes.get("realm") !== GHCR_TOKEN_URL
+    || attributes.get("service") !== "ghcr.io"
+    || attributes.get("scope") !== "repository:" + repository + ":pull") {
+    throw Error("untrusted_registry_challenge");
+  }
+  return { service: "ghcr.io", scope: "repository:" + repository + ":pull" };
+}
+
 const OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json";
 const DOCKER_MANIFEST = "application/vnd.docker.distribution.manifest.v2+json";
 const OCI_INDEX = "application/vnd.oci.image.index.v1+json";
@@ -32,19 +57,61 @@ export class OciRegistryClient {
     }
   }
 
-  async bytes(path, accept) {
+  async scopedRegistryToken(challenge, authenticated = false) {
+    // The token issuer and pull scope have already been verified. Public GHCR
+    // packages need no credentials; private packages may reuse an existing
+    // token solely at ghcr.io/token, without any credential file mutation.
+    if (authenticated && !this.token) throw Error("registry_credentials_unavailable");
+    const url = new URL(GHCR_TOKEN_URL);
+    url.searchParams.set("service", challenge.service);
+    url.searchParams.set("scope", challenge.scope);
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = await this.fetch(new URL(path, this.baseUrl), {
+      const headers = { accept: "application/json" };
+      if (authenticated) {
+        headers.authorization = "Basic " + Buffer.from("mkaand:" + this.token).toString("base64");
+      }
+      const response = await this.fetch(url, { redirect: "error", signal: controller.signal, headers });
+      if (!response.ok) throw Error("registry_token_http_" + response.status);
+      const declared = Number(response.headers.get("content-length") ?? 0);
+      if (!Number.isSafeInteger(declared) || declared < 0 || declared > MAX_REGISTRY_TOKEN_RESPONSE) {
+        throw Error("invalid_registry_token_response");
+      }
+      const bytes = Buffer.from(await response.arrayBuffer());
+      if (bytes.length > MAX_REGISTRY_TOKEN_RESPONSE) throw Error("invalid_registry_token_response");
+      let data;
+      try { data = JSON.parse(bytes.toString("utf8")); }
+      catch { throw Error("invalid_registry_token_response"); }
+      const token = data?.token ?? data?.access_token;
+      if (typeof token !== "string" || token.length < 1 || token.length > 8192
+        || !/^[\x21-\x7e]+$/.test(token)) throw Error("invalid_registry_token_response");
+      return token;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  async bytes(path, accept) {
+    if (!OCI_READ_PATH.test(path)) throw Error("invalid_registry_path");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const request = (registryToken) => this.fetch(new URL(path, this.baseUrl), {
         redirect: "error",
         signal: controller.signal,
-        headers: {
-          accept,
-          ...(this.token ? { authorization: `Bearer ${this.token}` } : {}),
-        },
+        headers: { accept, ...(registryToken ? { authorization: "Bearer " + registryToken } : {}) },
       });
-      if (!response.ok) throw Error(`registry_http_${response.status}`);
+      // Never send the GitHub Actions token directly to the OCI registry.
+      let response = await request();
+      if (response.status === 401) {
+        const challenge = parseGhcrChallenge(response.headers.get("www-authenticate"), path);
+        response = await request(await this.scopedRegistryToken(challenge));
+        if ([401, 403].includes(response.status) && this.token) {
+          response = await request(await this.scopedRegistryToken(challenge, true));
+        }
+      }
+      if (!response.ok) throw Error("registry_http_" + response.status);
       const lengthHeader = response.headers.get("content-length");
       const declared = lengthHeader === null ? null : Number(lengthHeader);
       if (declared !== null && (!Number.isSafeInteger(declared) || declared < 0)) {
