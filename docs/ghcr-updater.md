@@ -250,9 +250,10 @@ dry-run and optional Telegram delivery. No fixture result is presented as live
 registry or production evidence.
 
 Disable JavaScript continues to use `javaScriptEnabled: !disable_javascript` in
-scheduled capture and Region Preview. Its real Chromium regression remains in
-the integration suite and has the dedicated command
-`npm run test:integration:disable-javascript`. Cloud_2's system Chromium timed
+scheduled capture and Region Preview. Its real Chromium regression remains as a
+dedicated integration target, run with
+`npm run test:integration:disable-javascript`; it is intentionally excluded from
+the required `npm run test:integration` suite. Cloud_2's system Chromium timed
 out in screenshot capture; per release decision, final user acceptance is
-pending after an approved deployment. This is not converted into a passing test
-or an updater prerequisite.
+**PENDING USER ACCEPTANCE** after an approved deployment. This is not converted
+into a passing test or an updater prerequisite.

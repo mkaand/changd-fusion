@@ -40,6 +40,18 @@ it("shows safe fallbacks when deployment metadata is unavailable", () => {
   for (const fallback of screen.getAllByText("Unavailable", { exact: true })) expect(fallback).toHaveClass("application-metadata-token");
 });
 
+it("hides invalid or ambiguous Source PR metadata without hiding an independently verified commit", () => {
+  render(<Settings {...props} buildMetadata={{
+    version: "0.3.3",
+    commit: "b".repeat(40),
+    branch: "master",
+    sourcePr: [38, 39],
+  }} />);
+  expect(screen.getByRole("link", { name: "Commit " + "b".repeat(40) })).toHaveAttribute("href", "https://github.com/mkaand/changd-fusion/commit/" + "b".repeat(40));
+  expect(screen.queryByText("Source PR", { exact: true })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: /#/ })).not.toBeInTheDocument();
+});
+
 
 it("offers the bounded 60-second default capture timeout in Monitoring defaults", async () => {
   render(<Settings {...props} />);

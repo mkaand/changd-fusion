@@ -1572,10 +1572,12 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     else
       assert.ok(await applicationMetadata.getByText("Unavailable", { exact: true }).count(), "missing build metadata has a safe fallback");
     const sourcePr = page.getByRole("link", { name: /^#\d+$/ });
-    if (await sourcePr.count())
+    if (await sourcePr.count()) {
+      assert.equal(await applicationMetadata.getByText("Source PR", { exact: true }).count(), 1);
       assert.match(await sourcePr.getAttribute("href") ?? "", /^https:\/\/github\.com\/mkaand\/changd-fusion\/pull\/\d+$/);
-    else
-      assert.ok(await applicationMetadata.getByText("Unavailable", { exact: true }).count(), "missing source PR metadata has a safe fallback");
+    } else {
+      assert.equal(await applicationMetadata.getByText("Source PR", { exact: true }).count(), 0, "missing Source PR metadata hides the entire row");
+    }
     if (await page.locator("html").getAttribute("data-theme") !== "light") {
       await page.getByRole("banner").locator("[data-allmy-theme-switch]").click();
       await page.waitForFunction(() => document.documentElement.dataset.theme === "light");
@@ -1820,6 +1822,9 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await page.screenshot({
       path: path.join(output, "capture-settings-mobile.png"),
     });
+    for (const filename of ["capture-settings-mobile.png", "history-mobile.png"]) {
+      assert.ok((await readFile(path.join(output, filename))).length > 0, `${filename} is produced for CI artifact upload`);
+    }
     await page.getByText("Full Text Changes", { exact: true }).click();
     await page.setViewportSize({ width: 390, height: 844 });
     const captureMode = page.getByLabel("Screenshot capture mode", { exact: true });

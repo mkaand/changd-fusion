@@ -17,13 +17,18 @@ function sameRelease(left, right) {
 }
 export function verifyRelease(evidence, state) {
   const m = evidence?.manifest;
-  if (!m || !sha.test(m.source_sha ?? "") || !digest.test(m.api_image ?? "") || !digest.test(m.ui_image ?? "")) return { ok:false, reason:"invalid_manifest" };
+  if (!m || !sha.test(m.source_sha ?? "") || !digest.test(m.api_image ?? "") || !digest.test(m.ui_image ?? "") || compareVersions(m.version, m.version) !== 0) return { ok:false, reason:"invalid_manifest" };
   if (m.architecture !== "linux/amd64" || m.api_worker_shared_image !== m.api_image) return { ok:false, reason:"image_contract" };
   if (evidence.workflow?.name !== "GHCR immutable release" || evidence.workflow?.conclusion !== "success" || evidence.workflow?.head_sha !== m.source_sha) return { ok:false, reason:"release_workflow" };
   if (!evidence.masterLineage || !["verify","privacy","docker","docker-arm64"].every((job) => evidence.ci?.[job] === "success")) return { ok:false, reason:"ci_evidence" };
   if (!evidence.publisher?.attested || evidence.publisher.revision !== m.source_sha || evidence.publisher.version !== m.version) return { ok:false, reason:"publisher_provenance" };
   if (state?.source_sha === m.source_sha) return { ok:false, reason:"replay" };
-  if (state?.version && compareVersions(m.version, state.version) === -1) return { ok:false, reason:"downgrade" };
+  if (state?.version) {
+    const order = compareVersions(m.version, state.version);
+    if (order === null) return { ok:false, reason:"invalid_state_version" };
+    if (order === -1) return { ok:false, reason:"downgrade" };
+    if (order === 0) return { ok:false, reason:"same_version_conflict" };
+  }
   return { ok:true, release:m };
 }
 export function deploymentPlan(release, config) {
@@ -38,13 +43,41 @@ export async function discoverRelease(client, trusted) {
     && r.status === "completed"
     && r.conclusion === "success"
     && r.head_branch === "master"
+    && Number.isSafeInteger(r.id)
+    && r.id > 0
     && Number.isInteger(r.run_attempt)
     && r.run_attempt >= 1
+    && sha.test(r.head_sha ?? "")
     && r.repository === trusted.repository);
-  if (candidates.length > 1) throw Error("ambiguous_release_runs");
   if (!candidates.length) return null;
-  const run = candidates[0], manifest = await client.manifest(run, { timeoutMs: 10_000 });
-  return { workflow: run, manifest, ci: await client.ci(run.head_sha, { timeoutMs: 10_000 }), masterLineage: await client.masterLineage(run.head_sha), publisher: await client.attestation(manifest) };
+  const verified = [];
+  for (const run of candidates) {
+    const manifest = await client.manifest(run, { timeoutMs: 10_000 });
+    const evidence = {
+      workflow: run,
+      manifest,
+      ci: await client.ci(run.head_sha, { timeoutMs: 10_000 }),
+      masterLineage: await client.masterLineage(run.head_sha),
+      publisher: await client.attestation(manifest),
+    };
+    const check = verifyRelease(evidence, {});
+    if (!check.ok) throw Error(`untrusted_release_candidate_${check.reason}`);
+    verified.push(evidence);
+  }
+  const versions = new Set(), sources = new Set();
+  for (const evidence of verified) {
+    if (versions.has(evidence.manifest.version)) throw Error("ambiguous_release_version");
+    if (sources.has(evidence.manifest.source_sha)) throw Error("ambiguous_release_source");
+    versions.add(evidence.manifest.version);
+    sources.add(evidence.manifest.source_sha);
+  }
+  verified.sort((left, right) => compareVersions(left.manifest.version, right.manifest.version));
+  for (let index = 1; index < verified.length; index += 1) {
+    if (!await client.sourceLineage(verified[index - 1].manifest.source_sha, verified[index].manifest.source_sha)) {
+      throw Error("incompatible_release_ancestry");
+    }
+  }
+  return verified.at(-1);
 }
 export function migrationGate(current, candidate) {
   if (current?.bootstrapped === false) return { ok:false, reason:"BOOTSTRAP_REQUIRED" };

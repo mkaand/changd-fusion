@@ -47,6 +47,28 @@ test("accepts a concrete ancestor and an identical trusted master commit", async
   assert.equal(compared, false);
 });
 
+test("verifies release-to-release ancestry using exact compare identities", async () => {
+  await withServer((request, response) => {
+    if (request.url?.includes(`/compare/${source}...${head}`)) {
+      return json(response, {
+        status: "ahead",
+        base_commit: { sha: source },
+        merge_base_commit: { sha: source },
+        head_commit: { sha: head },
+      });
+    }
+    response.statusCode = 404;
+    return response.end("{}");
+  }, async (client) => assert.equal(await client.sourceLineage(source, head), true));
+
+  await withServer((_request, response) => json(response, {
+    status: "diverged",
+    base_commit: { sha: source },
+    merge_base_commit: { sha: "c".repeat(40) },
+    head_commit: { sha: head },
+  }), async (client) => assert.rejects(client.sourceLineage(source, head), /untrusted_source_ancestry/));
+});
+
 test("rejects divergent, unrelated and incorrect merge-base evidence", async () => {
   for (const compare of [
     { status: "diverged", base_commit: { sha: source }, merge_base_commit: { sha: "c".repeat(40) }, head_commit: { sha: head } },
