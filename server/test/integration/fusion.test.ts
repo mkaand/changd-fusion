@@ -1971,6 +1971,15 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     // Saving the selected area correctly makes a monitor due immediately. Keep
     // this UI fixture out of the independent scheduler test that follows.
     await pool.query("UPDATE fusion_monitors SET next_run=now()+interval '1 hour' WHERE id=$1", [savedArea.id]);
+    // Closing the editor ends its fail-closed interactive-presence heartbeat
+    // asynchronously. Wait for that real API cleanup before this UI smoke test
+    // hands the shared disposable database to scheduler-isolation tests.
+    let activePresence = 1;
+    for (let attempt = 0; attempt < 40 && activePresence > 0; attempt++) {
+      activePresence = (await pool.query("SELECT count(*)::int AS n FROM fusion_interactive_presence WHERE expires_at>now()")).rows[0].n;
+      if (activePresence > 0) await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    assert.equal(activePresence, 0, "closing the monitor editor releases interactive presence through the API");
     assert.deepEqual(errors, []);
   } finally {
     cfg.PUBLIC_URL = oldURL;
@@ -3853,6 +3862,9 @@ test("manual Check Now is durable, deduplicated, owner-bound and completed atomi
   assert.equal(calls, 1, "two replacement Workers cannot duplicate the manual capture");
   assert.equal((await ownerAgent.get(`/api/v1/jobs/${m.id}/run`).expect(200)).body.status, "completed");
   assert.equal((await pool.query("SELECT count(*)::int AS n FROM fusion_captures WHERE monitor_id=$1", [m.id])).rows[0].n, 1);
+  const afterManual = await acquireChromiumLease(pool, { workload: "preview", slots: 1 });
+  assert.ok(afterManual, "completed Check Now releases its priority intent and Chromium capacity immediately");
+  await afterManual.release();
   await pool.query("UPDATE fusion_monitors SET kind='html',visual_enabled=false,text_enabled=true WHERE id=$1", [m.id]);
   await ownerAgent.post(`/api/v1/jobs/${m.id}/run`).set("X-Fusion-Request", "1").send({}).expect(202);
   await workerCycle(pool, cfg, { capture: async () => { throw new CaptureFailure("navigation", "connection_failure"); }, send: async () => {} });
@@ -3900,6 +3912,11 @@ test("manual queue bounds apply atomically without creating priority for rejecte
   } finally {
     for (const id of ids) await queueAgent.delete(`/api/v1/jobs/${id}/run`).set("X-Fusion-Request", "1").expect(204);
   }
+  assert.deepEqual(
+    (await pool.query("SELECT kind,monitor_id FROM fusion_chromium_priority_intents WHERE cancelled_at IS NULL AND (expires_at>now() OR EXISTS(SELECT 1 FROM fusion_manual_runs r WHERE r.priority_intent_id=fusion_chromium_priority_intents.id AND r.status IN ('queued','running'))) ORDER BY created_at,id")).rows,
+    [],
+    "cancelling the bounded manual queue releases every durable priority intent",
+  );
 });
 
 test("browser contention defers due work without starving non-browser checks or flooding history", async () => {
