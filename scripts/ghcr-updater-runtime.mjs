@@ -100,16 +100,40 @@ export async function executeUpdaterRuntime({
   } finally { stateStore.release(); }
 }
 
+// Systemd must regard a successfully validated dry-run as success even though
+// no application containers were changed. A dry-run's lack of mutation is not
+// an updater failure.
+export function runtimeOutcome(result) {
+  if (result?.updated === true) {
+    return { status: 0, stdout: "Changd Fusion update completed and verified.\n" };
+  }
+  if (result?.updated === false && result?.dryRun === true && result?.plan?.dryRun === true
+    && result.reason == null) {
+    return { status: 0, stdout: "Changd Fusion updater dry-run verification PASS.\n" };
+  }
+  if (result?.updated === false && ["no_update", "replay"].includes(result.reason)) {
+    return { status: 0 };
+  }
+  const reason = String(result?.reason ?? "unknown").replace(/[^A-Za-z0-9_-]/g, "_").slice(0, 100);
+  return { status: 1, stderr: "Changd Fusion updater stopped safely: " + reason + "\n" };
+}
+
+// Only static machine-readable error codes may reach systemd journal. Never
+// print exception stacks, URLs, Authorization headers, or token-bearing text.
+export function safeRuntimeFailureCode(error) {
+  const code = error?.message;
+  return typeof code === "string" && /^[a-z][a-z0-9_]{2,100}$/.test(code)
+    ? code : "runtime_failure";
+}
+
 async function main() {
   try {
-    const result = await executeUpdaterRuntime();
-    if (result.updated) process.stdout.write("Changd Fusion update completed and verified.\n");
-    else if (!["no_update", "replay"].includes(result.reason)) {
-      process.stderr.write(`Changd Fusion updater stopped safely: ${String(result.reason ?? "unknown").replace(/[^A-Za-z0-9_-]/g, "_")}\n`);
-      process.exitCode = 1;
-    }
-  } catch {
-    process.stderr.write("Changd Fusion updater stopped safely: runtime_failure\n");
+    const outcome = runtimeOutcome(await executeUpdaterRuntime());
+    if (outcome.stdout) process.stdout.write(outcome.stdout);
+    if (outcome.stderr) process.stderr.write(outcome.stderr);
+    process.exitCode = outcome.status;
+  } catch (error) {
+    process.stderr.write("Changd Fusion updater stopped safely: " + safeRuntimeFailureCode(error) + "\n");
     process.exitCode = 1;
   }
 }
