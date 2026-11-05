@@ -8,6 +8,7 @@ import { acquireChromiumLease, cancelInteractivePriorityIntent, createInteractiv
 import { CaptureFailure } from "./errors.js";
 import { isWorkerFatalError } from "./errors.js";
 import { MAX_MONITOR_CAPTURE_TIMEOUT_MS } from "./capture-timeout.js";
+import { beginRuntimeOperation, finishRuntimeOperation } from "./maintenance.js";
 export type WorkerProgressEvent =
   | { kind: "initialized" }
   | { kind: "monitor-started"; maxDurationMs: number }
@@ -49,6 +50,8 @@ export async function workerCycle(
     Array.from({ length: cfg.CHROMIUM_CONCURRENCY }, async () => {
       while (next < work.length && !options.stopped?.()) {
         const monitor = work[next++];
+        const operation = await beginRuntimeOperation(pool, monitor.manualRunId ? "manual_check" : "scheduled_capture");
+        if (!operation) { await defer(monitor); continue; }
         options.onProgress?.({
           kind: "monitor-started",
           maxDurationMs: Math.max(cfg.CAPTURE_TIMEOUT_MS, MAX_MONITOR_CAPTURE_TIMEOUT_MS) + 20_000,
@@ -107,7 +110,9 @@ export async function workerCycle(
           if (!fatalCleanup && monitor.manualRunId && !capacity) await cancelInteractivePriorityIntent(pool, monitor.priorityIntentId);
         }
         } finally {
-          options.onProgress?.({ kind: "monitor-finished" });
+          try {
+            if (!(await finishRuntimeOperation(pool, operation))) throw Error("runtime_operation_ownership_lost");
+          } finally { options.onProgress?.({ kind: "monitor-finished" }); }
         }
       }
     }),

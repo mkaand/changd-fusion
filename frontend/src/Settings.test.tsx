@@ -34,9 +34,22 @@ it("shows validated build metadata with commit and source PR links", () => {
 it("shows safe fallbacks when deployment metadata is unavailable", () => {
   render(<Settings {...props} buildMetadata={{ version: "0.2.0", commit: "invalid", branch: "bad branch", sourcePr: -1 }} />);
   expect(screen.getByText("0.2.0", { exact: true })).toBeInTheDocument();
-  expect(screen.getAllByText("Unavailable", { exact: true })).toHaveLength(3);
+  expect(screen.getAllByText("Unavailable", { exact: true })).toHaveLength(2);
+  expect(screen.queryByText("Source PR", { exact: true })).not.toBeInTheDocument();
   expect(screen.queryByRole("link", { name: /#/ })).not.toBeInTheDocument();
   for (const fallback of screen.getAllByText("Unavailable", { exact: true })) expect(fallback).toHaveClass("application-metadata-token");
+});
+
+it("hides invalid or ambiguous Source PR metadata without hiding an independently verified commit", () => {
+  render(<Settings {...props} buildMetadata={{
+    version: "0.3.3",
+    commit: "b".repeat(40),
+    branch: "master",
+    sourcePr: [38, 39],
+  }} />);
+  expect(screen.getByRole("link", { name: "Commit " + "b".repeat(40) })).toHaveAttribute("href", "https://github.com/mkaand/changd-fusion/commit/" + "b".repeat(40));
+  expect(screen.queryByText("Source PR", { exact: true })).not.toBeInTheDocument();
+  expect(screen.queryByRole("link", { name: /#/ })).not.toBeInTheDocument();
 });
 
 

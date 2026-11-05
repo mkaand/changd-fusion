@@ -1,0 +1,15 @@
+# Optional production override. Invoke only through the opt-in updater or an
+# operator-reviewed command; no mutable tags and no persistent-volume changes.
+services:
+  migrate:
+    image: ${FUSION_API_IMAGE:?immutable API digest required}
+    build: !reset null
+  api:
+    image: ${FUSION_API_IMAGE:?immutable API digest required}
+    build: !reset null
+  worker:
+    image: ${FUSION_API_IMAGE:?immutable API digest required}
+    build: !reset null
+  ui:
+    image: ${FUSION_UI_IMAGE:?immutable UI digest required}
+    build: !reset null

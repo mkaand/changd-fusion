@@ -1,0 +1,21 @@
+[Unit]
+Description=Changd Fusion opt-in immutable GHCR updater
+After=docker.service network-online.target
+Wants=network-online.target
+[Service]
+Type=oneshot
+User=changd-fusion
+EnvironmentFile=/etc/changd-fusion/updater.env
+Environment=XDG_CACHE_HOME=/var/lib/changd-fusion-updater/cache
+Environment=XDG_CONFIG_HOME=/var/lib/changd-fusion-updater/config
+Environment=DOCKER_CONFIG=/etc/changd-fusion/docker
+ExecStart=/usr/bin/env node /usr/local/lib/changd-fusion/scripts/ghcr-updater-runtime.mjs
+TimeoutStartSec=15min
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+ReadWritePaths=/var/lib/changd-fusion-updater
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=yes

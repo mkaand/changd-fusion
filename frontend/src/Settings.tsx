@@ -59,7 +59,7 @@ export function Settings({ channels, monitors, reload, report, admin, signedOut,
         <div><dt>Version</dt><dd><span className="application-metadata-token">{metadata.version ?? "Unavailable"}</span></dd></div>
         <div><dt>Branch</dt><dd><span className={metadata.branch ? "application-metadata-value" : "application-metadata-token"}>{metadata.branch ?? "Unavailable"}</span></dd></div>
         <div><dt>Commit HEAD</dt><dd>{metadata.commit ? <Typography.Link className="application-metadata-value" href={commitUrl(metadata.commit)} target="_blank" rel="noreferrer" title={metadata.commit} aria-label={`Commit ${metadata.commit}`}>{metadata.commit.slice(0, 12)}</Typography.Link> : <span className="application-metadata-token">Unavailable</span>}</dd></div>
-        <div><dt>Source PR</dt><dd>{metadata.sourcePr ? <Typography.Link href={pullRequestUrl(metadata.sourcePr)} target="_blank" rel="noreferrer">#{metadata.sourcePr}</Typography.Link> : <span className="application-metadata-token">Unavailable</span>}</dd></div>
+        {metadata.sourcePr && <div><dt>Source PR</dt><dd><Typography.Link href={pullRequestUrl(metadata.sourcePr)} target="_blank" rel="noreferrer">#{metadata.sourcePr}</Typography.Link></dd></div>}
         <div><dt>Display timezone</dt><dd><span className="application-metadata-token">Browser locale</span></dd></div>
       </dl></Card>
     </Space>}

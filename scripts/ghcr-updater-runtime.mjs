@@ -1,0 +1,98 @@
+#!/usr/bin/env node
+import path from "node:path";
+import { pathToFileURL } from "node:url";
+import { DeploymentStateStore } from "./deployment-state.mjs";
+import { DockerComposeHostAdapter } from "./docker-compose-adapter.mjs";
+import { GitHubReleaseClient } from "./github-release-client.mjs";
+import { discoverRelease, runUpdater } from "./ghcr-updater.mjs";
+import { ComposeMaintenanceCoordinator } from "./maintenance-coordinator.mjs";
+import { TelegramUpdaterNotifier } from "./updater-telegram.mjs";
+
+const PROJECT = /^[a-z0-9][a-z0-9_-]{0,62}$/;
+const TRUSTED_REPOSITORY = "mkaand/changd-fusion";
+
+function required(environment, name) {
+  const value = environment[name];
+  if (!value || /[\0\r\n]/.test(value)) throw Error(`missing_${name.toLowerCase()}`);
+  return value;
+}
+
+export function runtimeConfiguration(environment = process.env) {
+  const project = required(environment, "FUSION_COMPOSE_PROJECT");
+  const projectDirectory = required(environment, "FUSION_PROJECT_DIRECTORY");
+  const stateDirectory = required(environment, "FUSION_UPDATER_STATE_DIRECTORY");
+  const envFile = required(environment, "FUSION_COMPOSE_ENV_FILE");
+  const dryRun = required(environment, "FUSION_UPDATER_DRY_RUN");
+  const repository = environment.FUSION_TRUSTED_REPOSITORY ?? TRUSTED_REPOSITORY;
+  if (!PROJECT.test(project) || !path.isAbsolute(projectDirectory) || !path.isAbsolute(stateDirectory) || !path.isAbsolute(envFile)
+    || !["0", "1"].includes(dryRun)
+    || repository !== TRUSTED_REPOSITORY) throw Error("invalid_updater_configuration");
+  return Object.freeze({
+    project, projectDirectory, stateDirectory, repository,
+    envFile,
+    dryRun: dryRun === "1",
+    githubToken: environment.FUSION_GITHUB_TOKEN || undefined,
+    telegramToken: environment.FUSION_TELEGRAM_BOT_TOKEN || undefined,
+    telegramChatId: environment.FUSION_TELEGRAM_CHAT_ID || undefined,
+  });
+}
+
+export async function executeUpdaterRuntime({
+  environment = process.env,
+  client,
+  docker,
+  stateStore,
+  maintenance,
+  telegram,
+} = {}) {
+  const config = runtimeConfiguration(environment);
+  stateStore ??= new DeploymentStateStore({ directory: config.stateDirectory, project: config.project });
+  if (!stateStore.acquire()) return { updated: false, reason: "concurrent_updater" };
+  try {
+    telegram ??= new TelegramUpdaterNotifier({ token: config.telegramToken, chatId: config.telegramChatId });
+    let startupState = stateStore.reconcile(stateStore.load());
+    if (startupState.status === "RECOVERY_REQUIRED") {
+      const operationId = startupState.operation_id;
+      if (operationId && startupState.notification?.recovery_operation !== operationId) {
+        startupState = stateStore.markRecoveryNotification(startupState, operationId);
+        let delivered;
+        try { delivered = await telegram.send("recovery_required", { operation_id: operationId, state: startupState.failure?.code ?? "interrupted_deployment" }); }
+        catch { delivered = { error: "telegram_delivery_failed" }; }
+        if (delivered.error) startupState = stateStore.recordNotificationFailure(startupState, delivered.error);
+      }
+      return { updated: false, reason: "recovery_required" };
+    }
+    client ??= new GitHubReleaseClient({ repository: config.repository, token: config.githubToken });
+    const evidence = await discoverRelease(client, { repository: config.repository });
+    if (!evidence) return { updated: false, reason: "no_update" };
+    docker ??= new DockerComposeHostAdapter({
+      project: config.project,
+      projectDirectory: config.projectDirectory,
+      composeFiles: ["docker-compose.yml", "docker-compose.ghcr.yml"],
+      envFile: config.envFile,
+      dryRun: config.dryRun,
+    });
+    maintenance ??= new ComposeMaintenanceCoordinator({ adapter: docker });
+    return await runUpdater({
+      evidence,
+      config: { project: config.project, dryRun: config.dryRun },
+      docker, maintenance, stateStore, telegram,
+    });
+  } finally { stateStore.release(); }
+}
+
+async function main() {
+  try {
+    const result = await executeUpdaterRuntime();
+    if (result.updated) process.stdout.write("Changd Fusion update completed and verified.\n");
+    else if (!["no_update", "replay"].includes(result.reason)) {
+      process.stderr.write(`Changd Fusion updater stopped safely: ${String(result.reason ?? "unknown").replace(/[^A-Za-z0-9_-]/g, "_")}\n`);
+      process.exitCode = 1;
+    }
+  } catch {
+    process.stderr.write("Changd Fusion updater stopped safely: runtime_failure\n");
+    process.exitCode = 1;
+  }
+}
+
+if (import.meta.url === pathToFileURL(process.argv[1] ?? "").href) await main();

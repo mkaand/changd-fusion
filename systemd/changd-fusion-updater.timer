@@ -1,0 +1,8 @@
+[Unit]
+Description=Check opt-in Changd Fusion updates
+[Timer]
+OnCalendar=hourly
+Persistent=true
+RandomizedDelaySec=10m
+[Install]
+WantedBy=timers.target

@@ -156,16 +156,19 @@ test("migration 013 through current preserves existing monitors, baselines, and 
       }
     }
     await upgrade.query("INSERT INTO users(user_id,email,password) VALUES('upgrade-owner','upgrade@example.com','synthetic-hash')");
+    const channel = (await upgrade.query("INSERT INTO fusion_channels(user_id,name,provider,config) VALUES('upgrade-owner','Preserved channel','telegram',$1::jsonb) RETURNING id", [JSON.stringify({ encrypted: "synthetic-credential-fixture" })])).rows[0];
     const full = (await upgrade.query("INSERT INTO fusion_monitors(user_id,name,url,kind,text_source,extraction_mode) VALUES('upgrade-owner','Existing full text','https://example.com/full','browser','direct','full_text') RETURNING id")).rows[0];
     const selected = (await upgrade.query("INSERT INTO fusion_monitors(user_id,name,url,kind,text_source,extraction_mode,extraction_rule) VALUES('upgrade-owner','Existing selected text','https://example.com/selected','browser','jina','selected_text',$1::jsonb) RETURNING id", [JSON.stringify({ version: 1, kind: "bounded_context", before: "Before", after: "After", max_length: 80 })])).rows[0];
     await upgrade.query("UPDATE fusion_monitors SET notify_failures=true WHERE id=$1", [selected.id]);
+    await upgrade.query("UPDATE fusion_monitors SET paused=true,enabled=false WHERE id=$1", [selected.id]);
+    await upgrade.query("INSERT INTO fusion_monitor_channels(monitor_id,channel_id) VALUES($1,$2)", [selected.id, channel.id]);
     const baseline = randomUUID();
-    await upgrade.query("INSERT INTO fusion_captures(id,monitor_id,text_content) VALUES($1,$2,'Preserved baseline')", [baseline, full.id]);
+    await upgrade.query("INSERT INTO fusion_captures(id,monitor_id,text_content,screenshot) VALUES($1,$2,'Preserved baseline','synthetic/preserved.png')", [baseline, full.id]);
     await upgrade.query("UPDATE fusion_monitors SET baseline_id=$2,latest_capture_id=$2 WHERE id=$1", [full.id, baseline]);
     await upgrade.query("INSERT INTO fusion_events(monitor_id,after_id,status) VALUES($1,$2,'baseline')", [full.id, baseline]);
     await migrate(upgrade);
     await migrate(upgrade);
-    const rows = (await upgrade.query("SELECT id,extraction_mode,extraction_rule,keyword,capture_area,capture_timeout_ms,baseline_id,latest_capture_id,monitor_http_error_pages,failure_alert_mode,last_http_status FROM fusion_monitors ORDER BY name")).rows;
+    const rows = (await upgrade.query("SELECT id,enabled,paused,extraction_mode,extraction_rule,keyword,capture_area,capture_timeout_ms,baseline_id,latest_capture_id,monitor_http_error_pages,failure_alert_mode,last_http_status FROM fusion_monitors ORDER BY name")).rows;
     assert.equal(rows.length, 2);
     assert.deepEqual(rows.map((row) => row.extraction_mode).sort(), ["full_text", "selected_text"]);
     assert.ok(rows.every((row) => row.keyword === null));
@@ -177,7 +180,12 @@ test("migration 013 through current preserves existing monitors, baselines, and 
     assert.equal(rows.find((row) => row.id === selected.id)?.failure_alert_mode, "first_or_persistent");
     assert.equal(rows.find((row) => row.id === full.id)?.baseline_id, baseline);
     assert.equal(rows.find((row) => row.id === full.id)?.latest_capture_id, baseline);
+    assert.equal(rows.find((row) => row.id === selected.id)?.paused, true);
+    assert.equal(rows.find((row) => row.id === selected.id)?.enabled, false);
     assert.equal(rows.find((row) => row.id === selected.id)?.extraction_rule.kind, "bounded_context");
+    assert.deepEqual((await upgrade.query("SELECT config FROM fusion_channels WHERE id=$1", [channel.id])).rows[0].config, { encrypted: "synthetic-credential-fixture" });
+    assert.equal((await upgrade.query("SELECT count(*) FROM fusion_monitor_channels WHERE monitor_id=$1 AND channel_id=$2", [selected.id, channel.id])).rows[0].count, "1");
+    assert.equal((await upgrade.query("SELECT screenshot FROM fusion_captures WHERE id=$1", [baseline])).rows[0].screenshot, "synthetic/preserved.png");
     assert.equal((await upgrade.query("SELECT count(*) FROM fusion_events WHERE monitor_id=$1", [full.id])).rows[0].count, "1");
     assert.equal(Number((await upgrade.query("SELECT count(*) FROM fusion_migrations")).rows[0].count), expectedMigrationCount);
     await assert.rejects(() => upgrade.query("UPDATE fusion_monitors SET extraction_mode='keyword_presence',keyword=NULL WHERE id=$1", [full.id]));
@@ -1564,10 +1572,12 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     else
       assert.ok(await applicationMetadata.getByText("Unavailable", { exact: true }).count(), "missing build metadata has a safe fallback");
     const sourcePr = page.getByRole("link", { name: /^#\d+$/ });
-    if (await sourcePr.count())
+    if (await sourcePr.count()) {
+      assert.equal(await applicationMetadata.getByText("Source PR", { exact: true }).count(), 1);
       assert.match(await sourcePr.getAttribute("href") ?? "", /^https:\/\/github\.com\/mkaand\/changd-fusion\/pull\/\d+$/);
-    else
-      assert.ok(await applicationMetadata.getByText("Unavailable", { exact: true }).count(), "missing source PR metadata has a safe fallback");
+    } else {
+      assert.equal(await applicationMetadata.getByText("Source PR", { exact: true }).count(), 0, "missing Source PR metadata hides the entire row");
+    }
     if (await page.locator("html").getAttribute("data-theme") !== "light") {
       await page.getByRole("banner").locator("[data-allmy-theme-switch]").click();
       await page.waitForFunction(() => document.documentElement.dataset.theme === "light");
@@ -1812,6 +1822,9 @@ test("browser smoke: sign in, monitor history, decimal display, image comparison
     await page.screenshot({
       path: path.join(output, "capture-settings-mobile.png"),
     });
+    for (const filename of ["capture-settings-mobile.png", "history-mobile.png"]) {
+      assert.ok((await readFile(path.join(output, filename))).length > 0, `${filename} is produced for CI artifact upload`);
+    }
     await page.getByText("Full Text Changes", { exact: true }).click();
     await page.setViewportSize({ width: 390, height: 844 });
     const captureMode = page.getByLabel("Screenshot capture mode", { exact: true });

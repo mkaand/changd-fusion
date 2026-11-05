@@ -74,6 +74,29 @@ The documented command verifies build metadata from the local Git checkout befor
 
 The public UI is served through the configured same-origin frontend. PostgreSQL and API ports should remain private behind the reverse proxy. Public registration is disabled by default.
 
+### v0.3.3 immutable updater (opt-in)
+
+v0.3.3 adds a disabled-by-default Linux systemd updater for deployments that
+consume immutable GHCR API/Worker and UI digests. It authenticates the exact
+master source and CI run, OCI metadata and GitHub Artifact Attestations before a
+project-scoped Compose update. Atomic state, the PostgreSQL maintenance barrier,
+Worker/API drain, migration ledger, data-continuity health checks and optional
+Telegram notifications all fail closed. Ordinary clone-based
+`docker compose up -d --build` remains unchanged.
+
+The first v0.3.2 → v0.3.3 transition is intentionally not automatic: v0.3.2
+does not understand the new admission barrier. It requires a separately
+authorized manual bootstrap with every old API/Worker replica gracefully fenced,
+active Chromium ownership positively resolved, migrations 017/018 verified and
+the bootstrap marker confirmed. The timer must remain disabled until that work
+and a dry-run are approved. See the complete [GHCR updater trust, bootstrap,
+installation and recovery guide](docs/ghcr-updater.md).
+
+Disable JavaScript behavior is unchanged and retains real Chromium integration
+coverage. Cloud_2 screenshot execution remains environment-unverified; final
+behavior acceptance is pending an approved production deployment and is not
+presented as a release or security test pass.
+
 ### First administrator
 
 The supported first-user path is the existing `create-admin` command; public
