@@ -170,7 +170,7 @@ test("negotiates repository-scoped GHCR anonymous bearer and never leaks GitHub 
   const calls = [];
   const fetchImpl = async (url, options) => {
     calls.push({ hostname: url.hostname, pathname: url.pathname, authorization: options.headers.authorization });
-    assert.equal(options.redirect, "error");
+    assert.equal(options.redirect, url.hostname === "ghcr.io" && url.pathname.includes("/blobs/") ? "manual" : "error");
     if (url.pathname === "/token") {
       assert.equal(url.hostname, "ghcr.io");
       assert.equal(url.searchParams.get("service"), "ghcr.io");
@@ -274,11 +274,61 @@ test("private GHCR token-service denial falls back to the already configured tok
   assert.equal(calls.some((call) => call.authorization?.startsWith("Basic ") && !call.url.startsWith("https://ghcr.io/token?")), false);
 });
 
+test("real Node fetch exposes GHCR 307 blob redirect to manual policy without leaking credentials", async () => {
+  let redirectedTarget = "https://pkg-containers.githubusercontent.com/ghcr1/blobs/" + configDigest + "?signed=fixture";
+  const requests = [];
+  const localRegistry = http.createServer((req, res) => {
+    const authorization = req.headers.authorization;
+    requests.push({ path: req.url, authorization });
+    const repository = req.url?.split("/").slice(2, 4).join("/");
+    if (!authorization) {
+      res.writeHead(401, { "www-authenticate": 'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:' + repository + ':pull"' });
+      return res.end();
+    }
+    if (authorization !== "Bearer scope-only") { res.writeHead(403); return res.end(); }
+    if (req.url.includes("/manifests/" + imageDigest)) return res.end(imageIndex);
+    if (req.url.includes("/manifests/" + platformDigest)) return res.end(platformManifest);
+    if (req.url.includes("/blobs/" + configDigest)) {
+      res.writeHead(307, { location: redirectedTarget });
+      return res.end();
+    }
+    res.writeHead(404); res.end();
+  });
+  await new Promise((resolve) => localRegistry.listen(0, "127.0.0.1", resolve));
+  const localUrl = "http://127.0.0.1:" + localRegistry.address().port;
+  const storage = [];
+  const fetchImpl = (url, options) => {
+    if (url.hostname === "ghcr.io" && url.pathname === "/token") {
+      assert.equal(options.redirect, "error");
+      assert.equal(options.headers.authorization, undefined);
+      return Promise.resolve(new Response(JSON.stringify({ token: "scope-only" })));
+    }
+    if (url.hostname === "pkg-containers.githubusercontent.com") {
+      storage.push({ redirect: options.redirect, authorization: options.headers.authorization });
+      return Promise.resolve(new Response(config));
+    }
+    return fetch(url, options);
+  };
+  try {
+    const client = new OciRegistryClient({ baseUrl: localUrl, fetchImpl });
+    const verified = await client.verifyImage(api, release);
+    assert.equal(verified.configDigest, configDigest);
+    assert.ok(requests.some((request) => request.path.includes("/blobs/") && request.authorization === "Bearer scope-only"));
+    assert.deepEqual(storage, [{ redirect: "error", authorization: undefined }]);
+    redirectedTarget = "https://evil.invalid/steal";
+    await assert.rejects(client.verifyImage(api, release), /untrusted_registry_blob_redirect/);
+    assert.equal(storage.length, 1, "malicious redirect must not be followed");
+  } finally {
+    await new Promise((resolve) => localRegistry.close(resolve));
+  }
+});
+
 test("handles GHCR blob redirects without forwarding tokens and retains digest verification", async () => {
   const redirectUrl = "https://pkg-containers.githubusercontent.com/ghcr1/blobs/" + configDigest + "?signature=fixture";
   const calls = [];
   const fetchImpl = async (url, options) => {
     calls.push({ host: url.hostname, authorization: options.headers.authorization });
+    assert.equal(options.redirect, url.hostname === "ghcr.io" && url.pathname.includes("/blobs/") ? "manual" : "error");
     if (url.hostname === "pkg-containers.githubusercontent.com") {
       assert.equal(options.headers.authorization, undefined);
       assert.equal(options.redirect, "error");

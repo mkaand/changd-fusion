@@ -97,8 +97,13 @@ export class OciRegistryClient {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
+      const isBlob = path.includes("/blobs/");
       const request = (registryToken) => this.fetch(new URL(path, this.baseUrl), {
-        redirect: "error",
+        // Node fetch rejects redirects in "error" mode before returning the
+        // 307 response. Blob redirects must be observed, then explicitly
+        // allowlisted and followed without forwarding registry credentials.
+        // Manifests must never redirect.
+        redirect: isBlob ? "manual" : "error",
         signal: controller.signal,
         headers: { accept, ...(registryToken ? { authorization: "Bearer " + registryToken } : {}) },
       });
