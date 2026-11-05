@@ -82,6 +82,23 @@ test("rejects replay, downgrade, same-version conflict, bad CI and malformed ima
   assert.equal(verifyRelease({ ...evidence, manifest: { ...evidence.manifest, ui_image: "latest" } }, {}).reason, "invalid_manifest");
 });
 
+
+test("allows same-version master forward movement only with proof bound to installed SHA", () => {
+  const next = release({ sourceSha: newerSource, version: "0.3.3" });
+  const installed = { source_sha: s, version: "0.3.3" };
+  assert.equal(verifyRelease(next, installed).reason, "same_version_conflict");
+  assert.equal(verifyRelease({
+    ...next, installedAncestry: { from: s, to: newerSource, verified: true },
+  }, installed).ok, true);
+  for (const invalid of [
+    { from: newerSource, to: s, verified: true },
+    { from: s, to: newerSource, verified: false },
+    { from: "f".repeat(40), to: newerSource, verified: true },
+  ]) {
+    assert.equal(verifyRelease({ ...next, installedAncestry: invalid }, installed).reason, "same_version_conflict");
+  }
+});
+
 test("accepts one discovered release only after the complete trust chain", async () => {
   const calls = [], item = release();
   const discovered = await discoverRelease(discoveryClient([item], { calls }), { repository });
