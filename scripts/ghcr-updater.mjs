@@ -27,7 +27,14 @@ export function verifyRelease(evidence, state) {
     const order = compareVersions(m.version, state.version);
     if (order === null) return { ok:false, reason:"invalid_state_version" };
     if (order === -1) return { ok:false, reason:"downgrade" };
-    if (order === 0) return { ok:false, reason:"same_version_conflict" };
+    if (order === 0) {
+      // Identical semver is permitted for a newer master commit only after
+      // GitHub proves the installed source is an ancestor of the candidate.
+      // Exact binding to the persisted source prevents stale/replayed proofs.
+      const ancestry = evidence.installedAncestry;
+      if (!ancestry || ancestry.from !== state.source_sha || ancestry.to !== m.source_sha
+        || ancestry.verified !== true) return { ok:false, reason:"same_version_conflict" };
+    }
   }
   return { ok:true, release:m };
 }
