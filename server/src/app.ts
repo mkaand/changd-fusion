@@ -23,7 +23,7 @@ import { previewJinaText } from "./text-picker.js";
 import pino from "pino";
 import { Decimal } from "decimal.js";
 import path from "node:path";
-import { acquireChromiumLease, cancelInteractivePriorityIntent, createInteractivePriorityIntent, enqueueManualRun } from "./chromium-capacity.js";
+import { acquireChromiumLease, cancelInteractivePriorityIntent, createInteractivePriorityIntent, endInteractivePresence, enqueueManualRun, heartbeatInteractivePresence } from "./chromium-capacity.js";
 import { captureAreaSchema } from "./capture-area.js";
 import { captureTimeoutSchema, DEFAULT_NEW_MONITOR_CAPTURE_TIMEOUT_MS, previewExecutionTimeout } from "./capture-timeout.js";
 import { beginRuntimeOperation, finishRuntimeOperation, maintenanceActive, type RuntimeOperation } from "./maintenance.js";
@@ -204,6 +204,7 @@ const regionPreviewInput = z
       .object({ x: z.number().finite(), y: z.number().finite() })
       .optional(),
     refresh: z.boolean().optional().default(false),
+    scroll_delta_y: z.number().finite().min(-1800).max(1800).optional(),
     mode: z.enum(["element", "area"]).optional().default("element"),
   })
   .strict();
@@ -625,7 +626,7 @@ export function createApp(
       channel_ids: channels.rows.map((r) => r.channel_id),
     });
   });
-  const runRegionPreview = async (req: Request, res: Response, monitor: any, point?: { x: number; y: number }, sessionId?: string, useSession = false, previewRequestId?: string, refresh = false, captureLayout = true) => {
+  const runRegionPreview = async (req: Request, res: Response, monitor: any, point?: { x: number; y: number }, sessionId?: string, useSession = false, previewRequestId?: string, refresh = false, captureLayout = true, scrollDeltaY?: number) => {
     const started = performance.now();
     const cancellation = new AbortController();
     const cancelled = () => { if (!res.writableEnded) cancellation.abort(); };
@@ -651,6 +652,7 @@ export function createApp(
           retain: useSession,
           captureLayout,
           refresh,
+          scrollDeltaY,
           signal: cancellation.signal,
           progress: previewRequestId ? (stage) => updatePreviewProgress(previewRequestId, res.locals.user.user_id, stage) : undefined,
           acquireCapacity: async (onWait, waitBudgetMs) => {
@@ -702,11 +704,19 @@ export function createApp(
   app.post("/api/v1/region-preview", async (req, res) => {
     const body = regionPreviewInput.parse(req.body);
     if (body.monitor_id) await owner(body.monitor_id, res.locals.user.user_id);
-    await runRegionPreview(req, res, { ...body.monitor, id: body.monitor_id ?? "preview", browser_steps: body.monitor.browser_steps, step_budget_ms: body.monitor.step_budget_ms }, body.point, body.session_id, body.mode === "element", body.preview_request_id, body.refresh, body.mode === "element");
+    await runRegionPreview(req, res, { ...body.monitor, id: body.monitor_id ?? "preview", browser_steps: body.monitor.browser_steps, step_budget_ms: body.monitor.step_budget_ms }, body.point, body.session_id, true, body.preview_request_id, body.refresh, body.mode === "element", body.scroll_delta_y);
   });
   app.delete("/api/v1/region-preview/:sessionId", async (req, res) => {
     const sessionId = uuid.parse(req.params.sessionId);
     await releaseRegionPreviewSession(res.locals.user.user_id, sessionId);
+    res.status(204).end();
+  });
+  app.post("/api/v1/interactive-presence", async (req, res) => {
+    const body = z.object({ id: uuid.optional() }).strict().parse(req.body ?? {});
+    res.json({ id: await heartbeatInteractivePresence(pool, res.locals.user.user_id, body.id), expires_in_ms: 20_000 });
+  });
+  app.delete("/api/v1/interactive-presence/:id", async (req, res) => {
+    await endInteractivePresence(pool, res.locals.user.user_id, uuid.parse(req.params.id));
     res.status(204).end();
   });
   app.get("/api/v1/region-preview/status/:id", (req, res) => {

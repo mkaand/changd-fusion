@@ -26,7 +26,7 @@ import { seedPreview } from "../../src/preview-seed.js";
 import { compareVisual } from "../../src/comparison.js";
 import { telegramSummary } from "../../src/notifications.js";
 import { closeRegionPreviewSessions, expireRegionPreviewSessions, previewRegion, REGION_PREVIEW_MAX_LIFETIME_MS } from "../../src/region-picker.js";
-import { acquireChromiumLease, createInteractivePriorityIntent, cancelInteractivePriorityIntent } from "../../src/chromium-capacity.js";
+import { acquireChromiumLease, createInteractivePriorityIntent, cancelInteractivePriorityIntent, endInteractivePresence, heartbeatInteractivePresence } from "../../src/chromium-capacity.js";
 import { recoverChromiumQuarantine } from "../../src/chromium-recovery.js";
 import { spawn } from "node:child_process";
 import { applySelectedTextRule, generateSelectedTextRule } from "../../src/selected-text.js";
@@ -3635,10 +3635,12 @@ test("visual region picker preview maps screenshot coordinates to a unique visib
     mode: "area",
     monitor: { url: `http://fixture.example:${port}/`, kind: "browser", visual_enabled: true, browser_steps: [] },
   }).expect(200);
-  assert.equal(areaPreview.body.session_id, undefined);
+  assert.match(areaPreview.body.session_id, /^[0-9a-f-]{36}$/);
   assert.deepEqual([areaPreview.body.width, areaPreview.body.height], [1280, 900]);
+  assert.equal(await acquireChromiumLease(pool, { workload: "preview", slots: 1 }), null, "selected-area preview retains the same fenced browser for real page scrolling");
+  await pickerOwner.delete(`/api/v1/region-preview/${areaPreview.body.session_id}`).set("X-Fusion-Request", "1").expect(204);
   const areaLease = await acquireChromiumLease(pool, { workload: "preview", slots: 1 });
-  assert.ok(areaLease, "selected-area preview closes Chromium before returning the client-side image");
+  assert.ok(areaLease, "the owner release frees the selected-area browser after physical cleanup");
   await areaLease!.release();
 
   const denied = await pickerOwner.post("/api/v1/region-preview").set("X-Fusion-Request", "1").send({
@@ -3775,7 +3777,9 @@ test("authenticated Preview preempts a real scheduled browser through the same s
   try {
     await capturing;
     await sampleTrees();
-    const preview = (await agent.post("/api/v1/region-preview").set("X-Fusion-Request", "1").send({ mode: "element", monitor: { url: `http://lane.fixture:${port}/preview`, kind: "browser", visual_enabled: true } }).expect(200)).body;
+    const previewResponse = await agent.post("/api/v1/region-preview").set("X-Fusion-Request", "1").send({ mode: "element", monitor: { url: `http://lane.fixture:${port}/preview`, kind: "browser", visual_enabled: true } });
+    assert.equal(previewResponse.status, 200, JSON.stringify(previewResponse.body));
+    const preview = previewResponse.body;
     assert.ok(preview.image.length > 100);
     await sampleTrees();
     assert.ok(cleaned, "capture cleanup completed before the user browser was admitted");
@@ -3833,7 +3837,7 @@ test("manual Check Now is durable, deduplicated, owner-bound and completed atomi
   // Simulate a Worker death before launch: the durable running record is picked
   // up by a replacement cycle and the per-monitor advisory lock prevents duplicates.
   await pool.query("UPDATE fusion_manual_runs SET status='running' WHERE id=$1", [queued.request_id]);
-  await pool.query("UPDATE fusion_chromium_priority_intents SET created_at=now()-interval '30 seconds',expires_at=now()-interval '10 seconds' WHERE id=(SELECT priority_intent_id FROM fusion_manual_runs WHERE id=$1)", [queued.request_id]);
+  await pool.query("UPDATE fusion_chromium_priority_intents SET created_at=now()-interval '30 seconds',heartbeat_at=now()-interval '30 seconds',expires_at=now()-interval '10 seconds' WHERE id=(SELECT priority_intent_id FROM fusion_manual_runs WHERE id=$1)", [queued.request_id]);
   let calls = 0;
   const options = { capture: async (monitor: any, config: any, _policy: any, signal: any) => {
     if (monitor.id !== m.id) return { text: "fixture", screenshot: monitor.visual_enabled ? image() : null };
@@ -3916,57 +3920,88 @@ test("browser contention defers due work without starving non-browser checks or 
   } finally { await held.release(); await pool.query("UPDATE fusion_monitors SET enabled=false WHERE id=ANY($1::uuid[])", [[...browserIds, html]]); }
 });
 
-test("priority intents expire, remain bounded and repeated reconnects give scheduled work a recovery turn", async () => {
+test("interactive priority is absolute, bounded and never yields a scheduled recovery turn", async () => {
   const owner = (await pool.query("SELECT user_id FROM users WHERE email='owner@example.com'")).rows[0].user_id;
   await pool.query("UPDATE fusion_chromium_scheduler SET priority_window_until=NULL,scheduled_turn_until=NULL WHERE id=1");
   const intent = await createInteractivePriorityIntent(pool, owner, "preview");
-  await assert.rejects(createInteractivePriorityIntent(pool, owner, "preview"), (e: any) => e.code === "capacity_queue_full");
   assert.equal(await acquireChromiumLease(pool, { workload: "capture", slots: 1 }), null, "pending scheduled work is deferred without starting a browser");
-  await pool.query("UPDATE fusion_chromium_priority_intents SET created_at=now()-interval '30 seconds',expires_at=now()-interval '10 seconds' WHERE id=$1", [intent]);
-  const recovered = await acquireChromiumLease(pool, { workload: "capture", slots: 1 });
-  assert.ok(recovered); await recovered.release();
-  await pool.query("UPDATE fusion_chromium_scheduler SET priority_window_until=now()-interval '1 second' WHERE id=1");
-  await assert.rejects(createInteractivePriorityIntent(pool, owner, "preview"), (e: any) => e.code === "scheduled_recovery");
-  await assert.rejects(createInteractivePriorityIntent(pool, owner, "preview"), (e: any) => e.code === "scheduled_recovery");
-  const fair = await acquireChromiumLease(pool, { workload: "capture", slots: 1, observeInteractivePriority: true });
-  assert.ok(fair);
-  await pool.query("UPDATE fusion_chromium_scheduler SET scheduled_turn_until=now()-interval '1 second' WHERE id=1");
-  const afterTurn = await createInteractivePriorityIntent(pool, owner, "preview");
-  await new Promise((resolve) => setTimeout(resolve, 200));
-  assert.equal(fair.signal?.aborted, false, "a recovery capture retains its bounded capture deadline even after the admission turn ends");
-  await fair.release();
-  await cancelInteractivePriorityIntent(pool, afterTurn);
+  const second = await createInteractivePriorityIntent(pool, owner, "preview");
+  const firstLease = await acquireChromiumLease(pool, { workload: "preview", slots: 1, priorityIntentId: intent });
+  assert.ok(firstLease, "FIFO head owns the single Chromium slot");
+  assert.equal(await acquireChromiumLease(pool, { workload: "preview", slots: 1, priorityIntentId: second }), null, "later interactive work cannot bypass FIFO");
+  await firstLease!.release();
+  const secondLease = await acquireChromiumLease(pool, { workload: "preview", slots: 1, priorityIntentId: second });
+  assert.ok(secondLease); await secondLease!.release();
   await cancelInteractivePriorityIntent(pool, intent);
-  await pool.query("UPDATE fusion_chromium_scheduler SET priority_window_until=NULL,scheduled_turn_until=NULL WHERE id=1");
+  const state = (await pool.query("SELECT scheduled_recovery_pending,scheduled_turn_until FROM fusion_chromium_scheduler WHERE id=1")).rows[0];
+  assert.deepEqual(state, { scheduled_recovery_pending: false, scheduled_turn_until: null });
 });
 
-test("an active Preview cannot reset an expired burst through quiet reconnects and already-running scheduled recovery completes", async () => {
+test("a waiting interactive heartbeat preserves FIFO creation order beyond the original intent window", async () => {
   const owner = (await pool.query("SELECT user_id FROM users WHERE email='owner@example.com'")).rows[0].user_id;
-  const reset = () => pool.query("UPDATE fusion_chromium_scheduler SET priority_window_until=NULL,last_interactive_at=NULL,scheduled_turn_until=NULL,scheduled_recovery_pending=false WHERE id=1");
-  await reset();
-  let held = await acquireChromiumLease(pool, { workload: "preview", slots: 1 });
+  const blocker = await acquireChromiumLease(pool, { workload: "capture", slots: 1 });
+  assert.ok(blocker);
+  const intent = await createInteractivePriorityIntent(pool, owner, "preview");
+  await pool.query("UPDATE fusion_chromium_priority_intents SET created_at=now()-interval '1 minute' WHERE id=$1", [intent]);
+  const waiting = acquireChromiumLease(pool, { workload: "preview", slots: 1, priorityIntentId: intent, waitMs: 1_000 });
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  await blocker!.release();
+  const admitted = await waiting;
+  assert.ok(admitted, "the live FIFO owner remains admitted while it heartbeats");
+  const timestamps = (await pool.query("SELECT created_at,heartbeat_at FROM fusion_chromium_priority_intents WHERE id=$1", [intent])).rows[0];
+  assert.ok(timestamps.heartbeat_at > timestamps.created_at, "heartbeat renewal never rewrites immutable FIFO order");
+  await admitted!.release();
+});
+
+test("a new interactive intent cancels an already-running scheduled capture despite legacy recovery state", async () => {
+  const owner = (await pool.query("SELECT user_id FROM users WHERE email='owner@example.com'")).rows[0].user_id;
+  await pool.query("UPDATE fusion_chromium_scheduler SET scheduled_turn_until=now()+interval '30 seconds',scheduled_recovery_pending=true WHERE id=1");
+  const held = await acquireChromiumLease(pool, { workload: "capture", slots: 1, observeInteractivePriority: true });
+  assert.ok(held);
   let intent: string | undefined;
   try {
-    assert.ok(held);
-    await pool.query("UPDATE fusion_chromium_scheduler SET priority_window_until=now()-interval '1 second',last_interactive_at=now()-interval '31 seconds' WHERE id=1");
-    await assert.rejects(createInteractivePriorityIntent(pool, owner, "preview"), (e: any) => e.code === "scheduled_recovery");
-    const pending = (await pool.query("SELECT scheduled_recovery_pending,scheduled_turn_until FROM fusion_chromium_scheduler WHERE id=1")).rows[0];
-    assert.equal(pending.scheduled_recovery_pending, true);
-    assert.equal(pending.scheduled_turn_until, null, "the recovery admission window starts only after confirmed Preview cleanup");
-    await held.release(); held = null;
-    const released = (await pool.query("SELECT scheduled_turn_until>now() AS turn,last_interactive_at>now()-interval '1 second' AS recent FROM fusion_chromium_scheduler WHERE id=1")).rows[0];
-    assert.deepEqual(released, { turn: true, recent: true });
-    await reset();
-    held = await acquireChromiumLease(pool, { workload: "capture", slots: 1, observeInteractivePriority: true });
-    assert.ok(held);
-    await pool.query("UPDATE fusion_chromium_scheduler SET priority_window_until=now()-interval '1 second',last_interactive_at=now() WHERE id=1");
-    await assert.rejects(createInteractivePriorityIntent(pool, owner, "preview"), (e: any) => e.code === "scheduled_recovery");
-    await new Promise(resolve => setTimeout(resolve, 250));
-    await pool.query("UPDATE fusion_chromium_scheduler SET scheduled_turn_until=now()-interval '1 second' WHERE id=1");
     intent = await createInteractivePriorityIntent(pool, owner, "preview");
     await new Promise(resolve => setTimeout(resolve, 250));
-    assert.equal(held.signal!.aborted, false, "a scheduled capture already running when recovery began retains its bounded deadline");
-  } finally { await held?.release(); await cancelInteractivePriorityIntent(pool, intent); await reset(); }
+    assert.equal(held!.signal!.aborted, true, "interactive work immediately signals cooperative scheduled cancellation");
+    assert.ok(held!.signal!.reason instanceof SchedulingCancellation);
+  } finally { await held?.release(); await cancelInteractivePriorityIntent(pool, intent); }
+});
+
+test("editor heartbeat blocks and preempts scheduled Chromium without occupying the interactive FIFO", async () => {
+  const owner = (await pool.query("SELECT user_id FROM users WHERE email='owner@example.com'")).rows[0].user_id;
+  const scheduled = await acquireChromiumLease(pool, { workload: "capture", slots: 1, observeInteractivePriority: true });
+  assert.ok(scheduled);
+  const presence = await heartbeatInteractivePresence(pool, owner);
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.ok(scheduled!.signal?.reason instanceof SchedulingCancellation);
+    await scheduled!.release();
+    assert.equal(await acquireChromiumLease(pool, { workload: "capture", slots: 1 }), null, "active editing blocks new scheduled browsers");
+    const intent = await createInteractivePriorityIntent(pool, owner, "preview");
+    const preview = await acquireChromiumLease(pool, { workload: "preview", slots: 1, priorityIntentId: intent });
+    assert.ok(preview, "editing presence does not deadlock the user's FIFO browser request");
+    await preview!.release();
+  } finally {
+    await scheduled?.release();
+    await endInteractivePresence(pool, owner, presence);
+  }
+  const resumed = await acquireChromiumLease(pool, { workload: "capture", slots: 1 });
+  assert.ok(resumed); await resumed!.release();
+});
+
+test("retained Preview scroll moves the real Chromium page and refreshes the shared screenshot engine", async (t) => {
+  const fixture = managedServer(t, (_req, res) => res.end("<!doctype html><style>body{margin:0}.spacer{height:2400px}</style><div class=spacer>top</div><button id=target>target</button>"));
+  await new Promise<void>((resolve) => fixture.listen(0, "127.0.0.1", resolve));
+  const port = (fixture.address() as AddressInfo).port;
+  const policy = new EgressPolicy(async () => [{ address: "127.0.0.1", family: 4 }], () => true, new Set([port]));
+  const monitor = { id: randomUUID(), url: `http://scroll.fixture:${port}/`, kind: "browser", visual_enabled: true, text_enabled: false, browser_steps: [] } as any;
+  const operations = { screenshot: async () => image() };
+  const initial = await previewRegion(monitor, cfg, undefined, policy, { ownerId: "scroll-owner", retain: true, operations });
+  assert.equal(initial.scroll_y, 0);
+  const scrolled = await previewRegion(monitor, cfg, undefined, policy, { ownerId: "scroll-owner", id: initial.session_id, retain: true, scrollDeltaY: 700, operations });
+  assert.equal(scrolled.reused, true);
+  assert.ok(scrolled.scroll_y >= 690, "the backend Chromium document, not the screenshot canvas, moved vertically");
+  await closeRegionPreviewSessions();
 });
 
 test("scheduled cancellation during real Browser Steps and stalled screenshot closes Chromium before releasing capacity", async (t) => {

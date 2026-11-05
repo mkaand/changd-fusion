@@ -1,12 +1,13 @@
 # GHCR immutable release
 
-`GHCR immutable release` is manual-only and can publish only when dispatched
-from `master`. The operator supplies a complete 40-character source SHA. The
-workflow rejects any SHA outside `master` history and requires successful
+`GHCR immutable release` runs automatically after the trusted `CI` workflow
+completes successfully on `master`. A master-only manual dispatch remains for
+reviewed recovery. In either case the workflow resolves one complete
+40-character source SHA, rejects any SHA outside `master` history and requires successful
 `verify`, `privacy`, `docker`, and `docker-arm64` GitHub Actions checks for
 that exact SHA before it builds or publishes.
 
-For v0.3.3 it publishes Linux AMD64 images tagged with the version and exact
+For v0.4.0 it publishes Linux AMD64 images tagged with the version and exact
 source SHA. The release manifest records immutable digest references. Deploy
 only these references, never a mutable tag:
 

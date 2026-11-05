@@ -75,6 +75,29 @@ it("maps mobile preview taps against the returned 390 by 844 viewport", async ()
   ));
 });
 
+it("turns a one-finger Fit gesture into real backend scroll and a replayable friendly step", async () => {
+  const session = "00000000-0000-4000-8000-000000000099";
+  const onAddStep = vi.fn();
+  vi.mocked(api)
+    .mockResolvedValueOnce({ session_id: session, image: "aGVsbG8=", width: 390, height: 844, scroll_y: 0, selection: null })
+    .mockResolvedValueOnce({ session_id: session, image: "c2Nyb2xsZWQ=", width: 390, height: 844, scroll_y: 420, selection: null })
+    .mockResolvedValueOnce({ session_id: session, image: "c2Nyb2xsZWQ=", width: 390, height: 844, scroll_y: 420, selection: { selector: "#target", x: 20, y: 30, width: 100, height: 40 } });
+  render(<RegionPicker purpose="step" mobilePage getDraft={() => ({ ...draft, mobile_view: true })} onSelect={vi.fn()} onUseViewport={vi.fn()} onAddStep={onAddStep} />);
+  const image = await screen.findByAltText("Secure monitor preview");
+  Object.defineProperty(image, "getBoundingClientRect", { value: () => ({ left: 0, top: 0, width: 390, height: 844 }) });
+  const canvas = image.closest(".region-preview-canvas")!;
+  fireEvent.pointerDown(image, { pointerId: 41, pointerType: "touch", clientX: 180, clientY: 700 });
+  fireEvent.pointerMove(canvas, { pointerId: 41, pointerType: "touch", clientX: 180, clientY: 280 });
+  fireEvent.pointerUp(canvas, { pointerId: 41, pointerType: "touch", clientX: 180, clientY: 280 });
+  await waitFor(() => expect(api).toHaveBeenLastCalledWith("/region-preview", "POST", expect.objectContaining({ session_id: session, scroll_delta_y: 420 }), expect.anything()));
+  fireEvent.pointerDown(image, { pointerId: 42, pointerType: "touch", clientX: 60, clientY: 80 });
+  fireEvent.pointerUp(canvas, { pointerId: 42, pointerType: "touch", clientX: 60, clientY: 80 });
+  await screen.findByText("Selected visible element");
+  await userEvent.setup().click(screen.getByRole("button", { name: "Add step to draft" }));
+  expect(onAddStep).toHaveBeenNthCalledWith(1, { action: "scroll_by", x: 0, y: 420, timeout_ms: 5000, continue_on_error: false });
+  expect(onAddStep).toHaveBeenNthCalledWith(2, { action: "click", selector: "#target", selector_type: "css", timeout_ms: 5000, continue_on_error: false });
+});
+
 it("builds a CSS browser step from Preview without enabling visual detection", async () => {
   const onAddStep = vi.fn();
   vi.mocked(api).mockResolvedValue({ session_id: "00000000-0000-4000-8000-000000000099", image: "aGVsbG8=", width: 1280, height: 900, http_status: 403, selection: { selector: "#reject-cookies", label: "Exact: button", x: 20, y: 20, width: 120, height: 44 } });

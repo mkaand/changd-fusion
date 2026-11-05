@@ -114,7 +114,7 @@ it("adds and replays visual Preview steps only in the unsaved form draft", async
   await user.click(screen.getByRole("button", { name: "Add step from Preview" }));
   await screen.findByText("Selected visible element");
   await user.click(screen.getByRole("combobox", { name: "Browser step action" }));
-  await user.click(screen.getByText("dismiss cookie"));
+  await user.click(screen.getByText("Dismiss cookie banner"));
   await user.click(screen.getByRole("switch", { name: "Optional browser step" }));
   await user.click(screen.getByRole("button", { name: "Add step to draft" }));
   expect(form.getFieldValue("browser_steps")).toEqual([{ action: "dismiss_cookie", selector: "#consent-reject", selector_type: "css", timeout_ms: 5000, continue_on_error: true }]);

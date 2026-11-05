@@ -68,11 +68,11 @@ export function MonitorForm({ form, channels, monitorId, onOpenMobileRegion, onO
         {captureMode === "element" && <>
           <Form.Item name="capture_selector_type" label="Region selector type"><Select options={[{ value: "css", label: "CSS" }, { value: "xpath", label: "XPath" }]} /></Form.Item>
           <Form.Item name="capture_selector" label="Screenshot region selector" rules={[{ required: true, whitespace: true }]} extra="Must match exactly one visible element. Independent of the text extraction selector."><Input placeholder="#content or //main" maxLength={1000} /></Form.Item>
-          <RegionPicker monitorId={monitorId} onRequestMobile={onOpenMobileRegion} getDraft={() => form.getFieldsValue(true)} onSelect={(selector) => form.setFieldsValue({ capture_selector_type: "css", capture_selector: selector })} onUseViewport={() => form.setFieldsValue({ capture_mode: "viewport", capture_selector: "" })} />
+          <RegionPicker monitorId={monitorId} onRequestMobile={onOpenMobileRegion} getDraft={() => form.getFieldsValue(true)} onSelect={(selector) => form.setFieldsValue({ capture_selector_type: "css", capture_selector: selector })} onUseViewport={() => form.setFieldsValue({ capture_mode: "viewport", capture_selector: "" })} onScrollStep={(step) => form.setFieldValue("browser_steps", [...(form.getFieldValue("browser_steps") ?? []), step].slice(0, 20))} />
         </>}
         {captureMode === "selected_area" && <div className="selected-area-form-control">
           <Typography.Paragraph type="secondary">Tracks fixed viewport coordinates. Use Selected element when the target should follow a moving DOM element.</Typography.Paragraph>
-          <SelectedAreaPicker monitorId={monitorId} onRequestMobile={onOpenMobileArea} getDraft={() => form.getFieldsValue(true)} onApply={(capture_area) => form.setFieldsValue({ capture_mode: "selected_area", capture_area })} />
+          <SelectedAreaPicker monitorId={monitorId} onRequestMobile={onOpenMobileArea} getDraft={() => form.getFieldsValue(true)} onScrollStep={(step) => form.setFieldValue("browser_steps", [...(form.getFieldValue("browser_steps") ?? []), step].slice(0, 20))} onApply={(capture_area) => form.setFieldsValue({ capture_mode: "selected_area", capture_area })} />
         </div>}
         <Form.Item name="visual_threshold" label="Visual alert threshold (%)" extra="For equal image sizes, alerts only above the threshold; equality does not alert. Dimension changes alert once without a percentage and advance the baseline."><InputNumber stringMode min="0" max="100" step="0.01" /></Form.Item>
         <Form.Item name="pixel_threshold" label="Pixel color tolerance"><InputNumber min={0} max={1} step={0.01} /></Form.Item>

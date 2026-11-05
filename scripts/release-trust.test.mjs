@@ -286,6 +286,11 @@ test("rejects invalid signatures, wrong identity, source and subject digest", as
 
 test("release workflow grants attestation permissions and pins official provenance actions", async () => {
   const workflow = await readFile(new URL("../.github/workflows/ghcr-release.yml", import.meta.url), "utf8");
+  assert.match(workflow, /workflow_run:/);
+  assert.match(workflow, /workflows: \[CI\]/);
+  assert.match(workflow, /github\.event\.workflow_run\.conclusion == 'success'/);
+  assert.match(workflow, /github\.event\.workflow_run\.head_branch == 'master'/);
+  assert.match(workflow, /SOURCE_SHA:.*workflow_run\.head_sha/);
   assert.match(workflow, /id-token: write/);
   assert.match(workflow, /attestations: write/);
   const uses = workflow.match(/actions\/attest-build-provenance@[0-9a-f]{40}/g) ?? [];
