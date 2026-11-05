@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { DeploymentStateStore } from "./deployment-state.mjs";
-import { executeUpdaterRuntime, runtimeConfiguration } from "./ghcr-updater-runtime.mjs";
+import { executeUpdaterRuntime, runtimeConfiguration, runtimeOutcome, safeRuntimeFailureCode } from "./ghcr-updater-runtime.mjs";
 
 const project = "fusion_runtime_test";
 const source = "a".repeat(40), oldSource = "d".repeat(40);
@@ -159,6 +159,41 @@ test("Telegram delivery failure cannot corrupt a verified successful deployment"
   const result = await executeUpdaterRuntime({ environment: environment(directory), client, ...f });
   assert.equal(result.updated, true); const state = f.stateStore.load();
   assert.equal(state.status, "SUCCESS"); assert.equal(state.notification.error, "telegram_delivery_failed");
+});
+
+test("updater CLI returns exit zero only for a truly verified read-only dry-run", () => {
+  const valid = runtimeOutcome({
+    updated: false, dryRun: true,
+    plan: { project: "fusion_runtime_test", services: ["api", "worker", "ui"], dryRun: true },
+  });
+  assert.equal(valid.status, 0);
+  assert.match(valid.stdout, /dry-run verification PASS/);
+  assert.equal(runtimeOutcome({ updated: true }).status, 0);
+  assert.equal(runtimeOutcome({ updated: false, reason: "no_update" }).status, 0);
+  assert.equal(runtimeOutcome({ updated: false, reason: "replay" }).status, 0);
+  for (const bad of [
+    { updated: false, reason: "registry_http_403" },
+    { updated: false, reason: "BOOTSTRAP_REQUIRED" },
+    { updated: false, reason: "recovery_required" },
+    { updated: false, reason: "unsafe_migration", dryRun: true },
+    { updated: false, dryRun: true },
+    { updated: false, dryRun: true, plan: { dryRun: false } },
+    { updated: false, dryRun: true, plan: { dryRun: true }, reason: "unsafe_project" },
+    undefined,
+  ]) assert.equal(runtimeOutcome(bad).status, 1, "errors and incomplete results must fail closed");
+});
+
+test("systemd receives safe error codes without secrets or exception stack traces", () => {
+  assert.equal(safeRuntimeFailureCode(new Error("registry_http_403")), "registry_http_403");
+  assert.equal(safeRuntimeFailureCode(new Error("artifact_http_401")), "artifact_http_401");
+  assert.equal(safeRuntimeFailureCode(new Error("installed_source_ancestry_unverified")), "installed_source_ancestry_unverified");
+  for (const secretBearing of [
+    new Error("GET https://ghcr.io/token?secret=value"),
+    new Error("Bearer ghp_SecretToken"),
+    new Error("/etc/changd-fusion/updater.env: permission denied"),
+    { message: "registry_http_403\nsecret" },
+    { message: undefined },
+  ]) assert.equal(safeRuntimeFailureCode(secretBearing), "runtime_failure");
 });
 
 test("dry-run and no-update have no Docker mutation and no notification", async () => {
