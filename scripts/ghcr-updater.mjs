@@ -64,20 +64,34 @@ export async function discoverRelease(client, trusted) {
     if (!check.ok) throw Error(`untrusted_release_candidate_${check.reason}`);
     verified.push(evidence);
   }
-  const versions = new Set(), sources = new Set();
+  // A master CI run may legitimately republish an unchanged package version
+  // after an updater-only PR. Keep only the last ancestor-ordered source for
+  // each version; reject incomparable sources or different images for one SHA.
+  const byVersion = new Map();
   for (const evidence of verified) {
-    if (versions.has(evidence.manifest.version)) throw Error("ambiguous_release_version");
-    if (sources.has(evidence.manifest.source_sha)) throw Error("ambiguous_release_source");
-    versions.add(evidence.manifest.version);
-    sources.add(evidence.manifest.source_sha);
+    const previous = byVersion.get(evidence.manifest.version);
+    if (!previous) {
+      byVersion.set(evidence.manifest.version, evidence);
+      continue;
+    }
+    if (previous.manifest.source_sha === evidence.manifest.source_sha) {
+      if (!sameRelease(previous.manifest, evidence.manifest)) throw Error("ambiguous_release_source");
+      if (evidence.workflow.id > previous.workflow.id) byVersion.set(evidence.manifest.version, evidence);
+      continue;
+    }
+    const previousPrecedes = await client.sourceLineage(previous.manifest.source_sha, evidence.manifest.source_sha);
+    const candidatePrecedes = await client.sourceLineage(evidence.manifest.source_sha, previous.manifest.source_sha);
+    if (previousPrecedes === candidatePrecedes) throw Error("ambiguous_release_version");
+    if (previousPrecedes) byVersion.set(evidence.manifest.version, evidence);
   }
-  verified.sort((left, right) => compareVersions(left.manifest.version, right.manifest.version));
-  for (let index = 1; index < verified.length; index += 1) {
-    if (!await client.sourceLineage(verified[index - 1].manifest.source_sha, verified[index].manifest.source_sha)) {
+  const selected = [...byVersion.values()].sort((left, right) =>
+    compareVersions(left.manifest.version, right.manifest.version));
+  for (let index = 1; index < selected.length; index += 1) {
+    if (!await client.sourceLineage(selected[index - 1].manifest.source_sha, selected[index].manifest.source_sha)) {
       throw Error("incompatible_release_ancestry");
     }
   }
-  return verified.at(-1);
+  return selected.at(-1);
 }
 export function migrationGate(current, candidate) {
   if (current?.bootstrapped === false) return { ok:false, reason:"BOOTSTRAP_REQUIRED" };
