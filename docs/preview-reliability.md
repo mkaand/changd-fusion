@@ -2,7 +2,13 @@
 
 Browser visual previews share a single PostgreSQL advisory lease with scheduled captures. Authenticated interactive requests have bounded priority and scheduled browser work yields after confirmed cleanup. `CHROMIUM_CONCURRENCY=1` is enforced. See [resource budgets, crash recovery and rollout constraints](interactive-preview-capacity.md).
 
-`PREVIEW_CAPACITY_WAIT_MS` defaults to `15000`, capped at 15 seconds and the remaining 110-second transport budget. Admission remains separate from browser execution. Waiting callers release PostgreSQL clients between probes. Safe handoff can take several seconds; another owner's active Preview is not preempted. Cancellation stops waiting promptly. The existing local waiter bound and a durable global limit of four pending intents protect against bursts.
+`PREVIEW_CAPACITY_WAIT_MS` defaults to `45000`, capped at 45 seconds and the remaining 110-second transport budget while preserving cleanup headroom. Admission remains separate from browser execution and long monitor capture settings cannot collapse admission to zero. Waiting callers release PostgreSQL clients between probes. Safe handoff can take several seconds; another owner's active Preview is serialized through the interactive FIFO rather than preempted. Cancellation stops waiting promptly. The local waiter bound and durable global/per-user queue limits protect against bursts.
+
+Interactive intents and editor heartbeats have absolute priority. They clear the
+legacy scheduled-recovery turn under the scheduler row lock; a running scheduled
+capture receives `SchedulingCancellation`, performs cooperative cleanup and is
+recorded as `skipped/interactive_priority`. No second Chromium root is admitted
+until the prior owner confirms browser and proxy cleanup.
 
 Region Preview now runs the same validated non-private Browser Steps sequence as a browser capture after navigation and before rendering/screenshot preparation. The preview request carries the monitor draft's `step_budget_ms`, and the existing per-step timeout, maximum 20 steps, CSS/XPath validation, origin checks, and `continue_on_error` rules apply unchanged. `fill_private` remains rejected for previews: no vault values, credentials, cookies, or private workflow data are sent to or read by the preview path.
 

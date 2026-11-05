@@ -61,6 +61,7 @@ export async function workerCycle(
         if (monitor.manualRunId && usesChromium) {
           const intent = await pool.query("SELECT 1 FROM fusion_chromium_priority_intents WHERE id=$1 AND cancelled_at IS NULL AND expires_at>now()", [monitor.priorityIntentId]);
           if (!intent.rowCount) {
+            const expiredIntentId = monitor.priorityIntentId;
             try {
               monitor.priorityIntentId = await createInteractivePriorityIntent(pool, monitor.user_id, "manual", monitor.id);
               const refreshed = await pool.query("UPDATE fusion_manual_runs SET priority_intent_id=$2 WHERE id=$1 AND status IN ('queued','running') RETURNING id", [monitor.manualRunId, monitor.priorityIntentId]);
@@ -68,6 +69,7 @@ export async function workerCycle(
                 await cancelInteractivePriorityIntent(pool, monitor.priorityIntentId);
                 continue;
               }
+              await cancelInteractivePriorityIntent(pool, expiredIntentId);
             } catch (error) {
               if (error instanceof CaptureFailure && ["capacity_busy", "capacity_queue_full", "scheduled_recovery"].includes(error.code)) continue;
               throw error;
@@ -107,7 +109,11 @@ export async function workerCycle(
           throw error;
         } finally {
           if (!fatalCleanup) await capacity?.release();
-          if (!fatalCleanup && monitor.manualRunId && !capacity) await cancelInteractivePriorityIntent(pool, monitor.priorityIntentId);
+          // A completed/failed manual operation no longer owns interactive
+          // priority, regardless of whether it needed and acquired Chromium.
+          // Leaving the intent live until its heartbeat expiry unnecessarily
+          // blocks the next Preview with a capacity_wait timeout.
+          if (!fatalCleanup && monitor.manualRunId) await cancelInteractivePriorityIntent(pool, monitor.priorityIntentId);
         }
         } finally {
           try {

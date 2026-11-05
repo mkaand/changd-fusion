@@ -210,6 +210,16 @@ requires a separately reviewed compatibility/bootstrap procedure. There is no
 speculative database rollback; a post-mutation failure retains previous image
 references and enters `RECOVERY_REQUIRED` without altering persistent volumes.
 
+v0.4.0 adds migration 019 for the expiring interactive-editor presence barrier.
+It is additive, but the updater deliberately does not self-approve that fact:
+an existing v0.3.3 installation therefore stops with `unsafe_migration` until
+an operator reviews and applies 019 through the same fenced, volume-preserving
+migration procedure. After the installed ledger matches the signed candidate,
+normal host-initiated automatic updates resume. When an existing installation
+uses Compose project `changd-fusion-v030`, that exact project value must be
+configured; the updater never renames it or recreates its database/capture
+volumes.
+
 ## Notifications, installation and activation
 
 Telegram is optional and uses only the official HTTPS Bot API with bounded
@@ -250,10 +260,8 @@ dry-run and optional Telegram delivery. No fixture result is presented as live
 registry or production evidence.
 
 Disable JavaScript continues to use `javaScriptEnabled: !disable_javascript` in
-scheduled capture and Region Preview. Its real Chromium regression remains as a
-dedicated integration target, run with
-`npm run test:integration:disable-javascript`; it is intentionally excluded from
-the required `npm run test:integration` suite. Cloud_2's system Chromium timed
-out in screenshot capture; per release decision, final user acceptance is
-**PENDING USER ACCEPTANCE** after an approved deployment. This is not converted
-into a passing test or an updater prerequisite.
+scheduled capture and all Region Preview modes. Its deterministic real-Chromium
+fixture is included in the required `npm run test:integration` suite; the
+dedicated `npm run test:integration:disable-javascript` command remains useful
+for focused diagnosis. Live external-site behavior remains separate acceptance
+evidence and is never inferred from local fixtures.

@@ -40,7 +40,7 @@ test("resource configuration is bounded and defaults to a single Chromium captur
     CHANNEL_KEY: randomBytes(32).toString("hex"),
   };
   assert.equal(readConfig(env).CHROMIUM_CONCURRENCY, 1);
-  assert.equal(readConfig(env).PREVIEW_CAPACITY_WAIT_MS, 15_000);
+  assert.equal(readConfig(env).PREVIEW_CAPACITY_WAIT_MS, 45_000);
   assert.equal(readConfig(env).CAPTURE_TIMEOUT_MS, 30_000);
   assert.equal(readConfig({ ...env, CAPTURE_TIMEOUT_MS: "45000" }).CAPTURE_TIMEOUT_MS, 45_000);
   assert.equal(DEFAULT_NEW_MONITOR_CAPTURE_TIMEOUT_MS, 60_000);
@@ -55,9 +55,9 @@ test("resource configuration is bounded and defaults to a single Chromium captur
 });
 
 test("preview admission has a separate bounded budget from browser execution", () => {
-  for (const [execution, admission] of [[30_000, 15_000], [45_000, 15_000], [60_000, 15_000], [75_000, 15_000], [90_000, 10_000]] as const)
+  for (const [execution, admission] of [[30_000, 45_000], [45_000, 45_000], [60_000, 45_000], [75_000, 45_000], [90_000, 45_000]] as const)
     assert.equal(previewCapacityWaitBudget({ PREVIEW_CAPACITY_WAIT_MS: 45_000 }, execution), admission);
-  assert.equal(previewCapacityWaitBudget({ PREVIEW_CAPACITY_WAIT_MS: 45_000 }, PREVIEW_REQUEST_BUDGET_MS), 0);
+  assert.equal(previewCapacityWaitBudget({ PREVIEW_CAPACITY_WAIT_MS: 12_000 }, PREVIEW_REQUEST_BUDGET_MS), 12_000);
 });
 
 test("Preview admission subtracts target validation time and reserves browser/proxy cleanup", async () => {
@@ -74,7 +74,7 @@ test("Preview admission subtracts target validation time and reserves browser/pr
       throw new CaptureFailure("browser_launch", "capacity_busy");
     },
   }), (e: any) => e.failure_code === "capacity_busy");
-  assert.ok(budget > 0 && budget < 10_000, "a 90-second capture leaves less than 10 seconds after validation and reserved cleanup");
+  assert.ok(budget > 40_000 && budget <= 45_000, "a long capture timeout cannot erase the bounded interactive handoff window");
 });
 
 test("Compose preserves the 30-second legacy fallback", async () => {
@@ -101,5 +101,5 @@ test("legacy preview execution is capped below the transport budget without chan
   const legacy = { CAPTURE_TIMEOUT_MS: 120_000 };
   assert.equal(effectiveCaptureTimeout({ capture_timeout_ms: null }, legacy), 120_000);
   assert.equal(previewExecutionTimeout({ capture_timeout_ms: null }, legacy), PREVIEW_REQUEST_BUDGET_MS);
-  assert.equal(previewCapacityWaitBudget({ PREVIEW_CAPACITY_WAIT_MS: 45_000 }, previewExecutionTimeout({ capture_timeout_ms: null }, legacy)), 0);
+  assert.equal(previewCapacityWaitBudget({ PREVIEW_CAPACITY_WAIT_MS: 45_000 }, previewExecutionTimeout({ capture_timeout_ms: null }, legacy)), 45_000);
 });

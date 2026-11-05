@@ -74,6 +74,17 @@ The documented command verifies build metadata from the local Git checkout befor
 
 The public UI is served through the configured same-origin frontend. PostgreSQL and API ports should remain private behind the reverse proxy. Public registration is disabled by default.
 
+### v0.4.0 interactive browser priority
+
+v0.4.0 makes interactive Preview and Check Now work absolute FIFO priorities:
+scheduled Chromium work is cooperatively cancelled, recorded as
+`skipped/interactive_priority`, and cannot receive a recovery turn while an
+interactive request is active. Selected Element, Selected Area and Browser Step
+Preview share the retained secure browser engine. A one-finger gesture at Fit
+zoom scrolls the real Chromium page and records a replayable Page scroll step;
+pinch zoom remains local screenshot inspection. The legacy 1280 × 900 Selected
+Area coordinate contract is unchanged.
+
 ### v0.3.3 immutable updater (opt-in)
 
 v0.3.3 adds a disabled-by-default Linux systemd updater for deployments that
@@ -92,10 +103,9 @@ the bootstrap marker confirmed. The timer must remain disabled until that work
 and a dry-run are approved. See the complete [GHCR updater trust, bootstrap,
 installation and recovery guide](docs/ghcr-updater.md).
 
-Disable JavaScript behavior is unchanged and retains real Chromium integration
-coverage. Cloud_2 screenshot execution remains environment-unverified; final
-behavior acceptance is pending an approved production deployment and is not
-presented as a release or security test pass.
+Disable JavaScript behavior is unchanged and its real-Chromium local fixture is
+part of the required integration suite. A live external-site probe is separate
+evidence and is never inferred from the deterministic fixture.
 
 ### First administrator
 

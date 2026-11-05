@@ -1,10 +1,7 @@
 import { spawn } from "node:child_process";
 import { readdirSync } from "node:fs";
-const deferredAcceptanceTests = new Set([
-  "disable-javascript-chromium.test.ts",
-]);
 const files = readdirSync("test/integration")
-  .filter((f) => f.endsWith(".test.ts") && !deferredAcceptanceTests.has(f))
+  .filter((f) => f.endsWith(".test.ts"))
   .sort()
   .map((f) => "test/integration/" + f);
 if (!files.length) throw Error("No integration tests found");

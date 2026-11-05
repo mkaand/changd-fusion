@@ -23,11 +23,20 @@ test("real Chromium applies disable_javascript consistently to capture and previ
   t.after(() => rm(root, { recursive:true, force:true }));
   const cfg = readConfig({ NODE_ENV:"test", DATABASE_URL:"postgres://unused", JWT_SECRET:randomBytes(32).toString("hex"), CHANNEL_KEY:randomBytes(32).toString("hex"), DATA_DIR:root, PLAYWRIGHT_EXECUTABLE_PATH:process.env.PLAYWRIGHT_EXECUTABLE_PATH, LOG_LEVEL:"silent" });
   const policy = new EgressPolicy(async () => [{ address:"127.0.0.1", family:4 }], () => true, new Set([port]));
-  const base:any = { id:randomUUID(), url:`http://fixture.test:${port}/`, kind:"browser", text_enabled:true, visual_enabled:true, selector:"body", selector_type:"css", capture_mode:"viewport", browser_steps:[], ignore_selectors:[], ignore_text:[], mask_selectors:[], normalize_whitespace:true, ignore_case:false };
+  const base:any = { id:randomUUID(), url:`http://fixture.test:${port}/`, kind:"browser", text_enabled:true, visual_enabled:true, selector:"body", selector_type:"css", capture_mode:"viewport", browser_steps:[], ignore_selectors:[], ignore_text:[], mask_selectors:[], normalize_whitespace:true, ignore_case:false, capture_timeout_ms:60_000 };
   const enabled = await capture({ ...base, disable_javascript:false }, cfg, policy);
   const disabled = await capture({ ...base, disable_javascript:true }, cfg, policy);
   assert.match(enabled.text!, /scripted/); assert.match(enabled.text!, /generated/);
   assert.match(disabled.text!, /static/); assert.doesNotMatch(disabled.text!, /scripted|generated/);
-  const preview = await previewRegion({ ...base, disable_javascript:true }, cfg, undefined, policy, { ownerId:"js-fixture", retain:false });
-  assert.equal(preview.width, 1280); assert.ok(Buffer.from(preview.image, "base64").length > 100);
+  assert.ok(enabled.screenshot && disabled.screenshot, "scheduled captures produce real screenshots in both modes");
+  assert.notDeepEqual(enabled.screenshot, disabled.screenshot, "scheduled pixels reflect blocked page JavaScript");
+  for (const mode of ["selected-element", "selected-area", "browser-step"] as const) {
+    const monitor = { ...base, browser_steps: mode === "browser-step" ? [{ action:"wait_selector", selector:"#static", selector_type:"css", timeout_ms:2_000, continue_on_error:false }] : [] };
+    const captureLayout = mode !== "selected-area";
+    const enabledPreview = await previewRegion({ ...monitor, disable_javascript:false }, cfg, undefined, policy, { ownerId:`js-enabled-${mode}`, retain:false, captureLayout });
+    const disabledPreview = await previewRegion({ ...monitor, disable_javascript:true }, cfg, undefined, policy, { ownerId:`js-disabled-${mode}`, retain:false, captureLayout });
+    assert.equal(disabledPreview.width, 1280, `${mode} uses the real preview path`);
+    assert.ok(Buffer.from(disabledPreview.image, "base64").length > 100);
+    assert.notEqual(enabledPreview.image, disabledPreview.image, `${mode} reflects the JavaScript setting in captured pixels`);
+  }
 });

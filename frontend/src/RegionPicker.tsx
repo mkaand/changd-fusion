@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, InputNumber, Select, Space, Spin, Switch, Typography } from "antd";
 import { ApiError, api } from "./api";
+import { InteractivePreviewSurface } from "./InteractivePreviewSurface";
 const PREVIEW_REQUEST_TIMEOUT_MS = 125000;
 const MIN_ZOOM = .5, MAX_ZOOM = 3, ZOOM_STEP = .25;
 type Draft = { url?: string; kind?: string; visual_enabled?: boolean; browser_steps?: unknown[]; step_budget_ms?: number; capture_timeout_ms?: number | null; monitor_http_error_pages?: boolean; disable_javascript?: boolean; block_ads_trackers?: boolean; cookie_banner_handling?: boolean; wait_before_capture_ms?: 0 | 2000 | 5000 | 10000; mobile_view?: boolean };
 type Selection = { selector: string; label?: string; x: number; y: number; width: number; height: number };
-type Preview = { session_id?: string; expires_at?: number; image: string; width: number; height: number; http_status?: number; selection?: Selection | null; candidates?: Selection[]; timings?: Record<string, number>; warning?: string; reused?: boolean };
+type Preview = { session_id?: string; expires_at?: number; image: string; width: number; height: number; scroll_y?: number; http_status?: number; selection?: Selection | null; candidates?: Selection[]; timings?: Record<string, number>; warning?: string; reused?: boolean };
 const draftSignature = (draft: Draft) => JSON.stringify([draft.url, draft.kind, draft.visual_enabled, draft.browser_steps ?? [], draft.step_budget_ms ?? 20000, draft.capture_timeout_ms, draft.monitor_http_error_pages, draft.disable_javascript, draft.block_ads_trackers, draft.cookie_banner_handling, draft.wait_before_capture_ms, draft.mobile_view]);
-export type VisualBrowserStep = { action: "click" | "wait_visible" | "wait_selector" | "dismiss_cookie" | "scroll_to"; selector: string; selector_type: "css"; timeout_ms: number; continue_on_error: boolean };
+export type VisualBrowserStep = { action: "click" | "wait_visible" | "wait_selector" | "dismiss_cookie" | "scroll_to"; selector: string; selector_type: "css"; timeout_ms: number; continue_on_error: boolean } | { action: "scroll_by"; x: number; y: number; timeout_ms: number; continue_on_error: boolean };
 const progressLabels: Record<string, string> = { target_validation: "Connecting to website", capacity_wait: "Preparing interactive browser — waiting for safe handoff", proxy_initialization: "Preparing secure connection", browser_launch: "Starting secure browser", browser_context: "Preparing isolated page", navigation: "Loading page", dom_ready: "Page content loaded", browser_steps: "Applying browser steps", rendering_preparation: "Preparing preview", screenshot: "Rendering screenshot", serialization: "Transferring preview", ready: "Preview ready" };
 export const clampZoom = (value: number) => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, value));
 export const previewPoint = (clientX: number, clientY: number, rect: Pick<DOMRect, "left" | "top" | "width" | "height">, image: { width: number; height: number } = { width: 1280, height: 900 }) => ({
@@ -15,19 +16,21 @@ export const previewPoint = (clientX: number, clientY: number, rect: Pick<DOMRec
   y: Math.round((clientY - rect.top) * image.height / rect.height),
 });
 
-export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mobilePage = false, onRequestMobile, onBackMobile, purpose = "region", onAddStep }: {
+export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mobilePage = false, onRequestMobile, onBackMobile, purpose = "region", onAddStep, onScrollStep }: {
   monitorId?: string; getDraft: () => Draft; onSelect: (selector: string) => void; onUseViewport: () => void;
   mobilePage?: boolean; onRequestMobile?: () => void; onBackMobile?: () => void;
-  purpose?: "region" | "step"; onAddStep?: (step: VisualBrowserStep) => void;
+  purpose?: "region" | "step"; onAddStep?: (step: VisualBrowserStep) => void; onScrollStep?: (step: VisualBrowserStep) => void;
 }) {
   const [compact, setCompact] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches);
   const [open, setOpen] = useState(false), [preview, setPreview] = useState<Preview>(), [loading, setLoading] = useState(false), [error, setError] = useState<ApiError>(), [zoom, setZoom] = useState(1), [progress, setProgress] = useState("target_validation"), [clientTiming, setClientTiming] = useState<{ transfer?: number; decode?: number }>({});
   const [stepAction, setStepAction] = useState<VisualBrowserStep["action"]>("click"), [stepTimeout, setStepTimeout] = useState(5000), [stepOptional, setStepOptional] = useState(false), [workflowChanged, setWorkflowChanged] = useState(false);
+  const [pendingScrollY, setPendingScrollY] = useState(0);
   const canvas = useRef<HTMLDivElement>(null);
   const previewImage = useRef<HTMLImageElement>(null);
   const requestPending = useRef(false);
   const requestController = useRef<AbortController | undefined>(undefined);
   const sessionId = useRef<string | undefined>(undefined);
+  const initialScrollY = useRef(0);
   const renderedDraft = useRef<string>("");
   const [stale, setStale] = useState(true);
   useEffect(() => {
@@ -52,7 +55,7 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
     if (id) void api(`/region-preview/${id}`, "DELETE").catch(() => undefined);
   }, []);
   useEffect(() => () => releaseSession(), [releaseSession]);
-  const load = async (point?: { x: number; y: number }, refreshSession = false) => {
+  const load = async (point?: { x: number; y: number }, refreshSession = false, scrollDeltaY?: number) => {
     if (requestPending.current) return;
     const draft = getDraft();
     const signature = draftSignature(draft);
@@ -73,8 +76,9 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
     const progressTimer = point ? undefined : window.setInterval(() => { void api<{ stage: string }>(`/region-preview/status/${previewRequestId}`, "GET", undefined, { signal: controller.signal }).then((value) => { if (!controller.signal.aborted) setProgress(value.stage); }).catch(() => undefined); }, 1000);
     try {
       const result = await api("/region-preview", "POST", {
-        session_id: point || refreshSession ? sessionId.current : undefined,
+        session_id: point || refreshSession || scrollDeltaY ? sessionId.current : undefined,
         refresh: refreshSession,
+        scroll_delta_y: scrollDeltaY,
         preview_request_id: previewRequestId,
         monitor_id: monitorId,
         monitor: { url: draft.url, kind: "browser", visual_enabled: true, browser_steps: draft.browser_steps ?? [], step_budget_ms: draft.step_budget_ms ?? 20_000, capture_timeout_ms: draft.capture_timeout_ms ?? undefined, monitor_http_error_pages: draft.monitor_http_error_pages, disable_javascript: draft.disable_javascript, block_ads_trackers: draft.block_ads_trackers, cookie_banner_handling: draft.cookie_banner_handling, wait_before_capture_ms: draft.wait_before_capture_ms, mobile_view: draft.mobile_view },
@@ -85,6 +89,8 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
         return;
       }
       sessionId.current = result.session_id;
+      if (!scrollDeltaY && !point && !refreshSession) { initialScrollY.current = result.scroll_y ?? 0; setPendingScrollY(0); }
+      if (scrollDeltaY) setPendingScrollY((result.scroll_y ?? initialScrollY.current + pendingScrollY + scrollDeltaY) - initialScrollY.current);
       renderedDraft.current = signature;
       setStale(false);
       imageDecodeStarted.current = performance.now(); setPreview(result); setError(undefined); setProgress("ready"); setWorkflowChanged(false); setClientTiming({ transfer: Math.round(performance.now() - requestStarted - Object.values(result.timings ?? {}).reduce((sum, value) => sum + value, 0)) });
@@ -119,10 +125,10 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
       const distance = Math.hypot(values[0].x - values[1].x, values[0].y - values[1].y);
       if (Math.abs(distance - gesture.current.distance) > 4) gesture.current.moved = true;
       changeZoom(gesture.current.zoom * distance / gesture.current.distance);
-    } else if (zoom > 1 && event.pointerId === gesture.current.primaryId) {
+    } else if (event.pointerId === gesture.current.primaryId) {
       const dx = event.clientX - gesture.current.x, dy = event.clientY - gesture.current.y;
       if (Math.hypot(dx, dy) > 4) gesture.current.moved = true;
-      node.scrollLeft = gesture.current.left - dx; node.scrollTop = gesture.current.top - dy;
+      if (zoom > 1) { node.scrollLeft = gesture.current.left - dx; node.scrollTop = gesture.current.top - dy; }
     }
   };
   const finishPointer = (event: React.PointerEvent<HTMLDivElement>, cancelled: boolean) => {
@@ -141,7 +147,14 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
       gesture.current.top = event.currentTarget.scrollTop;
       return;
     }
+    const backendScroll = !cancelled && gesture.current.moved && !gesture.current.multi && zoom <= 1 && tracked
+      ? Math.round(gesture.current.y - event.clientY)
+      : 0;
     gesture.current.primaryId = null;
+    if (Math.abs(backendScroll) >= 8 && !requestPending.current && preview?.session_id) {
+      void load(undefined, false, backendScroll);
+      return;
+    }
     if (!shouldSelect || requestPending.current) return;
     const image = previewImage.current;
     if (!image) return;
@@ -151,6 +164,12 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
     void load(previewPoint(event.clientX, event.clientY, rect, preview ?? { width: 1280, height: 900 }));
   };
   const replay = () => { releaseSession(); window.setTimeout(() => void load(), 0); };
+  const commitScroll = () => {
+    if (!pendingScrollY) return;
+    const step: VisualBrowserStep = { action: "scroll_by", x: 0, y: pendingScrollY, timeout_ms: 5000, continue_on_error: false };
+    (purpose === "step" ? onAddStep : onScrollStep)?.(step);
+    setPendingScrollY(0);
+  };
   const canApplySelection = () => {
     if (stale || loading || error || renderedDraft.current !== draftSignature(getDraft())) {
       releaseSession();
@@ -168,7 +187,7 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
     {preview && <>
       {preview.http_status && preview.http_status >= 400 && <Alert type="warning" showIcon title={`HTTP ${preview.http_status} error page`} description="The preview was captured successfully, but the origin returned an unsuccessful HTTP status." />}
       {preview.warning && <Alert type="warning" showIcon title={preview.warning === "browser_steps_skipped_http_error" ? "Browser steps were skipped because the initial response was an HTTP error page." : `Browser step warning: ${preview.warning}`} />}
-      <Typography.Paragraph>This is a captured screenshot, not a live page. Use +/− or pinch to zoom. Drag to pan while zoomed, then click or tap a visible element. Use Browser Steps to reveal page content before Preview, or Full Page capture for content outside the viewport. The preview uses the current form URL through the normal SSRF, TLS, and sandbox restrictions.</Typography.Paragraph>
+      <Typography.Paragraph>This is a secure screenshot of the live browser session. Swipe vertically at Fit zoom to scroll the real page; pinch or use +/− to inspect the screenshot. A replayable Page scroll step is saved with your selection. The preview uses the current form URL through the normal SSRF, TLS, and sandbox restrictions.</Typography.Paragraph>
       <div className="region-preview-toolbar" aria-label="Preview zoom controls">
         <Button aria-label="Zoom out" onClick={() => changeZoom(zoom - ZOOM_STEP)} disabled={zoom <= MIN_ZOOM}>−</Button>
         <output aria-label="Current zoom">{Math.round(zoom * 100)}%</output>
@@ -177,15 +196,14 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
         {purpose === "step" && <Button onClick={replay} disabled={loading}>Replay preview</Button>}
         {loading && <Spin size="small" aria-label="Resolving selected region" />}
       </div>
-      <div ref={canvas} className="region-preview-canvas" onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => finishPointer(event, false)} onPointerCancel={(event) => finishPointer(event, true)}>
-        <div className="region-preview-stage" style={{ width: `${zoom * 100}%` }}>
-          <img ref={previewImage} draggable={false} className="region-preview" src={`data:image/png;base64,${preview.image}`} alt="Secure monitor preview" onLoad={() => setClientTiming((value) => ({ ...value, decode: Math.round(performance.now() - imageDecodeStarted.current) }))} />
-          {preview.selection && !stale && <span className="region-preview-highlight" aria-hidden="true" style={{ left: `${preview.selection.x / preview.width * 100}%`, top: `${preview.selection.y / preview.height * 100}%`, width: `${preview.selection.width / preview.width * 100}%`, height: `${preview.selection.height / preview.height * 100}%` }} />}
-        </div>
-      </div>
+      <InteractivePreviewSurface canvasRef={canvas} imageRef={previewImage} image={preview.image} alt="Secure monitor preview" zoom={zoom}
+        onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={(event) => finishPointer(event, false)} onPointerCancel={(event) => finishPointer(event, true)}
+        onImageLoad={() => setClientTiming((value) => ({ ...value, decode: Math.round(performance.now() - imageDecodeStarted.current) }))}>
+        {preview.selection && !stale && <span className="region-preview-highlight" aria-hidden="true" style={{ left: `${preview.selection.x / preview.width * 100}%`, top: `${preview.selection.y / preview.height * 100}%`, width: `${preview.selection.width / preview.width * 100}%`, height: `${preview.selection.height / preview.height * 100}%` }} />}
+      </InteractivePreviewSurface>
       {preview.timings && <Typography.Text type="secondary" className="region-preview-timing">Preview ready · server {Object.values(preview.timings).reduce((sum, value) => sum + value, 0)} ms{clientTiming.transfer !== undefined ? ` · transfer ${Math.max(0, clientTiming.transfer)} ms` : ""}{clientTiming.decode !== undefined ? ` · display ${clientTiming.decode} ms` : ""}</Typography.Text>}
       {workflowChanged && <Alert type="info" showIcon title="Step added to the unsaved draft" description="Replay the preview before selecting another element so the screenshot matches the updated workflow." />}
-      {preview.selection && !stale && <div className="region-preview-selection"><strong>Selected visible element</strong>{(preview.candidates?.length ?? 0) > 1 && <div className="region-preview-candidates" aria-label="Element boundary choices">{preview.candidates!.map((candidate, index) => <Button key={candidate.selector} type={candidate.selector === preview.selection?.selector ? "primary" : "default"} onClick={() => setPreview((current) => current ? { ...current, selection: candidate } : current)}>{candidate.label || (index ? `Parent ${index}` : "Exact element")}</Button>)}</div>}<code>{preview.selection.selector}</code>{purpose === "step" ? <div className="visual-step-builder"><Select aria-label="Browser step action" value={stepAction} onChange={(value) => { setStepAction(value); if (value === "click") setStepOptional(false); }} options={["click", "wait_visible", "wait_selector", "dismiss_cookie", "scroll_to"].map((value) => ({ value, label: value.replaceAll("_", " ") }))} /><InputNumber aria-label="Browser step timeout" min={100} max={60000} value={stepTimeout} onChange={(value) => setStepTimeout(Number(value ?? 5000))} /><Space><Switch aria-label="Optional browser step" checked={stepOptional} disabled={stepAction === "click"} onChange={setStepOptional} /> Optional</Space><Button type="primary" disabled={workflowChanged || stale || loading || Boolean(error)} onClick={() => { if (!canApplySelection()) return; onAddStep?.({ action: stepAction, selector: preview.selection!.selector, selector_type: "css", timeout_ms: stepTimeout, continue_on_error: stepAction === "click" ? false : stepOptional }); setWorkflowChanged(true); }}>Add step to draft</Button></div> : <Button type="primary" onClick={() => { if (!canApplySelection()) return; onSelect(preview.selection!.selector); releaseSession(); setOpen(false); }}>Use selector</Button>}</div>}
+      {preview.selection && !stale && <div className="region-preview-selection"><strong>Selected visible element</strong>{(preview.candidates?.length ?? 0) > 1 && <div className="region-preview-candidates" aria-label="Element boundary choices">{preview.candidates!.map((candidate, index) => <Button key={candidate.selector} type={candidate.selector === preview.selection?.selector ? "primary" : "default"} onClick={() => setPreview((current) => current ? { ...current, selection: candidate } : current)}>{candidate.label || (index ? `Parent ${index}` : "Exact element")}</Button>)}</div>}<code>{preview.selection.selector}</code>{purpose === "step" ? <div className="visual-step-builder"><Select aria-label="Browser step action" value={stepAction} onChange={(value) => { setStepAction(value); if (value === "click") setStepOptional(false); }} options={[{ value: "click", label: "Click selected item" }, { value: "wait_visible", label: "Wait until item is visible" }, { value: "wait_selector", label: "Wait until item exists" }, { value: "dismiss_cookie", label: "Dismiss cookie banner" }, { value: "scroll_to", label: "Scroll selected item into view" }]} /><InputNumber aria-label="Browser step timeout" min={100} max={60000} value={stepTimeout} onChange={(value) => setStepTimeout(Number(value ?? 5000))} /><Space><Switch aria-label="Optional browser step" checked={stepOptional} disabled={stepAction === "click"} onChange={setStepOptional} /> Optional</Space><Button type="primary" disabled={workflowChanged || stale || loading || Boolean(error)} onClick={() => { if (!canApplySelection()) return; commitScroll(); onAddStep?.({ action: stepAction as Exclude<VisualBrowserStep["action"], "scroll_by">, selector: preview.selection!.selector, selector_type: "css", timeout_ms: stepTimeout, continue_on_error: stepAction === "click" ? false : stepOptional } as VisualBrowserStep); setWorkflowChanged(true); }}>Add step to draft</Button></div> : <Button type="primary" onClick={() => { if (!canApplySelection()) return; commitScroll(); onSelect(preview.selection!.selector); releaseSession(); setOpen(false); }}>Use selector</Button>}</div>}
     </>}
   </>;
   useEffect(() => { if (mobilePage) void load(); }, [mobilePage]);

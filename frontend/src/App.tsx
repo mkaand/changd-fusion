@@ -120,6 +120,7 @@ export default function FusionApp() {
     [advancedOpen, setAdvancedOpen] = useState(false);
   const [form] = Form.useForm();
   const editorDraftRef = useRef<Record<string, unknown> | undefined>(undefined);
+  const interactivePresenceRef = useRef<string | undefined>(undefined);
   const requestRef = useRef<AbortController | undefined>(undefined);
   const requestVersion = useRef(0);
   const loadedRef = useRef(false);
@@ -134,6 +135,32 @@ export default function FusionApp() {
     window.addEventListener("fusion-session-expired", expire);
     return () => window.removeEventListener("fusion-session-expired", expire);
   }, []);
+  useEffect(() => {
+    let disposed = false;
+    let timer: number | undefined;
+    const heartbeat = async () => {
+      if (disposed || !open || !user) return;
+      try {
+        const result = await api<{ id: string }>("/interactive-presence", "POST", interactivePresenceRef.current ? { id: interactivePresenceRef.current } : {});
+        if (disposed) { void api(`/interactive-presence/${result.id}`, "DELETE").catch(() => undefined); return; }
+        interactivePresenceRef.current = result.id;
+      } catch {
+        // Admission remains fail-closed on the server. Preview and Check Now
+        // surface their own bounded error rather than inventing local success.
+      }
+    };
+    if (open && user) {
+      void heartbeat();
+      timer = window.setInterval(() => void heartbeat(), 5_000);
+    }
+    return () => {
+      disposed = true;
+      if (timer) window.clearInterval(timer);
+      const id = interactivePresenceRef.current;
+      interactivePresenceRef.current = undefined;
+      if (id) void api(`/interactive-presence/${id}`, "DELETE").catch(() => undefined);
+    };
+  }, [open, user]);
   const getUser = useCallback(async () => {
     try {
       setUser(await api("/users/me"));
@@ -467,9 +494,9 @@ export default function FusionApp() {
                 <div className="mobile-editor-actions"><Button onClick={() => { setOpen(false); navigate("jobs"); }}>Cancel</Button><Button type="primary" loading={saving} onClick={save}>Save monitor</Button></div>
               </section>
             ) : page === "region-picker" && compactLayout && open ? (
-              <RegionPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onSelect={(selector) => returnToEditor({ capture_selector_type: "css", capture_selector: selector })} onUseViewport={() => returnToEditor({ capture_mode: "viewport", capture_selector: "" })} onBackMobile={() => returnToEditor()} />
+              <RegionPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onSelect={(selector) => returnToEditor({ capture_selector_type: "css", capture_selector: selector })} onUseViewport={() => returnToEditor({ capture_mode: "viewport", capture_selector: "" })} onScrollStep={(step) => { const draft = editorDraftRef.current ?? form.getFieldsValue(true); const browser_steps = [...((draft.browser_steps as unknown[]) ?? []), step].slice(0, 20); editorDraftRef.current = { ...draft, browser_steps }; form.setFieldValue("browser_steps", browser_steps); }} onBackMobile={() => returnToEditor()} />
             ) : page === "area-picker" && compactLayout && open ? (
-              <SelectedAreaPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onApply={(capture_area) => { returnToEditor({ capture_mode: "selected_area", capture_area }); void message.success("Area applied to the editor. Save the monitor to persist it."); }} onBackMobile={() => returnToEditor()} />
+              <SelectedAreaPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onScrollStep={(step) => { const draft = editorDraftRef.current ?? form.getFieldsValue(true); const browser_steps = [...((draft.browser_steps as unknown[]) ?? []), step].slice(0, 20); editorDraftRef.current = { ...draft, browser_steps }; form.setFieldValue("browser_steps", browser_steps); }} onApply={(capture_area) => { returnToEditor({ capture_mode: "selected_area", capture_area }); void message.success("Area applied to the editor. Save the monitor to persist it."); }} onBackMobile={() => returnToEditor()} />
             ) : page === "text-picker" && compactLayout && open ? (
               <TextPicker mobilePage monitorId={editing?.id} getDraft={() => form.getFieldsValue(true)} onApply={(rule) => { returnToEditor({ extraction_mode: "selected_text", extraction_rule: rule }); void message.success("Selection applied to the editor. Save the monitor to persist it."); }} onBackMobile={() => returnToEditor()} />
             ) : page === "step-picker" && compactLayout && open ? (

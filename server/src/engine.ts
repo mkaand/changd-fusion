@@ -155,7 +155,7 @@ export async function runMonitor(
       [id, !!options.force],
     );
     if (!result.rowCount) {
-      if (options.manualRunId) await c.query("UPDATE fusion_manual_runs SET status='cancelled',updated_at=now() WHERE id=$1", [options.manualRunId]);
+      if (options.manualRunId) await c.query("WITH finished AS (UPDATE fusion_manual_runs SET status='cancelled',updated_at=now() WHERE id=$1 RETURNING priority_intent_id) UPDATE fusion_chromium_priority_intents i SET cancelled_at=COALESCE(i.cancelled_at,now()) FROM finished f WHERE i.id=f.priority_intent_id", [options.manualRunId]);
       return false;
     }
     const m: Monitor = result.rows[0];
@@ -311,7 +311,7 @@ export async function runMonitor(
         // Cancellation before commit rolls back every capture/event/outbox write.
         // After COMMIT, success remains success even if the signal arrives later.
         if (options.signal?.aborted) throw options.signal.reason;
-        if (options.manualRunId) await c.query("UPDATE fusion_manual_runs SET status='completed',updated_at=now() WHERE id=$1", [options.manualRunId]);
+        if (options.manualRunId) await c.query("WITH finished AS (UPDATE fusion_manual_runs SET status='completed',updated_at=now() WHERE id=$1 RETURNING priority_intent_id) UPDATE fusion_chromium_priority_intents i SET cancelled_at=COALESCE(i.cancelled_at,now()) FROM finished f WHERE i.id=f.priority_intent_id", [options.manualRunId]);
         await c.query("COMMIT");
       } catch (e) {
         await c.query("ROLLBACK");
@@ -378,7 +378,7 @@ export async function runMonitor(
         );
         if (shouldNotify)
           await queueNotification(c, m, event.rows[0].id, createHash("sha256").update(JSON.stringify({ state, error: publicFailure(e), ...(failureAlertMode === "every" ? { failureOrdinal, eventId: event.rows[0].id } : {}) })).digest("hex"));
-        if (options.manualRunId) await c.query("UPDATE fusion_manual_runs SET status='failed',updated_at=now() WHERE id=$1", [options.manualRunId]);
+        if (options.manualRunId) await c.query("WITH finished AS (UPDATE fusion_manual_runs SET status='failed',updated_at=now() WHERE id=$1 RETURNING priority_intent_id) UPDATE fusion_chromium_priority_intents i SET cancelled_at=COALESCE(i.cancelled_at,now()) FROM finished f WHERE i.id=f.priority_intent_id", [options.manualRunId]);
         await c.query("COMMIT");
         if (diagnostic)
           options.onFailure?.({

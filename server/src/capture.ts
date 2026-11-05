@@ -82,6 +82,29 @@ export type Capture = {
 };
 
 export const CAPTURE_CLEANUP_TIMEOUT_MS = 5_000;
+const CAPTURE_STABILITY_CSS = "* { animation: none !important; transition: none !important; caret-color: transparent !important; }";
+
+// page.addStyleTag waits for a page JavaScript execution context. Chromium
+// intentionally never creates that context when javaScriptEnabled=false, so
+// the otherwise harmless stability injection can wait until the capture
+// deadline. CDP's CSS domain operates on the inspected document without
+// enabling page JavaScript and preserves the same screenshot semantics.
+export async function installCaptureStabilityStyle(context: BrowserContext, page: Page, javaScriptDisabled = false) {
+  if (!javaScriptDisabled) {
+    await page.addStyleTag({ content: CAPTURE_STABILITY_CSS });
+    return;
+  }
+  const session = await context.newCDPSession(page);
+  try {
+    await session.send("DOM.enable");
+    await session.send("CSS.enable");
+    const { frameTree } = await session.send("Page.getFrameTree");
+    const { styleSheetId } = await session.send("CSS.createStyleSheet", { frameId: frameTree.frame.id });
+    await session.send("CSS.setStyleSheetText", { styleSheetId, text: CAPTURE_STABILITY_CSS });
+  } finally {
+    await session.detach().catch(() => {});
+  }
+}
 
 export async function closeWithDeadline(close: (() => Promise<void>) | undefined, timeoutMs = CAPTURE_CLEANUP_TIMEOUT_MS): Promise<boolean> {
   if (!close) return true;
@@ -500,10 +523,7 @@ export async function capture(
     let screenshot: Buffer | null = null;
     if (m.visual_enabled) {
       enterStage("screenshot");
-      await page.addStyleTag({
-        content:
-          "* { animation: none !important; transition: none !important; caret-color: transparent !important; }",
-      });
+      await installCaptureStabilityStyle(context, page, Boolean(m.disable_javascript));
       const limits = {
         width: cfg.MAX_CAPTURE_WIDTH,
         height: cfg.MAX_CAPTURE_HEIGHT,
