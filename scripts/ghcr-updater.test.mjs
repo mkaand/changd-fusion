@@ -82,6 +82,27 @@ test("rejects replay, downgrade, same-version conflict, bad CI and malformed ima
   assert.equal(verifyRelease({ ...evidence, manifest: { ...evidence.manifest, ui_image: "latest" } }, {}).reason, "invalid_manifest");
 });
 
+
+test("allows same-version master forward movement only with proof bound to installed SHA", () => {
+  const fixture = release({ sourceSha: newerSource, version: "0.3.3" });
+  const next = {
+    manifest: fixture.manifest, workflow: fixture.run, ci: fixture.ci,
+    masterLineage: fixture.lineage, publisher: fixture.publisher,
+  };
+  const installed = { source_sha: s, version: "0.3.3" };
+  assert.equal(verifyRelease(next, installed).reason, "same_version_conflict");
+  assert.equal(verifyRelease({
+    ...next, installedAncestry: { from: s, to: newerSource, verified: true },
+  }, installed).ok, true);
+  for (const invalid of [
+    { from: newerSource, to: s, verified: true },
+    { from: s, to: newerSource, verified: false },
+    { from: "f".repeat(40), to: newerSource, verified: true },
+  ]) {
+    assert.equal(verifyRelease({ ...next, installedAncestry: invalid }, installed).reason, "same_version_conflict");
+  }
+});
+
 test("accepts one discovered release only after the complete trust chain", async () => {
   const calls = [], item = release();
   const discovered = await discoverRelease(discoveryClient([item], { calls }), { repository });
@@ -99,11 +120,27 @@ test("selects the newest of two sequential verified releases independent of API 
   }
 });
 
-test("rejects same-version conflicting sources and incompatible release ancestry", async () => {
-  const older = release(), conflict = release({ sourceSha: newerSource, id: 18, apiDigest: "e".repeat(64), uiDigest: "f".repeat(64) });
-  await assert.rejects(discoverRelease(discoveryClient([older, conflict]), { repository }), /ambiguous_release_version/);
-  const newer = { ...conflict, manifest: { ...conflict.manifest, version: "0.3.4" }, publisher: { ...conflict.publisher, version: "0.3.4" } };
-  await assert.rejects(discoverRelease(discoveryClient([older, newer], { sourceLineage: false }), { repository }), /incompatible_release_ancestry/);
+test("selects newest ancestor-ordered same-version release and rejects non-ancestral collisions", async () => {
+  const older = release(), newerSameVersion = release({
+    sourceSha: newerSource, id: 18, apiDigest: "e".repeat(64), uiDigest: "f".repeat(64),
+  });
+  for (const order of [[older, newerSameVersion], [newerSameVersion, older]]) {
+    const selected = await discoverRelease(discoveryClient(order), { repository });
+    assert.equal(selected.manifest.source_sha, newerSource);
+  }
+  await assert.rejects(
+    discoverRelease(discoveryClient([older, newerSameVersion], { sourceLineage: false }), { repository }),
+    /ambiguous_release_version/,
+  );
+  const newerVersion = {
+    ...newerSameVersion,
+    manifest: { ...newerSameVersion.manifest, version: "0.3.4" },
+    publisher: { ...newerSameVersion.publisher, version: "0.3.4" },
+  };
+  await assert.rejects(
+    discoverRelease(discoveryClient([older, newerVersion], { sourceLineage: false }), { repository }),
+    /incompatible_release_ancestry/,
+  );
 });
 
 test("ignores failed runs but rejects an untrusted successful newest candidate", async () => {

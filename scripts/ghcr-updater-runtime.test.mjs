@@ -69,6 +69,40 @@ test("connects discovery, atomic state, drain, deployment, health, resume and on
   assert.equal(state.previous.source_sha, oldSource); assert.equal(state.notification.success_operation, state.operation_id);
 });
 
+
+test("same-version master release requires live ancestry proof and causes no dry-run mutations", async () => {
+  const calls = [];
+  const f = fixtures(directory, { docker: {
+    runtimeIdentity: () => ({
+      version: manifest.version, source_sha: oldSource, api_image: oldApi, ui_image: oldUi,
+    }),
+  } });
+  const withLineage = { ...client,
+    sourceLineage: async (installed, candidate) => {
+      calls.push({ installed, candidate });
+      return true;
+    },
+  };
+  const result = await executeUpdaterRuntime({
+    environment: { ...environment(directory), FUSION_UPDATER_DRY_RUN: "1" },
+    client: withLineage, ...f,
+  });
+  assert.equal(result.dryRun, true);
+  assert.deepEqual(calls, [{ installed: oldSource, candidate: source }]);
+  assert.equal(f.actions.length, 0);
+  await assert.rejects(
+    executeUpdaterRuntime({
+      environment: { ...environment(directory), FUSION_UPDATER_DRY_RUN: "1" },
+      client: { ...client, sourceLineage: async () => false }, ...fixtures(directory, { docker: {
+        runtimeIdentity: () => ({
+          version: manifest.version, source_sha: oldSource, api_image: oldApi, ui_image: oldUi,
+        }),
+      } }),
+    }),
+    /installed_source_ancestry_unverified/,
+  );
+});
+
 test("unbootstrapped v0.3.2 fails before runtime identity or Docker mutation", async () => {
   let runtimeCalls = 0;
   const f = fixtures(directory, { docker: { runtimeIdentity: () => { runtimeCalls++; throw Error("must_not_run"); } },
