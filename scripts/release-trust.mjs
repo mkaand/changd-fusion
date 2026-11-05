@@ -106,10 +106,38 @@ export class OciRegistryClient {
       let response = await request();
       if (response.status === 401) {
         const challenge = parseGhcrChallenge(response.headers.get("www-authenticate"), path);
-        response = await request(await this.scopedRegistryToken(challenge));
-        if ([401, 403].includes(response.status) && this.token) {
+        let scopedToken;
+        let authenticated = false;
+        try {
+          scopedToken = await this.scopedRegistryToken(challenge);
+        } catch (error) {
+          if (!this.token || !/^registry_token_http_(401|403)$/.test(error?.message ?? "")) throw error;
+          scopedToken = await this.scopedRegistryToken(challenge, true);
+          authenticated = true;
+        }
+        response = await request(scopedToken);
+        if ([401, 403].includes(response.status) && this.token && !authenticated) {
           response = await request(await this.scopedRegistryToken(challenge, true));
         }
+      }
+      // OCI blob reads may redirect to signed GitHub package storage. Follow
+      // only one allowlisted HTTPS hop, without forwarding any credentials.
+      // The caller still checks the final bytes against the immutable digest.
+      if ([302, 307].includes(response.status) && path.includes("/blobs/")) {
+        const location = response.headers.get("location");
+        let target;
+        try { target = new URL(location); }
+        catch { throw Error("untrusted_registry_blob_redirect"); }
+        const trustedHost = target.hostname === "pkg-containers.githubusercontent.com"
+          || (target.hostname.endsWith(".blob.core.windows.net") && target.hostname.length > ".blob.core.windows.net".length);
+        if (!trustedHost || target.protocol !== "https:" || target.username || target.password || target.port) {
+          throw Error("untrusted_registry_blob_redirect");
+        }
+        response = await this.fetch(target, {
+          redirect: "error",
+          signal: controller.signal,
+          headers: { accept },
+        });
       }
       if (!response.ok) throw Error("registry_http_" + response.status);
       const lengthHeader = response.headers.get("content-length");
