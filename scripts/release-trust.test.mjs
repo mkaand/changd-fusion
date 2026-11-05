@@ -252,6 +252,76 @@ test("rejects rogue token issuers, wrong repository scopes, malformed token bodi
   await assert.rejects(new OciRegistryClient({ fetchImpl: denied }).verifyImage(api, release), /registry_http_403/);
 });
 
+
+test("private GHCR token-service denial falls back to the already configured token", async () => {
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ url: url.href, authorization: options.headers.authorization });
+    if (url.pathname === "/token") {
+      if (!options.headers.authorization) return new Response("no anonymous access", { status: 403 });
+      assert.equal(Buffer.from(options.headers.authorization.slice(6), "base64").toString("utf8"), "mkaand:previously-configured-token");
+      return new Response(JSON.stringify({ token: "authorized-scoped-registry-token" }));
+    }
+    const repository = /^\/v2\/(mkaand\/changd-fusion-(?:api|ui))\//.exec(url.pathname)?.[1];
+    if (!options.headers.authorization) return new Response("", { status: 401, headers: {
+      "www-authenticate": 'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:' + repository + ':pull"',
+    } });
+    assert.equal(options.headers.authorization, "Bearer authorized-scoped-registry-token");
+    return mockedGhcrReply(url);
+  };
+  const result = await new OciRegistryClient({ fetchImpl, token: "previously-configured-token" }).verifyReleaseImages(release);
+  assert.equal(result.api.digest, imageDigest);
+  assert.equal(calls.some((call) => call.authorization?.startsWith("Basic ") && !call.url.startsWith("https://ghcr.io/token?")), false);
+});
+
+test("handles GHCR blob redirects without forwarding tokens and retains digest verification", async () => {
+  const redirectUrl = "https://pkg-containers.githubusercontent.com/ghcr1/blobs/" + configDigest + "?signature=fixture";
+  const calls = [];
+  const fetchImpl = async (url, options) => {
+    calls.push({ host: url.hostname, authorization: options.headers.authorization });
+    if (url.hostname === "pkg-containers.githubusercontent.com") {
+      assert.equal(options.headers.authorization, undefined);
+      assert.equal(options.redirect, "error");
+      return new Response(config);
+    }
+    if (url.pathname === "/token") return new Response(JSON.stringify({ token: "scoped-read" }));
+    const repository = /^\/v2\/(mkaand\/changd-fusion-(?:api|ui))\//.exec(url.pathname)?.[1];
+    if (!options.headers.authorization) return new Response("", { status: 401, headers: {
+      "www-authenticate": 'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:' + repository + ':pull"',
+    } });
+    if (url.pathname.includes("/blobs/")) {
+      return new Response(null, { status: 307, headers: { location: redirectUrl } });
+    }
+    return mockedGhcrReply(url);
+  };
+  const result = await new OciRegistryClient({ fetchImpl, token: "existing-github-token" }).verifyReleaseImages(release);
+  assert.equal(result.api.configDigest, configDigest);
+  assert.ok(calls.some((call) => call.host === "pkg-containers.githubusercontent.com"));
+
+  const poisoned = async (url, options) => {
+    if (url.pathname === "/token") return new Response(JSON.stringify({ token: "scoped-read" }));
+    const repository = /^\/v2\/(mkaand\/changd-fusion-(?:api|ui))\//.exec(url.pathname)?.[1];
+    if (!options.headers.authorization) return new Response("", { status: 401, headers: {
+      "www-authenticate": 'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:' + repository + ':pull"',
+    } });
+    if (url.pathname.includes("/blobs/")) return new Response(null, { status: 307, headers: { location: "https://evil.invalid/steal" } });
+    return mockedGhcrReply(url);
+  };
+  await assert.rejects(new OciRegistryClient({ fetchImpl: poisoned }).verifyImage(api, release), /untrusted_registry_blob_redirect/);
+
+  const tampered = async (url, options) => {
+    if (url.hostname === "pkg-containers.githubusercontent.com") return new Response(Buffer.concat([config, Buffer.from("tampered")]));
+    if (url.pathname === "/token") return new Response(JSON.stringify({ token: "scoped-read" }));
+    const repository = /^\/v2\/(mkaand\/changd-fusion-(?:api|ui))\//.exec(url.pathname)?.[1];
+    if (!options.headers.authorization) return new Response("", { status: 401, headers: {
+      "www-authenticate": 'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:' + repository + ':pull"',
+    } });
+    if (url.pathname.includes("/blobs/")) return new Response(null, { status: 307, headers: { location: redirectUrl } });
+    return mockedGhcrReply(url);
+  };
+  await assert.rejects(new OciRegistryClient({ fetchImpl: tampered }).verifyImage(api, release), /config_digest_mismatch/);
+});
+
 function verifiedResult(reference, overrides = {}) {
   const repository = overrides.repository ?? "mkaand/changd-fusion";
   const workflowPath = ".github/workflows/ghcr-release.yml";
