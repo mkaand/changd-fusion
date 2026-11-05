@@ -76,6 +76,18 @@ export async function executeUpdaterRuntime({
       dryRun: config.dryRun,
     });
     maintenance ??= new ComposeMaintenanceCoordinator({ adapter: docker });
+    const installed = startupState.current ?? docker.runtimeIdentity();
+    if (installed?.version === evidence.manifest.version
+      && installed.source_sha !== evidence.manifest.source_sha) {
+      // A same-version CI publication is not a rollback when the installed
+      // master SHA is a proven ancestor. Never infer this from timestamps.
+      if (!await client.sourceLineage(installed.source_sha, evidence.manifest.source_sha)) {
+        throw Error("installed_source_ancestry_unverified");
+      }
+      evidence.installedAncestry = {
+        from: installed.source_sha, to: evidence.manifest.source_sha, verified: true,
+      };
+    }
     return await runUpdater({
       evidence,
       config: { project: config.project, dryRun: config.dryRun },
