@@ -280,7 +280,7 @@ test("real Node fetch exposes GHCR 307 blob redirect to manual policy without le
   const localRegistry = http.createServer((req, res) => {
     const authorization = req.headers.authorization;
     requests.push({ path: req.url, authorization });
-    const repository = /^\\/v2\\/(mkaand\\/changd-fusion-(?:api|ui))\\//.exec(req.url)?.[1];
+    const repository = req.url?.split("/").slice(2, 4).join("/");
     if (!authorization) {
       res.writeHead(401, { "www-authenticate": 'Bearer realm="https://ghcr.io/token",service="ghcr.io",scope="repository:' + repository + ':pull"' });
       return res.end();
