@@ -79,10 +79,12 @@ export async function discoverRelease(client, trusted) {
       if (evidence.workflow.id > previous.workflow.id) byVersion.set(evidence.manifest.version, evidence);
       continue;
     }
-    const previousPrecedes = await client.sourceLineage(previous.manifest.source_sha, evidence.manifest.source_sha);
-    const candidatePrecedes = await client.sourceLineage(evidence.manifest.source_sha, previous.manifest.source_sha);
-    if (previousPrecedes === candidatePrecedes) throw Error("ambiguous_release_version");
-    if (previousPrecedes) byVersion.set(evidence.manifest.version, evidence);
+    const earlier = previous.workflow.id < evidence.workflow.id ? previous : evidence;
+    const later = earlier === previous ? evidence : previous;
+    if (!await client.sourceLineage(earlier.manifest.source_sha, later.manifest.source_sha)) {
+      throw Error("ambiguous_release_version");
+    }
+    byVersion.set(evidence.manifest.version, later);
   }
   const selected = [...byVersion.values()].sort((left, right) =>
     compareVersions(left.manifest.version, right.manifest.version));
