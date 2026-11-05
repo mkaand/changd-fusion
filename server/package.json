@@ -16,7 +16,8 @@
     "create-admin": "tsx src/create-admin.ts",
     "reset-admin-password": "tsx src/reset-admin-password.ts",
     "test": "tsx --test --test-timeout=30000 test/*.test.ts",
-    "test:integration": "node scripts/integration-runner.mjs"
+    "test:integration": "node scripts/integration-runner.mjs",
+    "test:integration:disable-javascript": "tsx --test --test-timeout=90000 test/integration/disable-javascript-chromium.test.ts"
   },
   "dependencies": {
     "bcryptjs": "3.0.3",
@@ -34,7 +35,7 @@
     "pixelmatch": "8.0.0",
     "playwright": "1.64.0",
     "pngjs": "7.0.0",
-    "yauzl": "3.2.0",
+    "yauzl": "3.4.0",
     "zod": "4.6.7"
   },
   "devDependencies": {

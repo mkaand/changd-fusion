@@ -1,7 +1,7 @@
 # Opt-in GHCR updater
 
 The updater is disabled by default. It requires a dedicated unprivileged host
-account, an operator-provided authenticated release-evidence fetcher, immutable
+account, the checked-in authenticated GitHub/GHCR release client, immutable
 GHCR digest access, and an explicitly configured Compose project. It rejects
 missing/ambiguous provenance, non-attested publishers, replay/downgrade, unsafe
 drain and failed health checks. It never prunes Docker, removes volumes, clears
@@ -9,9 +9,10 @@ leases, or touches other Compose projects. Run dry-run first; enable the timer
 only after operator review. Database rollback is manual unless migration
 compatibility is independently proven.
 
-Use a systemd `RuntimeMaxSec`, a locked-down environment file (0600), and a
-host adapter that supplies authenticated GitHub/GHCR evidence, project-scoped
-Compose operations, atomic state writes, safe worker drain and health probes.
+Use the checked-in bounded systemd service, a locked-down environment file
+(0600), and the host adapter that supplies authenticated GitHub/GHCR evidence,
+project-scoped Compose operations, atomic state writes, safe worker drain and
+health probes.
 The Docker socket is privileged: isolate this account and never share its
 project name with unrelated stacks. A no-update run is silent; critical drain,
 migration or health failures may use the optional Telegram notifier.
@@ -19,7 +20,7 @@ migration or health failures may use the optional Telegram notifier.
 The concrete host adapter is `scripts/docker-compose-adapter.mjs`. Configure an
 absolute project directory, a validated Compose project name, a local Unix
 Docker socket, the checked-in
-`docker-compose.yml` followed by `docker-compose.ghcr.yml`, and an optional
+`docker-compose.yml` followed by `docker-compose.ghcr.yml`, and an explicit
 operator-owned environment file. The adapter always selects the local Docker
 socket, removes inherited endpoint/TLS selectors from child commands, invokes
 Docker with structured arguments and bounded output/timeouts, and never uses a
@@ -141,21 +142,66 @@ timer **must not** automate the first v0.3.2 to v0.3.3 transition. Migration 018
 adds an explicit singleton bootstrap marker; an absent marker returns
 `BOOTSTRAP_REQUIRED` before runtime replacement or image pulls.
 
-The one-time bootstrap is a manually authorized maintenance procedure. The
-operator must disable automatic restart of the old application services, allow
-all active work to finish, positively verify scheduler tokens, runtime-operation
-rows and the PostgreSQL Chromium advisory lock are idle, then gracefully stop
-the old API and Worker. With those old admission paths fenced, run the reviewed
-v0.3.3 migration service, invoke `maintenance-cli.js bootstrap-confirm` from the
-v0.3.3 API image using structured stdin containing the exact confirmation
-`I_HAVE_FENCED_V032_API_AND_WORKER` plus the configured project and exact v0.3.3
-source SHA (the `bootstrap-confirm` action never accepts these values in command
-arguments),
-and start/verify the v0.3.3 services. Never force-kill Chromium, delete advisory
-locks, clear fencing tokens or recreate volumes. This procedure is intentionally
-not an updater command: host-specific service fencing and positive browser-idle
-evidence require operator review. If any check is uncertain, leave services
-stopped/barrier closed and recover manually.
+The one-time bootstrap is a manually authorized maintenance procedure. All of
+these prerequisites are mandatory:
+
+1. Pin reviewed v0.3.3 API/UI digests and the exact source SHA; back up the
+   PostgreSQL and capture volumes consistently. Pause the updater, deployment
+   controller and any other supervisor that can recreate API/Worker replicas.
+2. Inventory every API/Worker replica using this database. Reject a second host,
+   unknown project, privileged/shared PID container or incomplete inventory.
+3. Gracefully stop the v0.3.2 API and Worker with their existing 180-second
+   Compose grace period. Confirm every inventoried replica is fully exited and
+   cannot auto-restart. Full container termination is required because v0.3.2
+   does not participate in migration 017's barrier.
+4. Inspect only scheduler ownership fields and PostgreSQL advisory locks. If an
+   active token, lock, running/restarting replica or ambiguous browser cleanup
+   remains, stop and use the separately authorized offline recovery procedure;
+   never clear a token or lock as part of bootstrap.
+5. Keep PostgreSQL and capture volumes mounted unchanged. With old admission
+   paths fenced, run the reviewed v0.3.3 `migrate` one-shot. Verify migrations
+   017 then 018 and all prior checksums in `fusion_migrations`.
+6. Run the v0.3.3 API image as a no-dependency one-shot and pipe structured JSON
+   to `node dist/maintenance-cli.js bootstrap-confirm`. The JSON must contain the
+   configured project, exact v0.3.3 source SHA and confirmation
+   `I_HAVE_FENCED_V032_API_AND_WORKER`; none belongs in command arguments.
+7. Verify `bootstrap-status`, then start only matching v0.3.3 API/Worker/UI
+   digests. Confirm database/API/Worker/UI health and data counts before restoring
+   supervisors. Leave the updater timer disabled until a separately approved
+   dry-run succeeds.
+
+For a generic Compose installation, the reviewed maintenance record should bind
+the concrete values used by this command template. Run it only after steps 1–4
+are independently satisfied and a separate maintenance authorization exists:
+
+```sh
+docker compose --project-name "$FUSION_COMPOSE_PROJECT" \
+  --file docker-compose.yml --file docker-compose.ghcr.yml \
+  --env-file "$FUSION_COMPOSE_ENV_FILE" stop --timeout 180 api worker
+
+docker compose --project-name "$FUSION_COMPOSE_PROJECT" \
+  --file docker-compose.yml --file docker-compose.ghcr.yml \
+  --env-file "$FUSION_COMPOSE_ENV_FILE" run --rm --no-deps migrate
+
+jq -n --arg project "$FUSION_COMPOSE_PROJECT" --arg source_sha "$SOURCE_SHA" \
+  --arg confirmation I_HAVE_FENCED_V032_API_AND_WORKER \
+  '{project:$project,source_sha:$source_sha,confirmation:$confirmation}' |
+docker compose --project-name "$FUSION_COMPOSE_PROJECT" \
+  --file docker-compose.yml --file docker-compose.ghcr.yml \
+  --env-file "$FUSION_COMPOSE_ENV_FILE" run --rm --no-deps -T api \
+  node dist/maintenance-cli.js bootstrap-confirm
+```
+
+`FUSION_API_IMAGE` and `FUSION_UI_IMAGE` in the protected Compose environment
+must already contain the reviewed immutable digest references. A non-successful
+confirmation is a hard stop; do not start application services or manufacture
+the marker manually.
+
+Migration 017/018 and bootstrap tests prove fail-closed database behavior, but
+they cannot prove a production supervisor inventory or container termination.
+Those remain operator evidence for first-upgrade acceptance. Never force-kill
+Chromium, delete advisory locks, clear fencing tokens or recreate volumes. If any
+check is uncertain, keep services stopped and perform manual recovery.
 
 Every later candidate manifest includes the sorted SHA-256 ledger of checked-in
 migrations. The automatic path currently permits only an exact match with the
@@ -194,3 +240,19 @@ the timer. The repository never performs these host actions automatically. On
 the timer, preserve state/database/captures, inspect journal and immutable image
 identities, and follow a separately approved manual recovery; do not edit the
 state file or clear the maintenance record to force progress.
+
+## Remaining release acceptance
+
+Fixture tests exercise the complete updater control flow, but the first approved
+release must still verify live GitHub Actions discovery, both GHCR OCI digests,
+both GitHub Artifact Attestations, package pull authorization, the generic-host
+dry-run and optional Telegram delivery. No fixture result is presented as live
+registry or production evidence.
+
+Disable JavaScript continues to use `javaScriptEnabled: !disable_javascript` in
+scheduled capture and Region Preview. Its real Chromium regression remains in
+the integration suite and has the dedicated command
+`npm run test:integration:disable-javascript`. Cloud_2's system Chromium timed
+out in screenshot capture; per release decision, final user acceptance is
+pending after an approved deployment. This is not converted into a passing test
+or an updater prerequisite.

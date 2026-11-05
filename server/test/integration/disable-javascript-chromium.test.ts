@@ -6,10 +6,10 @@ import os from "node:os";
 import path from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import type { AddressInfo } from "node:net";
-import { readConfig } from "../src/config.js";
-import { capture } from "../src/capture.js";
-import { closeRegionPreviewSessions, previewRegion } from "../src/region-picker.js";
-import { EgressPolicy } from "../src/egress.js";
+import { readConfig } from "../../src/config.js";
+import { capture } from "../../src/capture.js";
+import { closeRegionPreviewSessions, previewRegion } from "../../src/region-picker.js";
+import { EgressPolicy } from "../../src/egress.js";
 
 test("real Chromium applies disable_javascript consistently to capture and preview", async (t) => {
   const server = http.createServer((req, res) => {
