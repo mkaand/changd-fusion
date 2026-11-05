@@ -170,7 +170,7 @@ test("negotiates repository-scoped GHCR anonymous bearer and never leaks GitHub 
   const calls = [];
   const fetchImpl = async (url, options) => {
     calls.push({ hostname: url.hostname, pathname: url.pathname, authorization: options.headers.authorization });
-    assert.equal(options.redirect, url.pathname.includes("/blobs/") ? "manual" : "error");
+    assert.equal(options.redirect, url.hostname === "ghcr.io" && url.pathname.includes("/blobs/") ? "manual" : "error");
     if (url.pathname === "/token") {
       assert.equal(url.hostname, "ghcr.io");
       assert.equal(url.searchParams.get("service"), "ghcr.io");
@@ -328,7 +328,7 @@ test("handles GHCR blob redirects without forwarding tokens and retains digest v
   const calls = [];
   const fetchImpl = async (url, options) => {
     calls.push({ host: url.hostname, authorization: options.headers.authorization });
-    assert.equal(options.redirect, url.pathname.includes("/blobs/") ? "manual" : "error");
+    assert.equal(options.redirect, url.hostname === "ghcr.io" && url.pathname.includes("/blobs/") ? "manual" : "error");
     if (url.hostname === "pkg-containers.githubusercontent.com") {
       assert.equal(options.headers.authorization, undefined);
       assert.equal(options.redirect, "error");
