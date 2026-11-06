@@ -33,6 +33,16 @@ test("host launcher pins the image, mounts only explicit paths and acknowledges 
   assert.match(launcher, /readonly/);
   assert.match(launcher, /stage_root\/view/);
   assert.match(launcher, /unsupported_nested_compose_file/);
+
+  assert.match(launcher, /config_file="\$docker_config\/config\.json"/);
+  assert.match(launcher, /\[ ! -L "\$config_file" \]/);
+  assert.match(launcher, /stat -c %h "\$config_file"/);
+  assert.match(launcher, /mkdir -m 0700 "\$stage_root\/docker-config"/);
+  assert.match(launcher, /chown 10001:10001 "\$stage_root\/docker-config"/);
+  assert.match(launcher, /install -m 0400 -o 10001 -g 10001 "\$config_file" "\$stage_root\/docker-config\/config\.json"/);
+  assert.match(launcher, /src=\$stage_root\/docker-config,dst=\/home\/updater\/\.docker,readonly/);
+  assert.doesNotMatch(launcher, /src=\$docker_config,dst=\/home\/updater\/\.docker/);
+
   assert.doesNotMatch(launcher, /chmod\s+0?644\s+["']?\$?(?:base_file|compose_env)|chmod\s+0?755\s+["']?\$?private/);
 
   assert.equal(spawnSync("sh", ["-n", "scripts/run-ghcr-updater-container.sh"]).status, 0);
