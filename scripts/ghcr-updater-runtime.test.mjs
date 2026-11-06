@@ -187,6 +187,15 @@ test("systemd receives safe error codes without secrets or exception stack trace
   assert.equal(safeRuntimeFailureCode(new Error("registry_http_403")), "registry_http_403");
   assert.equal(safeRuntimeFailureCode(new Error("artifact_http_401")), "artifact_http_401");
   assert.equal(safeRuntimeFailureCode(new Error("installed_source_ancestry_unverified")), "installed_source_ancestry_unverified");
+  for (const errorCode of ["EACCES", "EPERM"]) {
+    const error = Object.assign(new Error("EACCES: permission denied /private/runtime.env?token=SENSITIVE"), { code: errorCode });
+    assert.equal(safeRuntimeFailureCode(error), "file_access_denied");
+  }
+  for (const errorCode of ["ENOENT", "ENOTDIR"]) {
+    const error = Object.assign(new Error("ENOENT: /secret/private/runtime.env"), { code: errorCode });
+    assert.equal(safeRuntimeFailureCode(error), "file_path_unavailable");
+  }
+  assert.equal(safeRuntimeFailureCode({ code: "EVIL", message: "Bearer SECRET" }), "runtime_failure");
   for (const secretBearing of [
     new Error("GET https://ghcr.io/token?secret=value"),
     new Error("Bearer ghp_SecretToken"),
