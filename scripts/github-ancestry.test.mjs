@@ -10,7 +10,7 @@ async function withServer(handler, run) {
   const server = http.createServer(handler);
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   try {
-    const baseUrl = `http://127.0.0.1:${server.address().port}`;
+    const baseUrl = "http://127.0.0.1:" + server.address().port;
     return await run(new GitHubReleaseClient({ baseUrl }));
   } finally {
     await new Promise((resolve) => server.close(resolve));
@@ -22,16 +22,27 @@ function json(response, value) {
   response.end(JSON.stringify(value));
 }
 
+// Mirrors GitHub's real Compare REST response. It has no head_commit field:
+// the canonical compare URL, authoritative status and merge-base bind the pair.
+function compareEvidence(request, overrides = {}) {
+  return {
+    url: "http://" + request.headers.host + request.url,
+    status: "ahead",
+    base_commit: { sha: source },
+    merge_base_commit: { sha: source },
+    ahead_by: 1,
+    behind_by: 0,
+    total_commits: 1,
+    commits: [{ sha: head }],
+    ...overrides,
+  };
+}
+
 test("accepts a concrete ancestor and an identical trusted master commit", async () => {
   await withServer((request, response) => {
     if (request.url?.endsWith("/commits/master")) return json(response, { sha: head });
-    if (request.url?.includes(`/compare/${source}...${head}`)) {
-      return json(response, {
-        status: "ahead",
-        base_commit: { sha: source },
-        merge_base_commit: { sha: source },
-        head_commit: { sha: head },
-      });
+    if (request.url?.includes("/compare/" + source + "..." + head)) {
+      return json(response, compareEvidence(request));
     }
     response.statusCode = 404;
     return response.end("{}");
@@ -49,35 +60,28 @@ test("accepts a concrete ancestor and an identical trusted master commit", async
 
 test("verifies release-to-release ancestry using exact compare identities", async () => {
   await withServer((request, response) => {
-    if (request.url?.includes(`/compare/${source}...${head}`)) {
-      return json(response, {
-        status: "ahead",
-        base_commit: { sha: source },
-        merge_base_commit: { sha: source },
-        head_commit: { sha: head },
-      });
+    if (request.url?.includes("/compare/" + source + "..." + head)) {
+      return json(response, compareEvidence(request));
     }
     response.statusCode = 404;
     return response.end("{}");
   }, async (client) => assert.equal(await client.sourceLineage(source, head), true));
 
-  await withServer((_request, response) => json(response, {
+  await withServer((request, response) => json(response, compareEvidence(request, {
     status: "diverged",
-    base_commit: { sha: source },
     merge_base_commit: { sha: "c".repeat(40) },
-    head_commit: { sha: head },
-  }), async (client) => assert.rejects(client.sourceLineage(source, head), /untrusted_source_ancestry/));
+  })), async (client) => assert.rejects(client.sourceLineage(source, head), /untrusted_source_ancestry/));
 });
 
 test("rejects divergent, unrelated and incorrect merge-base evidence", async () => {
-  for (const compare of [
-    { status: "diverged", base_commit: { sha: source }, merge_base_commit: { sha: "c".repeat(40) }, head_commit: { sha: head } },
-    { status: "ahead", base_commit: { sha: source }, merge_base_commit: { sha: "c".repeat(40) }, head_commit: { sha: head } },
-    { status: "ahead", base_commit: { sha: "c".repeat(40) }, merge_base_commit: { sha: source }, head_commit: { sha: head } },
+  for (const changed of [
+    { status: "diverged", merge_base_commit: { sha: "c".repeat(40) } },
+    { status: "ahead", merge_base_commit: { sha: "c".repeat(40) } },
+    { status: "ahead", base_commit: { sha: "c".repeat(40) } },
   ]) {
     await withServer((request, response) => {
       if (request.url?.endsWith("/commits/master")) return json(response, { sha: head });
-      return json(response, compare);
+      return json(response, compareEvidence(request, changed));
     }, async (client) => assert.rejects(client.masterLineage(source), /untrusted_source_ancestry/));
   }
 });
@@ -94,11 +98,6 @@ test("rejects invalid commits and malformed or failed API evidence", async () =>
   await withServer((request, response) => {
     if (request.url?.endsWith("/commits/master")) return json(response, { sha: head });
     response.setHeader("link", '<https://api.github.test/next>; rel="next"');
-    return json(response, {
-      status: "ahead",
-      base_commit: { sha: source },
-      merge_base_commit: { sha: source },
-      head_commit: { sha: head },
-    });
+    return json(response, compareEvidence(request));
   }, async (client) => assert.rejects(client.masterLineage(source), /ambiguous_compare/));
 });
