@@ -58,4 +58,71 @@ docker run --rm --user 10001:10001 --group-add "$socket_gid" --read-only \
 [[ "$(stat -c %a "$private")" == 700 ]]
 [[ "$(stat -c %a "$private/runtime.env")" == 600 ]]
 [[ "$(stat -c %a "$project/compose.yml")" == 600 ]]
+
+
+# Exercise the actual host launcher with an isolated Docker shim. The real
+# Docker smoke above proves kernel mount semantics; this checks that the shell
+# launcher builds those mounts and destroys its own sensitive snapshots.
+mkdir -m 0700 "$root/mock-bin" "$root/updater-state"
+updater_ref="ghcr.io/mkaand/changd-fusion-updater@sha256:$(printf '%064d' 0)"
+cat > "$root/updater.env" <<EOF
+FUSION_UPDATER_IMAGE=$updater_ref
+FUSION_COMPOSE_PROJECT=changd_smoke
+FUSION_PROJECT_DIRECTORY=$project
+FUSION_COMPOSE_BASE_FILE=$project/compose.yml
+FUSION_COMPOSE_ENV_FILE=$private/runtime.env
+FUSION_UPDATER_STATE_DIRECTORY=$root/updater-state
+FUSION_UPDATER_DRY_RUN=1
+EOF
+chmod 0600 "$root/updater.env"
+cat > "$root/mock-bin/docker" <<'MOCK'
+#!/usr/bin/env bash
+set -euo pipefail
+case " $* " in
+  *" image inspect "*) exit 0 ;;
+  *" run "*)
+    count=0
+    for arg in "$@"; do
+      case "$arg" in
+        type=bind,src=/run/changd-fusion-updater.*)
+          [[ "$arg" == *,readonly ]] || exit 71
+          source_path=$(printf '%s' "$arg" | cut -d, -f2 | cut -c5-)
+          [[ "$(stat -c %u "$source_path")" == 10001 ]] || exit 72
+          if [[ -d "$source_path" ]]; then
+            [[ "$(stat -c %a "$source_path")" == 700 ]] || exit 73
+          else
+            [[ "$(stat -c %a "$source_path")" == 400 ]] || exit 74
+          fi
+          count=$((count + 1))
+          ;;
+      esac
+    done
+    [[ "$count" -eq 2 ]] || exit 75
+    [[ "$FUSION_TEST_FAIL_RUN" != 1 ]] || exit 37
+    exit 0 ;;
+  *) exit 76 ;;
+esac
+MOCK
+chmod 0755 "$root/mock-bin/docker"
+export PATH="$root/mock-bin:$PATH"
+export FUSION_UPDATER_IMAGE="$updater_ref"
+export FUSION_COMPOSE_PROJECT=changd_smoke
+export FUSION_PROJECT_DIRECTORY="$project"
+export FUSION_COMPOSE_BASE_FILE="$project/compose.yml"
+export FUSION_COMPOSE_ENV_FILE="$private/runtime.env"
+export FUSION_UPDATER_STATE_DIRECTORY="$root/updater-state"
+export FUSION_DOCKER_CONFIG_DIRECTORY="$root/docker-config"
+export FUSION_UPDATER_ENV_FILE="$root/updater.env"
+export FUSION_UPDATER_DRY_RUN=1
+export FUSION_TEST_FAIL_RUN=0
+before=$(find /run -maxdepth 1 -type d -name 'changd-fusion-updater.*' -printf '%f\n' | sort)
+sh scripts/run-ghcr-updater-container.sh
+[[ "$(find /run -maxdepth 1 -type d -name 'changd-fusion-updater.*' -printf '%f\n' | sort)" == "$before" ]] || exit 77
+set +e
+FUSION_TEST_FAIL_RUN=1 sh scripts/run-ghcr-updater-container.sh
+failure=$?
+set -e
+[[ "$failure" -eq 37 ]] || exit 78
+[[ "$(find /run -maxdepth 1 -type d -name 'changd-fusion-updater.*' -printf '%f\n' | sort)" == "$before" ]] || exit 79
+
 echo "Updater private Compose/env real UID-10001 Docker mount smoke PASS"
