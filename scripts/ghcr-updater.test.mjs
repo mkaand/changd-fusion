@@ -130,7 +130,7 @@ test("selects newest ancestor-ordered same-version release and rejects non-ances
   }
   await assert.rejects(
     discoverRelease(discoveryClient([older, newerSameVersion], { sourceLineage: false }), { repository }),
-    /ambiguous_release_version/,
+    /incompatible_release_ancestry/,
   );
   const newerVersion = {
     ...newerSameVersion,
@@ -140,6 +140,54 @@ test("selects newest ancestor-ordered same-version release and rejects non-ances
   await assert.rejects(
     discoverRelease(discoveryClient([older, newerVersion], { sourceLineage: false }), { repository }),
     /incompatible_release_ancestry/,
+  );
+});
+
+test("old successful release with later cancelled CI cannot block current trusted release", async () => {
+  const older = release();
+  const newer = release({ sourceSha: newerSource, version: "0.3.4", id: 18,
+    apiDigest: "e".repeat(64), uiDigest: "f".repeat(64) });
+  for (const items of [[older, newer], [newer, older]]) {
+    const calls = [], client = discoveryClient(items, { calls });
+    const originalCi = client.ci;
+    client.ci = (sourceSha) => {
+      if (sourceSha === s) throw Error("latest trusted CI workflow run is not successful: completed/cancelled");
+      return originalCi(sourceSha);
+    };
+    const latest = await discoverRelease(client, { repository });
+    assert.equal(latest.manifest.source_sha, newerSource);
+    assert.equal(calls.filter((value) => value.startsWith("ci:")).join(","), `ci:${newerSource}`);
+    assert.equal(calls.filter((value) => value.startsWith("attestation:")).join(","), `attestation:${newerSource}`);
+    assert.equal(calls.includes(`source-lineage:${s}:${newerSource}`), true);
+  }
+});
+
+test("no fallback if newest publisher has invalid CI or attestation", async () => {
+  const older = release(), newer = release({ sourceSha: newerSource, id: 18 });
+  const candidate = discoveryClient([older, newer]);
+  candidate.ci = async (sourceSha) => {
+    if (sourceSha === newerSource) throw Error("latest_ci_cancelled");
+    return ci;
+  };
+  await assert.rejects(discoverRelease(candidate, { repository }), /latest_ci_cancelled/);
+  const untrusted = release({ sourceSha: newerSource, id: 18, publisher: { attested: false } });
+  await assert.rejects(
+    discoverRelease(discoveryClient([older, untrusted]), { repository }),
+    /publisher_provenance/,
+  );
+});
+
+test("rejects conflicting published images for one source and duplicate publisher IDs", async () => {
+  const older = release(), inconsistent = release({
+    sourceSha: s, id: 18, apiDigest: "e".repeat(64), uiDigest: "f".repeat(64),
+  });
+  await assert.rejects(
+    discoverRelease(discoveryClient([older, inconsistent]), { repository }),
+    /ambiguous_release_source/,
+  );
+  await assert.rejects(
+    discoverRelease(discoveryClient([older, { ...older }]), { repository }),
+    /ambiguous_release_listing/,
   );
 });
 
