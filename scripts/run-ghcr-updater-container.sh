@@ -1,5 +1,6 @@
 #!/bin/sh
 set -eu
+umask 077
 
 fail() { printf '%s\n' "Changd Fusion updater launcher stopped safely: $1" >&2; exit 1; }
 absolute() { case "$1" in /*) ;; *) fail "invalid_path" ;; esac; }
@@ -15,23 +16,96 @@ updater_env=${FUSION_UPDATER_ENV_FILE:-/etc/changd-fusion/updater.env}
 
 printf '%s' "$image" | grep -Eq '^ghcr\.io/mkaand/changd-fusion-updater@sha256:[0-9a-f]{64}$' || fail "invalid_updater_image"
 printf '%s' "$project" | grep -Eq '^[a-z0-9][a-z0-9_-]{0,62}$' || fail "invalid_project"
-for value in "$project_dir" "$base_file" "$compose_env" "$state_dir" "$docker_config" "$updater_env"; do absolute "$value"; done
+for value in "$project_dir" "$base_file" "$compose_env" "$state_dir" "$docker_config" "$updater_env"; do
+  absolute "$value"
+  if printf '%s' "$value" | LC_ALL=C grep -q '[[:cntrl:],]'; then fail "invalid_path"; fi
+done
 [ -d "$project_dir" ] && [ -f "$base_file" ] && [ -f "$compose_env" ] || fail "missing_compose_configuration"
 [ -d "$state_dir" ] && [ -d "$docker_config" ] && [ -f "$updater_env" ] || fail "missing_updater_configuration"
-[ "$(realpath "$base_file")" != "$(realpath "$project_dir")" ] || fail "invalid_compose_file"
-case "$(realpath "$base_file")" in "$(realpath "$project_dir")"/*) ;; *) fail "compose_file_outside_project" ;; esac
-case "$(realpath "$compose_env")" in "$(realpath "$project_dir")"/*) ;; *) fail "compose_env_outside_project" ;; esac
 [ -S /var/run/docker.sock ] || fail "docker_socket_unavailable"
+
+# Resolve symlinks before staging and preserve the exact host-side paths used
+# by existing Compose ownership labels. The project root remains a read-only
+# host bind; only explicitly selected files/directories are overlaid.
+project_dir=$(realpath -- "$project_dir") || fail "invalid_project_directory"
+base_file=$(realpath -- "$base_file") || fail "invalid_compose_file"
+compose_env=$(realpath -- "$compose_env") || fail "invalid_compose_env"
+case "$base_file" in "$project_dir"/*) ;; *) fail "compose_file_outside_project" ;; esac
+case "$compose_env" in "$project_dir"/*) ;; *) fail "compose_env_outside_project" ;; esac
+[ "$base_file" != "$compose_env" ] || fail "ambiguous_compose_files"
+
+base_rel=${base_file#"$project_dir"/}
+env_rel=${compose_env#"$project_dir"/}
+# The checked-in base Compose file must be in the project root. A private env
+# file may be in a root-only nested directory, which must be overlaid as a
+# directory to allow UID 10001 to traverse it.
+case "$base_rel" in */*) fail "unsupported_nested_compose_file" ;; esac
+[ -n "$base_rel" ] && [ -n "$env_rel" ] || fail "invalid_compose_file"
 
 socket_gid=$(stat -c %g /var/run/docker.sock)
 docker --host=unix:///var/run/docker.sock --config "$docker_config" image inspect "$image" >/dev/null 2>&1 \
   || docker --host=unix:///var/run/docker.sock --config "$docker_config" pull "$image" >/dev/null
 
-# Tokens are read by Docker from the protected env file, not inherited by the
-# host-side Docker CLI process or exposed as command arguments.
+# The root-owned staging parent is never mounted. Only its UID-10001-owned
+# child files/subdirectories become visible at the ORIGINAL container paths.
+# Production permissions, UID/GID, Compose ownership and env secrets stay
+# unchanged. Mount source paths are randomly named and deleted on all exits.
+stage_root=$(mktemp -d /run/changd-fusion-updater.XXXXXXXXXX) || fail "staging_unavailable"
+child=
+cleanup() { rm -rf -- "$stage_root"; }
+on_signal() {
+  trap - HUP INT TERM
+  if [ -n "$child" ]; then
+    if [ -s "$stage_root/cid" ]; then
+      cid=$(cat "$stage_root/cid" 2>/dev/null || :)
+      if printf '%s' "$cid" | grep -Eq '^[0-9a-f]{64}$'; then
+        docker --host=unix:///var/run/docker.sock --config "$docker_config" stop -t 20 "$cid" >/dev/null 2>&1 || :
+      fi
+    fi
+    kill -TERM "$child" 2>/dev/null || :
+    wait "$child" 2>/dev/null || :
+  fi
+  exit 143
+}
+trap cleanup EXIT
+trap on_signal HUP INT TERM
+
+mkdir -m 0700 "$stage_root/view" || fail "staging_unavailable"
+mkdir -p -- "$(dirname -- "$stage_root/view/$env_rel")" || fail "staging_unavailable"
+install -m 0400 -o 10001 -g 10001 "$base_file" "$stage_root/view/$base_rel" || fail "staging_failed"
+install -m 0400 -o 10001 -g 10001 "$compose_env" "$stage_root/view/$env_rel" || fail "staging_failed"
+# mkdir -p uses 0755 for intermediate components on some platforms; tighten
+# EVERY staged directory, not only the leaf.
+chown -R 10001:10001 "$stage_root/view" || fail "staging_failed"
+find "$stage_root/view" -type d -exec chmod 0700 {} + || fail "staging_failed"
+
+# Tokens are passed to Docker via the protected updater env file, not via CLI
+# arguments or inherited environment. The base/runtime Compose env snapshot is
+# mounted only read-only and never printed.
 unset FUSION_GITHUB_TOKEN FUSION_TELEGRAM_BOT_TOKEN FUSION_TELEGRAM_CHAT_ID GH_TOKEN GITHUB_TOKEN || true
 
-exec docker --host=unix:///var/run/docker.sock --config "$docker_config" run --rm --name changd-fusion-updater \
+set -- \
+  --mount "type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock" \
+  --mount "type=bind,src=$project_dir,dst=$project_dir,readonly" \
+  --mount "type=bind,src=$state_dir,dst=$state_dir" \
+  --mount "type=bind,src=$docker_config,dst=/home/updater/.docker,readonly" \
+  --mount "type=bind,src=$stage_root/view/$base_rel,dst=$base_file,readonly"
+
+case "$env_rel" in
+  */*)
+    env_top=${env_rel%%/*}
+    set -- "$@" --mount "type=bind,src=$stage_root/view/$env_top,dst=$project_dir/$env_top,readonly"
+    ;;
+  *)
+    set -- "$@" --mount "type=bind,src=$stage_root/view/$env_rel,dst=$compose_env,readonly"
+    ;;
+esac
+
+# Keep the launcher alive while Docker runs so EXIT and signal traps remove
+# the secret snapshots. A container ID file only identifies this invocation,
+# never another Compose project or a pre-existing updater container.
+docker --host=unix:///var/run/docker.sock --config "$docker_config" run --rm --name changd-fusion-updater \
+  --cidfile "$stage_root/cid" \
   --network host \
   --read-only \
   --cap-drop ALL \
@@ -39,12 +113,19 @@ exec docker --host=unix:///var/run/docker.sock --config "$docker_config" run --r
   --user 10001:10001 \
   --group-add "$socket_gid" \
   --env-file "$updater_env" \
+  --env FUSION_PROJECT_DIRECTORY="$project_dir" \
+  --env FUSION_COMPOSE_BASE_FILE="$base_file" \
+  --env FUSION_COMPOSE_ENV_FILE="$compose_env" \
   --env FUSION_COMPOSE_OVERRIDE_FILE=/opt/changd-fusion-updater/docker-compose.ghcr.yml \
   --env DOCKER_CONFIG=/home/updater/.docker \
-  --mount "type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock" \
-  --mount "type=bind,src=$project_dir,dst=$project_dir,readonly" \
-  --mount "type=bind,src=$state_dir,dst=$state_dir" \
-  --mount "type=bind,src=$docker_config,dst=/home/updater/.docker,readonly" \
+  "$@" \
   --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
   --tmpfs /home/updater/.cache:rw,noexec,nosuid,nodev,size=16m \
-  "$image"
+  "$image" &
+child=$!
+set +e
+wait "$child"
+status=$?
+set -e
+child=
+exit "$status"
