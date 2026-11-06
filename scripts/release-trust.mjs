@@ -373,7 +373,10 @@ export function verifyAttestationWithGh({
     && workflow.repository === repositoryUrl
     && workflow.path === expected.workflow
     && workflow.ref === expected.sourceRef
-    && builder === "https://github.com/actions/runner/github-hosted"
+    // GitHub Actions SLSA workflow/v1 uses the trusted signer workflow URI
+    // as runDetails.builder.id; runner_environment is a distinct signed
+    // certificate field already checked above.
+    && builder === signerUri
     && dependencies.some((item) => item?.digest?.gitCommit === expected.sourceSha);
   if (!certificateMatches || !claimsMatch) throw Error("attestation_claim_mismatch");
   return { certificate, statement, verifiedTimestamps: timestamps };
