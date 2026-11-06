@@ -256,6 +256,27 @@ read-only, updater state read-write and Docker credentials read-only. Host and
 container project paths are intentionally identical so Compose ownership labels
 remain stable and auditable.
 
+If the configured Compose or environment file is root-only, the root launcher
+creates a random mode-0700 staging directory in `/run`, containing **only**
+the configured base Compose and environment files. Snapshots are mode-0400,
+owned by UID/GID 10001. The original project root remains bound read-only
+at its original absolute host path, and the snapshots overlay those same
+absolute paths read-only. For a nested 0700 private environment directory,
+a minimal staged directory view is mounted read-only to permit UID 10001 to
+traverse it; unrelated files in that directory remain invisible. An
+installation relying on additional private files must be reviewed separately.
+The base Compose file must be in the project root; nested base files fail
+closed. Production permissions, file ownership, volumes and Compose ownership
+labels are never changed.
+
+The launcher keeps its parent process alive for cleanup on exit or signals,
+uses a scoped Docker `--cidfile` for interruption handling, and never prints
+snapshot contents. Filesystem errors are emitted only as sanitized categories,
+not secret-bearing paths or stack traces. The host-installed launcher
+`/usr/local/sbin/changd-fusion-updater-container` is NOT bundled into
+the updater image: a future operator-approved host launcher update is required
+independently of pulling the new GHCR image.
+
 ### Clean-host installation (disabled by default)
 
 1. Install Docker Engine and systemd. Do not install Node.js, npm, GitHub CLI,
