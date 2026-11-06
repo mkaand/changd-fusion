@@ -21,6 +21,8 @@ install -m 0400 -o 10001 -g 10001 "$project/compose.yml" "$view/compose.yml"
 install -m 0400 -o 10001 -g 10001 "$private/runtime.env" "$view/private/runtime.env"
 chown 10001:10001 "$view/private"
 image=changd-fusion-updater:ci
+socket_gid=$(stat -c %g /var/run/docker.sock)
+mkdir -m 0700 "$root/docker-config"
 
 # Before overlays, UID 10001 must NOT be able to read root-owned inputs.
 if docker run --rm --user 10001:10001 \
@@ -33,8 +35,11 @@ fi
 
 # The project root and file identities remain unchanged; the nested private
 # directory is overlaid as a directory to allow the UID to traverse its 0700 mode.
-docker run --rm --user 10001:10001 --read-only \
+docker run --rm --user 10001:10001 --group-add "$socket_gid" --read-only \
   --cap-drop ALL --security-opt no-new-privileges:true \
+  --mount "type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock" \
+  --mount "type=bind,src=$root/docker-config,dst=/home/updater/.docker,readonly" \
+  --env "DOCKER_CONFIG=/home/updater/.docker" \
   --mount "type=bind,src=$project,dst=$project,readonly" \
   --mount "type=bind,src=$view/compose.yml,dst=$project/compose.yml,readonly" \
   --mount "type=bind,src=$view/private,dst=$private,readonly" \
@@ -46,7 +51,8 @@ docker run --rm --user 10001:10001 --read-only \
     test -r "$FUSION_COMPOSE_ENV_FILE" &&
     test "$(stat -c %a "$FUSION_COMPOSE_BASE_FILE")" = 400 &&
     test "$(stat -c %a "$FUSION_COMPOSE_ENV_FILE")" = 400 &&
-    test "$(stat -c %a "$(dirname "$FUSION_COMPOSE_ENV_FILE")")" = 700
+    test "$(stat -c %a "$(dirname "$FUSION_COMPOSE_ENV_FILE")")" = 700 &&
+    docker --host=unix:///var/run/docker.sock info --format "{{.ServerVersion}}" >/dev/null
   '
 
 [[ "$(stat -c %a "$private")" == 700 ]]
