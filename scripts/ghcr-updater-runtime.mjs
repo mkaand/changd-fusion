@@ -122,8 +122,13 @@ export function runtimeOutcome(result) {
 // print exception stacks, URLs, Authorization headers, or token-bearing text.
 export function safeRuntimeFailureCode(error) {
   const code = error?.message;
-  return typeof code === "string" && /^[a-z][a-z0-9_]{2,100}$/.test(code)
-    ? code : "runtime_failure";
+  if (typeof code === "string" && /^[a-z][a-z0-9_]{2,100}$/.test(code)) return code;
+  // Node.js filesystem errors include paths in message/stack. Only emit
+  // allowlisted errno classes; never expose the raw exception or secrets.
+  const errno = error?.code;
+  if (errno === "EACCES" || errno === "EPERM") return "file_access_denied";
+  if (errno === "ENOENT" || errno === "ENOTDIR") return "file_path_unavailable";
+  return "runtime_failure";
 }
 
 async function main() {

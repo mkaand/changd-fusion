@@ -180,6 +180,9 @@ jobs:
       - name: Containerized updater toolchain and privilege boundary
         run: node scripts/updater-image-smoke.mjs
         timeout-minutes: 1
+      - name: Root-only Compose and private env access at UID 10001 (real Docker)
+        run: sudo -n bash scripts/updater-private-config-smoke.sh
+        timeout-minutes: 2
       - name: Rootless resource limits and sandboxed Browser Steps smoke
         run: node scripts/docker-smoke.mjs
         timeout-minutes: 2
