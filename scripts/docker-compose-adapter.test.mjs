@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import {
   createDockerComposeHostAdapter,
+  validateTrustedSeccompProfile,
 } from "./docker-compose-adapter.mjs";
 import { runUpdater } from "./ghcr-updater.mjs";
 import { ComposeMaintenanceCoordinator } from "./maintenance-coordinator.mjs";
@@ -40,6 +41,9 @@ test.before(async () => {
   await writeFile(baseFile, "services: {}\n");
   await writeFile(overrideFile, "services: {}\n");
   await writeFile(envFile, "FIXTURE=true\n");
+  await mkdir(path.join(directory, "docker"));
+  await copyFile(new URL("../docker/chromium-seccomp.json", import.meta.url),
+    path.join(directory, "docker", "chromium-seccomp.json"));
 });
 test.after(() => rm(directory, { recursive: true, force: true }));
 
@@ -515,5 +519,48 @@ test("rejects Compose or environment changes after project validation", async ()
     );
   } finally {
     await writeFile(overrideFile, "services: {}\n");
+  }
+});
+
+
+test("trusted seccomp policy accepts relative and private absolute paths with byte-identical contents", async () => {
+  const trusted = path.join(directory, "docker", "chromium-seccomp.json");
+  assert.equal(validateTrustedSeccompProfile(directory, "seccomp=./docker/chromium-seccomp.json"), trusted);
+  const privateDir = path.join(directory, "private");
+  await mkdir(privateDir, { recursive: true });
+  const profile = path.join(privateDir, "chromium-seccomp.json");
+  await copyFile(trusted, profile);
+  assert.equal(validateTrustedSeccompProfile(directory, "seccomp=" + profile), profile);
+  const model = composeModel();
+  model.services.api.security_opt = ["seccomp=" + profile];
+  model.services.worker.security_opt = ["seccomp=" + profile];
+  const fake = fakeSpawn({ model });
+  const host = adapter(fake);
+  assert.equal(await host.projectIsExpected(project, ["api", "worker", "ui"], release), true);
+  assert.equal(host.seccompProfilePath, profile);
+  assert.ok(host.configurationFingerprint().length === 64);
+  await rm(profile);
+});
+
+test("trusted seccomp policy fails closed on tampered, escaped, symlinked and unconfined profiles", async () => {
+  const profile = path.join(directory, "private", "chromium-seccomp.json");
+  const trusted = path.join(directory, "docker", "chromium-seccomp.json");
+  const changed = (await readFile(trusted, "utf8")).replace("SCMP_ACT_ERRNO", "SCMP_ACT_ALLOW");
+  await writeFile(profile, changed);
+  assert.throws(() => validateTrustedSeccompProfile(directory, "seccomp=" + profile), /seccomp_profile_mismatch/);
+  await rm(profile);
+  await symlink(trusted, profile);
+  assert.throws(() => validateTrustedSeccompProfile(directory, "seccomp=" + profile), /seccomp_profile_untrusted_path/);
+  await rm(profile);
+  for (const setting of [
+    "seccomp=unconfined",
+    "seccomp=default",
+    "seccomp=./missing-profile.json",
+    "seccomp=/etc/passwd",
+    "seccomp=../../../../etc/passwd",
+    "seccomp=./docker/chromium-seccomp.json,unconfined",
+    "no-new-privileges:true",
+  ]) {
+    assert.throws(() => validateTrustedSeccompProfile(directory, setting), /compose_sandbox_contract|seccomp_profile_unavailable|seccomp_profile_outside_project/);
   }
 });
