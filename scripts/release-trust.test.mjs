@@ -446,6 +446,30 @@ test("invokes the official verifier and validates its verified claims", async ()
   assert.equal(verificationCalls[0].options.env.GH_TOKEN, "fixture-secret");
 });
 
+test("accepts verified legacy hosted-runner builder only with exact signed signer and source", () => {
+  const legacy = verifiedResult(api, { builder: "https://github.com/actions/runner/github-hosted" });
+  const spawn = (_command, args) => args[0] === "--version"
+    ? { status: 0, stdout: "gh version 2.103.3 (fixture)\n" }
+    : { status: 0, stdout: JSON.stringify(legacy) };
+  const expected = {
+    repository: "mkaand/changd-fusion",
+    workflow: ".github/workflows/ghcr-release.yml",
+    sourceSha: source,
+    sourceRef: "refs/heads/master",
+    digestAlgorithm: "sha256",
+    subjectDigest: imageDigest.slice(7),
+  };
+  assert.doesNotThrow(() => verifyAttestationWithGh({ subject: `oci://${api}`, expected, spawn }));
+  const changed = verifiedResult(api, {
+    builder: "https://github.com/actions/runner/github-hosted",
+    certificate: { buildSignerURI: "https://github.com/evil/repo/.github/workflows/release.yml@refs/heads/master" },
+  });
+  const poisoned = (_command, args) => args[0] === "--version"
+    ? { status: 0, stdout: "gh version 2.103.3 (fixture)\n" }
+    : { status: 0, stdout: JSON.stringify(changed) };
+  assert.throws(() => verifyAttestationWithGh({ subject: `oci://${api}`, expected, spawn: poisoned }), /attestation_claim_mismatch/);
+});
+
 test("rejects invalid signatures, wrong identity, source and subject digest", async () => {
   const images = await new OciRegistryClient({ baseUrl }).verifyReleaseImages(release);
   const context = {
@@ -461,7 +485,6 @@ test("rejects invalid signatures, wrong identity, source and subject digest", as
     verifiedResult(api, { repository: "evil/repo" }),
     verifiedResult(api, { source: "f".repeat(40) }),
     verifiedResult(api, { subjectDigest: "f".repeat(64) }),
-    verifiedResult(api, { builder: "https://github.com/actions/runner/github-hosted" }),
     verifiedResult(api, { builder: "https://github.com/evil/repo/.github/workflows/release.yml@refs/heads/master" }),
     verifiedResult(api, { certificate: { runnerEnvironment: "self-hosted" } }),
     verifiedResult(api, { timestamps: [] }),
