@@ -78,6 +78,7 @@ docker run --rm --user 10001:10001 --group-add "$socket_gid" --read-only \
     test "$(stat -c %a /home/updater/.docker)" = 700 &&
     test "$(stat -c %u /home/updater/.docker/config.json)" = 10001 &&
     test "$(stat -c %a /home/updater/.docker/config.json)" = 400 &&
+    node --input-type=module -e "import { validateDockerCliConfiguration } from \"/opt/changd-fusion-updater/scripts/ghcr-updater-runtime.mjs\"; validateDockerCliConfiguration();" &&
     docker --host=unix:///var/run/docker.sock info --format "{{.ServerVersion}}" >/dev/null &&
     docker --host=unix:///var/run/docker.sock compose --project-name changd-smoke \
       --project-directory "$(dirname "$FUSION_COMPOSE_BASE_FILE")" \
@@ -160,5 +161,22 @@ set -e
 [[ "$(stat -c %a "$private")" == 700 ]]
 [[ "$(stat -c %a "$private/runtime.env")" == 600 ]]
 
+
+
+# Explicitly test absent Docker config (public GHCR), symlink rejection and
+# no sensitive /run staging debris on both safe exits.
+mv "$root/docker-config/config.json" "$root/docker-config/config.saved"
+FUSION_TEST_FAIL_RUN=0 sh scripts/run-ghcr-updater-container.sh
+[[ "$(find /run -maxdepth 1 -type d -name 'changd-fusion-updater.*' -printf '%f\n' | sort)" == "$before" ]] || exit 80
+ln -s config.saved "$root/docker-config/config.json"
+set +e
+FUSION_TEST_FAIL_RUN=0 sh scripts/run-ghcr-updater-container.sh >"$root/rejected.log" 2>&1
+symlink_exit=$?
+set -e
+[[ "$symlink_exit" -ne 0 ]] || exit 81
+grep -q "invalid_docker_config_file" "$root/rejected.log" || exit 82
+[[ "$(find /run -maxdepth 1 -type d -name 'changd-fusion-updater.*' -printf '%f\n' | sort)" == "$before" ]] || exit 83
+rm "$root/docker-config/config.json"
+mv "$root/docker-config/config.saved" "$root/docker-config/config.json"
 
 echo "Updater private Compose/env real UID-10001 Docker mount smoke PASS"
