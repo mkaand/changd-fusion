@@ -392,7 +392,9 @@ function verifiedResult(reference, overrides = {}) {
         } },
         resolvedDependencies: [{ digest: { gitCommit: sourceSha } }],
       },
-      runDetails: { builder: { id: "https://github.com/actions/runner/github-hosted" } },
+      // Exact structure emitted by the successful GHCR immutable-release
+      // action's SLSA workflow/v1 predicate on production.
+      runDetails: { builder: { id: overrides.builder ?? signerUri } },
     },
   };
   return [{ verificationResult: {
@@ -431,6 +433,9 @@ test("invokes the official verifier and validates its verified claims", async ()
   });
   const verified = await client.attestation(release);
   assert.equal(verified.attested, true);
+  const realWorldFixture = verifiedResult(api)[0].verificationResult;
+  assert.equal(realWorldFixture.statement.predicate.runDetails.builder.id,
+    "https://github.com/mkaand/changd-fusion/.github/workflows/ghcr-release.yml@refs/heads/master");
   const verificationCalls = calls.filter((call) => call.args[0] === "attestation");
   assert.equal(verificationCalls.length, 2);
   assert.deepEqual(verificationCalls[0].args.slice(0, 3), ["attestation", "verify", `oci://${api}`]);
@@ -456,6 +461,8 @@ test("rejects invalid signatures, wrong identity, source and subject digest", as
     verifiedResult(api, { repository: "evil/repo" }),
     verifiedResult(api, { source: "f".repeat(40) }),
     verifiedResult(api, { subjectDigest: "f".repeat(64) }),
+    verifiedResult(api, { builder: "https://github.com/actions/runner/github-hosted" }),
+    verifiedResult(api, { builder: "https://github.com/evil/repo/.github/workflows/release.yml@refs/heads/master" }),
     verifiedResult(api, { certificate: { runnerEnvironment: "self-hosted" } }),
     verifiedResult(api, { timestamps: [] }),
   ]) {
