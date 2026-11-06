@@ -21,11 +21,17 @@ services:
     environment:
       X_TEST: ${X_TEST:?missing}
 COMPOSE
+# The profile is intentionally root-owned inside a 0700 private directory,
+# and Compose uses its absolute host path as in the production legacy layout.
+cp docker/chromium-seccomp.json "$private/chromium-seccomp.json"
+chmod 0600 "$private/chromium-seccomp.json"
+sed -i "/^    environment:/i\\    security_opt: [\\"seccomp=$private/chromium-seccomp.json\\"]" "$project/compose.yml"
 printf '%s\n' 'X_TEST=synthetic-only' > "$private/runtime.env"
 chmod 0600 "$project/compose.yml" "$private/runtime.env"
 mkdir -m 0700 "$view/private"
 install -m 0400 -o 10001 -g 10001 "$project/compose.yml" "$view/compose.yml"
 install -m 0400 -o 10001 -g 10001 "$private/runtime.env" "$view/private/runtime.env"
+install -m 0400 -o 10001 -g 10001 "$private/chromium-seccomp.json" "$view/private/chromium-seccomp.json"
 chown 10001:10001 "$view/private"
 image=changd-fusion-updater:ci
 socket_gid=$(stat -c %g /var/run/docker.sock)
@@ -67,6 +73,8 @@ docker run --rm --user 10001:10001 --group-add "$socket_gid" --read-only \
   --mount "type=bind,src=$view/private,dst=$private,readonly" \
   --env "FUSION_COMPOSE_BASE_FILE=$project/compose.yml" \
   --env "FUSION_COMPOSE_ENV_FILE=$private/runtime.env" \
+  --env "FUSION_PROJECT_DIRECTORY=$project" \
+  --env "FUSION_SECCOMP_PROFILE_FILE=$private/chromium-seccomp.json" \
   --entrypoint /bin/sh "$image" -c '
     test "$(id -u)" = 10001 &&
     test -r "$FUSION_COMPOSE_BASE_FILE" &&
@@ -74,6 +82,9 @@ docker run --rm --user 10001:10001 --group-add "$socket_gid" --read-only \
     test "$(stat -c %a "$FUSION_COMPOSE_BASE_FILE")" = 400 &&
     test "$(stat -c %a "$FUSION_COMPOSE_ENV_FILE")" = 400 &&
     test "$(stat -c %a "$(dirname "$FUSION_COMPOSE_ENV_FILE")")" = 700 &&
+    test -r "$FUSION_SECCOMP_PROFILE_FILE" &&
+    test "$(stat -c %a "$FUSION_SECCOMP_PROFILE_FILE")" = 400 &&
+    node --input-type=module -e "import { validateTrustedSeccompProfile } from \\"/opt/changd-fusion-updater/scripts/docker-compose-adapter.mjs\\"; validateTrustedSeccompProfile(process.env.FUSION_PROJECT_DIRECTORY, \\"seccomp=\\" + process.env.FUSION_SECCOMP_PROFILE_FILE);" &&
     test "$(stat -c %u /home/updater/.docker)" = 10001 &&
     test "$(stat -c %a /home/updater/.docker)" = 700 &&
     test "$(stat -c %u /home/updater/.docker/config.json)" = 10001 &&
@@ -88,6 +99,7 @@ docker run --rm --user 10001:10001 --group-add "$socket_gid" --read-only \
 
 [[ "$(stat -c %a "$private")" == 700 ]]
 [[ "$(stat -c %a "$private/runtime.env")" == 600 ]]
+[[ "$(stat -c %a "$private/chromium-seccomp.json")" == 600 ]]
 [[ "$(stat -c %a "$project/compose.yml")" == 600 ]]
 
 
@@ -129,6 +141,19 @@ case " $* " in
       esac
     done
     [[ "$count" -eq 3 ]] || exit 75
+    staged_profile=0
+    for arg in "$@"; do
+      case "$arg" in
+        type=bind,src=/run/changd-fusion-updater.*/view/private,dst=*,readonly)
+          staged_path=$(printf '%s' "$arg" | cut -d, -f2 | cut -c5-)
+          [[ -f "$staged_path/chromium-seccomp.json" ]] || exit 85
+          [[ "$(stat -c %u "$staged_path/chromium-seccomp.json")" == 10001 ]] || exit 86
+          [[ "$(stat -c %a "$staged_path/chromium-seccomp.json")" == 400 ]] || exit 87
+          staged_profile=1
+          ;;
+      esac
+    done
+    [[ "$staged_profile" -eq 1 ]] || exit 88
     [[ "$FUSION_TEST_FAIL_RUN" != 1 ]] || exit 37
     exit 0 ;;
   *) exit 76 ;;
@@ -141,6 +166,7 @@ export FUSION_COMPOSE_PROJECT=changd_smoke
 export FUSION_PROJECT_DIRECTORY="$project"
 export FUSION_COMPOSE_BASE_FILE="$project/compose.yml"
 export FUSION_COMPOSE_ENV_FILE="$private/runtime.env"
+export FUSION_SECCOMP_PROFILE_FILE="$private/chromium-seccomp.json"
 export FUSION_UPDATER_STATE_DIRECTORY="$root/updater-state"
 export FUSION_DOCKER_CONFIG_DIRECTORY="$root/docker-config"
 export FUSION_UPDATER_ENV_FILE="$root/updater.env"
@@ -178,5 +204,18 @@ grep -q "invalid_docker_config_file" "$root/rejected.log" || exit 82
 [[ "$(find /run -maxdepth 1 -type d -name 'changd-fusion-updater.*' -printf '%f\n' | sort)" == "$before" ]] || exit 83
 rm "$root/docker-config/config.json"
 mv "$root/docker-config/config.saved" "$root/docker-config/config.json"
+
+# The host launcher must refuse symlink profiles before staging or Docker run.
+mv "$private/chromium-seccomp.json" "$private/chromium-seccomp.original"
+ln -s chromium-seccomp.original "$private/chromium-seccomp.json"
+set +e
+FUSION_TEST_FAIL_RUN=0 sh scripts/run-ghcr-updater-container.sh > "$root/invalid-seccomp.log" 2>&1
+bad_profile_exit=$?
+set -e
+[[ "$bad_profile_exit" -ne 0 ]] || exit 89
+grep -q "invalid_seccomp_profile" "$root/invalid-seccomp.log" || exit 90
+[[ "$(find /run -maxdepth 1 -type d -name 'changd-fusion-updater.*' -printf '%f\n' | sort)" == "$before" ]] || exit 91
+rm "$private/chromium-seccomp.json"
+mv "$private/chromium-seccomp.original" "$private/chromium-seccomp.json"
 
 echo "Updater private Compose/env real UID-10001 Docker mount smoke PASS"
