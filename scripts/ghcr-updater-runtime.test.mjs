@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { chmod, mkdtemp, readFile, rm } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { DeploymentStateStore } from "./deployment-state.mjs";
-import { executeUpdaterRuntime, runtimeConfiguration, runtimeOutcome, safeRuntimeFailureCode } from "./ghcr-updater-runtime.mjs";
+import { executeUpdaterRuntime, runtimeConfiguration, runtimeOutcome, safeRuntimeFailureCode, validateDockerCliConfiguration } from "./ghcr-updater-runtime.mjs";
 
 const project = "fusion_runtime_test";
 const source = "a".repeat(40), oldSource = "d".repeat(40);
@@ -252,4 +252,58 @@ test("runtime configuration fails closed on ambiguous mutation mode, relative pa
     { FUSION_TRUSTED_REPOSITORY: "foreign/project" }]) {
     assert.throws(() => runtimeConfiguration({ ...valid, ...changed }), /invalid_updater_configuration/);
   }
+});
+
+
+test("Docker CLI config accepts empty config and staged GHCR-only auth without exposing it", async () => {
+  const folder = path.join(directory, "docker-config");
+  await mkdir(folder, { mode: 0o700 });
+  await chmod(folder, 0o700);
+  assert.equal(validateDockerCliConfiguration({ DOCKER_CONFIG: folder }), undefined);
+  const file = path.join(folder, "config.json");
+  await writeFile(file, JSON.stringify({ auths: { "ghcr.io": { auth: "synthetic-test-token" } } }), { mode: 0o400 });
+  await chmod(file, 0o400);
+  assert.equal(validateDockerCliConfiguration({ DOCKER_CONFIG: folder }), undefined);
+});
+
+test("Docker CLI config rejects helpers, external registry credentials and dangerous keys", async () => {
+  const folder = path.join(directory, "docker-config");
+  await mkdir(folder, { mode: 0o700 });
+  await chmod(folder, 0o700);
+  const file = path.join(folder, "config.json");
+  for (const [config, expected] of [
+    [{ auths: {}, credsStore: "pass" }, "unsupported_docker_credential_helper"],
+    [{ credHelpers: { "ghcr.io": "secretservice" } }, "unsupported_docker_credential_helper"],
+    [{ auths: { "registry.example.invalid": { auth: "synthetic-secret" } } }, "unsupported_docker_configuration"],
+    [{ currentContext: "remote" }, "unsupported_docker_configuration"],
+    [{ HttpHeaders: { Authorization: "synthetic-secret" } }, "unsupported_docker_configuration"],
+    [{ auths: { "ghcr.io": { "auth": 123 } } }, "unsupported_docker_configuration"],
+    [[], "invalid_docker_config"],
+  ]) {
+    await rm(file, { force: true });
+    await writeFile(file, JSON.stringify(config), { mode: 0o400 });
+    await chmod(file, 0o400);
+    assert.throws(() => validateDockerCliConfiguration({ DOCKER_CONFIG: folder }), {
+      message: expected,
+    });
+  }
+});
+
+test("Docker CLI config refuses symlinks and overly permissive credential files", async () => {
+  const folder = path.join(directory, "docker-config");
+  await mkdir(folder, { mode: 0o700 });
+  await chmod(folder, 0o700);
+  const file = path.join(folder, "config.json");
+  const target = path.join(directory, "source-secret");
+  await writeFile(target, '{"auths":{}}');
+  await symlink(target, file);
+  assert.throws(() => validateDockerCliConfiguration({ DOCKER_CONFIG: folder }), /invalid_docker_config/);
+  await rm(file);
+  await writeFile(file, '{"auths":{}}', { mode: 0o600 });
+  await chmod(file, 0o600);
+  assert.throws(() => validateDockerCliConfiguration({ DOCKER_CONFIG: folder }), /invalid_docker_config/);
+  await rm(file);
+  await writeFile(file, "x".repeat(131073), { mode: 0o400 });
+  await chmod(file, 0o400);
+  assert.throws(() => validateDockerCliConfiguration({ DOCKER_CONFIG: folder }), /invalid_docker_config/);
 });
