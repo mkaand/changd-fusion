@@ -84,7 +84,7 @@ docker run --rm --user 10001:10001 --group-add "$socket_gid" --read-only \
     test "$(stat -c %a "$(dirname "$FUSION_COMPOSE_ENV_FILE")")" = 700 &&
     test -r "$FUSION_SECCOMP_PROFILE_FILE" &&
     test "$(stat -c %a "$FUSION_SECCOMP_PROFILE_FILE")" = 400 &&
-    node --input-type=module -e "import { validateTrustedSeccompProfile } from \\"/opt/changd-fusion-updater/scripts/docker-compose-adapter.mjs\\"; validateTrustedSeccompProfile(process.env.FUSION_PROJECT_DIRECTORY, \\"seccomp=\\" + process.env.FUSION_SECCOMP_PROFILE_FILE);" &&
+    node --input-type=module -e "import { validateTrustedSeccompProfile } from \"/opt/changd-fusion-updater/scripts/docker-compose-adapter.mjs\"; validateTrustedSeccompProfile(process.env.FUSION_PROJECT_DIRECTORY, \"seccomp=\" + process.env.FUSION_SECCOMP_PROFILE_FILE);" &&
     test "$(stat -c %u /home/updater/.docker)" = 10001 &&
     test "$(stat -c %a /home/updater/.docker)" = 700 &&
     test "$(stat -c %u /home/updater/.docker/config.json)" = 10001 &&
