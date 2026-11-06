@@ -58,6 +58,30 @@ env_rel=${compose_env#"$project_dir"/}
 case "$base_rel" in */*) fail "unsupported_nested_compose_file" ;; esac
 [ -n "$base_rel" ] && [ -n "$env_rel" ] || fail "invalid_compose_file"
 
+# The checked-in docker/chromium-seccomp.json remains readable through the
+# original project mount. For a root-only project private/ profile, stage it
+# beside the protected runtime.env. Other projects can explicitly configure an
+# absolute, project-contained FUSION_SECCOMP_PROFILE_FILE.
+seccomp_profile=${FUSION_SECCOMP_PROFILE_FILE:-}
+if [ -z "$seccomp_profile" ] && [ -f "$project_dir/private/chromium-seccomp.json" ]; then
+  seccomp_profile="$project_dir/private/chromium-seccomp.json"
+fi
+seccomp_rel=
+if [ -n "$seccomp_profile" ]; then
+  absolute "$seccomp_profile"
+  if printf '%s' "$seccomp_profile" | LC_ALL=C grep -q '[[:cntrl:],]'; then fail "invalid_seccomp_profile"; fi
+  [ ! -L "$seccomp_profile" ] && [ -f "$seccomp_profile" ] \
+    && [ "$(stat -c %h "$seccomp_profile")" = 1 ] \
+    && [ "$(stat -c %s "$seccomp_profile")" -le 1048576 ] \
+    || fail "invalid_seccomp_profile"
+  profile_canonical=$(realpath -- "$seccomp_profile") || fail "invalid_seccomp_profile"
+  [ "$seccomp_profile" = "$profile_canonical" ] || fail "invalid_seccomp_profile"
+  case "$profile_canonical" in "$project_dir"/*) ;; *) fail "seccomp_profile_outside_project" ;; esac
+  seccomp_rel=${profile_canonical#"$project_dir"/}
+  [ "$seccomp_rel" != "$base_rel" ] && [ "$seccomp_rel" != "$env_rel" ] \
+    || fail "ambiguous_seccomp_profile"
+fi
+
 socket_gid=$(stat -c %g /var/run/docker.sock)
 docker --host=unix:///var/run/docker.sock --config "$docker_config" image inspect "$image" >/dev/null 2>&1 \
   || docker --host=unix:///var/run/docker.sock --config "$docker_config" pull "$image" >/dev/null
@@ -90,6 +114,11 @@ mkdir -m 0700 "$stage_root/view" || fail "staging_unavailable"
 mkdir -p -- "$(dirname -- "$stage_root/view/$env_rel")" || fail "staging_unavailable"
 install -m 0400 -o 10001 -g 10001 "$base_file" "$stage_root/view/$base_rel" || fail "staging_failed"
 install -m 0400 -o 10001 -g 10001 "$compose_env" "$stage_root/view/$env_rel" || fail "staging_failed"
+if [ -n "$seccomp_rel" ]; then
+  mkdir -p -- "$(dirname -- "$stage_root/view/$seccomp_rel")" || fail "staging_failed"
+  install -m 0400 -o 10001 -g 10001 "$profile_canonical" "$stage_root/view/$seccomp_rel" \
+    || fail "staging_failed"
+fi
 # mkdir -p uses 0755 for intermediate components on some platforms; tighten
 # EVERY staged directory, not only the leaf.
 chown -R 10001:10001 "$stage_root/view" || fail "staging_failed"
@@ -126,6 +155,22 @@ case "$env_rel" in
     set -- "$@" --mount "type=bind,src=$stage_root/view/$env_rel,dst=$compose_env,readonly"
     ;;
 esac
+
+# Overlay the profile at its ORIGINAL absolute path. The existing nested
+# environment overlay may already expose its staging directory.
+if [ -n "$seccomp_rel" ]; then
+  case "$seccomp_rel" in
+    */*)
+      profile_top=${seccomp_rel%%/*}
+      if [ "${env_top:-}" != "$profile_top" ]; then
+        set -- "$@" --mount "type=bind,src=$stage_root/view/$profile_top,dst=$project_dir/$profile_top,readonly"
+      fi
+      ;;
+    *)
+      set -- "$@" --mount "type=bind,src=$stage_root/view/$seccomp_rel,dst=$profile_canonical,readonly"
+      ;;
+  esac
+fi
 
 # Keep the launcher alive while Docker runs so EXIT and signal traps remove
 # the secret snapshots. A container ID file only identifies this invocation,

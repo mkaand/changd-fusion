@@ -12,6 +12,7 @@ test("updater image contains the pinned non-root Node, Docker Compose and GitHub
   assert.match(dockerfile, /GH_VERSION=2\.103\.3/);
   assert.match(dockerfile, /GH_ARCHIVE_SHA256=4c806978ffce1cec70853302a56d70ac6da4f19bae7adca4e1a8ab00633dd91d/);
   assert.match(dockerfile, /USER 10001:10001/);
+  assert.match(dockerfile, /COPY docker\/chromium-seccomp\.json \.\/docker\/chromium-seccomp\.json/);
   assert.match(dockerfile, /ENTRYPOINT \["node", "\/opt\/changd-fusion-updater\/scripts\/ghcr-updater-runtime\.mjs"\]/);
 });
 
@@ -33,6 +34,13 @@ test("host launcher pins the image, mounts only explicit paths and acknowledges 
   assert.match(launcher, /readonly/);
   assert.match(launcher, /stage_root\/view/);
   assert.match(launcher, /unsupported_nested_compose_file/);
+
+  assert.match(launcher, /FUSION_SECCOMP_PROFILE_FILE/);
+  assert.match(launcher, /private\/chromium-seccomp\.json/);
+  assert.match(launcher, /install -m 0400 -o 10001 -g 10001 "\$profile_canonical"/);
+  assert.match(launcher, /seccomp_profile_outside_project/);
+  assert.match(launcher, /ambiguous_seccomp_profile/);
+
 
   assert.match(launcher, /config_file="\$docker_config\/config\.json"/);
   assert.match(launcher, /\[ ! -L "\$config_file" \]/);

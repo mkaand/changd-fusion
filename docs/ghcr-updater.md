@@ -34,7 +34,15 @@ Before mutation, the adapter validates the effective JSON model, exact service
 set, immutable API/UI images, shared API/Worker/migration image, project-scoped
 network and persistent volume names, UI loopback binding, seccomp settings,
 `CHROMIUM_CONCURRENCY=1`, and the checked-in API/Worker CPU, memory, PID and SHM
-limits. It then inspects only containers carrying the configured Compose project
+limits. Instead of trusting a hardcoded host path, API and Worker must
+refer to the same project-contained, regular, non-symlink seccomp profile.
+Its complete bytes must match the SHA-256 of the trusted
+`docker/chromium-seccomp.json` bundled into the provenance-verified immutable
+updater image. Absolute host paths and repository-relative paths are both
+supported; `unconfined`, missing profiles, symlink escapes and changed
+policies fail closed. The profile bytes are included in the stable
+configuration fingerprint so a change during deployment validation is rejected.
+It then inspects only containers carrying the configured Compose project
 label and requires unambiguous service, working-directory and Compose-file
 ownership. A first update may find labels containing only the configured base
 file; later updater-owned application containers may contain the base plus the
@@ -268,6 +276,20 @@ installation relying on additional private files must be reviewed separately.
 The base Compose file must be in the project root; nested base files fail
 closed. Production permissions, file ownership, volumes and Compose ownership
 labels are never changed.
+
+For legacy deployments where the seccomp policy also lives in a root-only
+`private/chromium-seccomp.json` under the project root, the host launcher
+stages this selected file alongside the protected environment (mode 0400,
+UID/GID 10001), making it visible at the **same original absolute path** via
+the existing read-only `private/` directory overlay. For another host layout,
+the operator may explicitly set `FUSION_SECCOMP_PROFILE_FILE` to a canonical
+project-contained absolute path; the launcher rejects symlink/hardlink and
+out-of-project inputs, staging only that selected file and mounting a minimal
+read-only directory/file view. The updater still independently checks the
+verified profile contents. Do not alter production Compose paths, seccomp
+permissions, or sandbox policy to satisfy a failed gate. If the legacy profile
+does not match the trusted reference byte-for-byte, an operator must review
+the actual policy difference; this PR deliberately does not approve it.
 
 The configured host Docker CLI directory may itself be root-only (normally
 `/etc/changd-fusion/docker` mode 0700). The launcher MUST NOT bind that
