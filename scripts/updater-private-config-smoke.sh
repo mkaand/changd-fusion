@@ -13,7 +13,14 @@ private="$project/private"
 view="$root/view"
 mkdir -m 0755 "$project"
 mkdir -m 0700 "$private" "$view"
-printf '%s\n' 'synthetic-compose-test' > "$project/compose.yml"
+cat > "$project/compose.yml" <<'COMPOSE'
+name: changd-smoke
+services:
+  probe:
+    image: alpine:3.21
+    environment:
+      X_TEST: ${X_TEST:?missing}
+COMPOSE
 printf '%s\n' 'X_TEST=synthetic-only' > "$private/runtime.env"
 chmod 0600 "$project/compose.yml" "$private/runtime.env"
 mkdir -m 0700 "$view/private"
@@ -23,6 +30,11 @@ chown 10001:10001 "$view/private"
 image=changd-fusion-updater:ci
 socket_gid=$(stat -c %g /var/run/docker.sock)
 mkdir -m 0700 "$root/docker-config"
+printf '%s\n' '{"auths":{"ghcr.io":{"auth":"c3ludGhldGljOnRlc3Q="}}}' > "$root/docker-config/config.json"
+chmod 0600 "$root/docker-config/config.json"
+mkdir -m 0700 "$view/docker-config"
+install -m 0400 -o 10001 -g 10001 "$root/docker-config/config.json" "$view/docker-config/config.json"
+chown 10001:10001 "$view/docker-config"
 
 # Before overlays, UID 10001 must NOT be able to read root-owned inputs.
 if docker run --rm --user 10001:10001 \
@@ -33,12 +45,22 @@ if docker run --rm --user 10001:10001 \
   exit 1
 fi
 
+# The legacy launcher mounted root-owned 0700 Docker config directly; non-root
+# CLI must not see it. The staged credential file must not be user-readable
+# before the overlay and must be 0400, UID 10001 afterwards.
+if docker run --rm --user 10001:10001 \
+  --mount "type=bind,src=$root/docker-config,dst=/home/updater/.docker,readonly" \
+  --entrypoint /bin/sh "$image" -c 'test -r /home/updater/.docker/config.json' >/dev/null 2>&1; then
+  echo "docker_config_permissions_not_root_only" >&2
+  exit 1
+fi
+
 # The project root and file identities remain unchanged; the nested private
 # directory is overlaid as a directory to allow the UID to traverse its 0700 mode.
 docker run --rm --user 10001:10001 --group-add "$socket_gid" --read-only \
   --cap-drop ALL --security-opt no-new-privileges:true \
   --mount "type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock" \
-  --mount "type=bind,src=$root/docker-config,dst=/home/updater/.docker,readonly" \
+  --mount "type=bind,src=$view/docker-config,dst=/home/updater/.docker,readonly" \
   --env "DOCKER_CONFIG=/home/updater/.docker" \
   --mount "type=bind,src=$project,dst=$project,readonly" \
   --mount "type=bind,src=$view/compose.yml,dst=$project/compose.yml,readonly" \
@@ -52,7 +74,16 @@ docker run --rm --user 10001:10001 --group-add "$socket_gid" --read-only \
     test "$(stat -c %a "$FUSION_COMPOSE_BASE_FILE")" = 400 &&
     test "$(stat -c %a "$FUSION_COMPOSE_ENV_FILE")" = 400 &&
     test "$(stat -c %a "$(dirname "$FUSION_COMPOSE_ENV_FILE")")" = 700 &&
-    docker --host=unix:///var/run/docker.sock info --format "{{.ServerVersion}}" >/dev/null
+    test "$(stat -c %u /home/updater/.docker)" = 10001 &&
+    test "$(stat -c %a /home/updater/.docker)" = 700 &&
+    test "$(stat -c %u /home/updater/.docker/config.json)" = 10001 &&
+    test "$(stat -c %a /home/updater/.docker/config.json)" = 400 &&
+    node --input-type=module -e "import { validateDockerCliConfiguration } from \"/opt/changd-fusion-updater/scripts/ghcr-updater-runtime.mjs\"; validateDockerCliConfiguration();" &&
+    docker --host=unix:///var/run/docker.sock info --format "{{.ServerVersion}}" >/dev/null &&
+    docker --host=unix:///var/run/docker.sock compose --project-name changd-smoke \
+      --project-directory "$(dirname "$FUSION_COMPOSE_BASE_FILE")" \
+      --file "$FUSION_COMPOSE_BASE_FILE" --env-file "$FUSION_COMPOSE_ENV_FILE" \
+      config --format json >/dev/null
   '
 
 [[ "$(stat -c %a "$private")" == 700 ]]
@@ -97,7 +128,7 @@ case " $* " in
           ;;
       esac
     done
-    [[ "$count" -eq 2 ]] || exit 75
+    [[ "$count" -eq 3 ]] || exit 75
     [[ "$FUSION_TEST_FAIL_RUN" != 1 ]] || exit 37
     exit 0 ;;
   *) exit 76 ;;
@@ -124,5 +155,28 @@ failure=$?
 set -e
 [[ "$failure" -eq 37 ]] || exit 78
 [[ "$(find /run -maxdepth 1 -type d -name 'changd-fusion-updater.*' -printf '%f\n' | sort)" == "$before" ]] || exit 79
+
+[[ "$(stat -c %a "$root/docker-config")" == 700 ]]
+[[ "$(stat -c %a "$root/docker-config/config.json")" == 600 ]]
+[[ "$(stat -c %a "$private")" == 700 ]]
+[[ "$(stat -c %a "$private/runtime.env")" == 600 ]]
+
+
+
+# Explicitly test absent Docker config (public GHCR), symlink rejection and
+# no sensitive /run staging debris on both safe exits.
+mv "$root/docker-config/config.json" "$root/docker-config/config.saved"
+FUSION_TEST_FAIL_RUN=0 sh scripts/run-ghcr-updater-container.sh
+[[ "$(find /run -maxdepth 1 -type d -name 'changd-fusion-updater.*' -printf '%f\n' | sort)" == "$before" ]] || exit 80
+ln -s config.saved "$root/docker-config/config.json"
+set +e
+FUSION_TEST_FAIL_RUN=0 sh scripts/run-ghcr-updater-container.sh >"$root/rejected.log" 2>&1
+symlink_exit=$?
+set -e
+[[ "$symlink_exit" -ne 0 ]] || exit 81
+grep -q "invalid_docker_config_file" "$root/rejected.log" || exit 82
+[[ "$(find /run -maxdepth 1 -type d -name 'changd-fusion-updater.*' -printf '%f\n' | sort)" == "$before" ]] || exit 83
+rm "$root/docker-config/config.json"
+mv "$root/docker-config/config.saved" "$root/docker-config/config.json"
 
 echo "Updater private Compose/env real UID-10001 Docker mount smoke PASS"

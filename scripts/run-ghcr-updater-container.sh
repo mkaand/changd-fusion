@@ -24,6 +24,22 @@ done
 [ -d "$state_dir" ] && [ -d "$docker_config" ] && [ -f "$updater_env" ] || fail "missing_updater_configuration"
 [ -S /var/run/docker.sock ] || fail "docker_socket_unavailable"
 
+# The host Docker credential directory is root-owned (usually 0700). Never
+# bind that directory directly into a non-root updater: Docker CLI cannot read
+# it, and copying arbitrary context/helper files would widen credential scope.
+[ ! -L "$docker_config" ] || fail "invalid_docker_config_directory"
+docker_config=$(realpath -- "$docker_config") || fail "invalid_docker_config_directory"
+[ -d "$docker_config" ] && [ "$(stat -c %u "$docker_config")" = 0 ] \
+  || fail "invalid_docker_config_directory"
+config_file="$docker_config/config.json"
+if [ -e "$config_file" ] || [ -L "$config_file" ]; then
+  [ ! -L "$config_file" ] && [ -f "$config_file" ] \
+    && [ "$(stat -c %u "$config_file")" = 0 ] \
+    && [ "$(stat -c %h "$config_file")" = 1 ] \
+    && [ "$(stat -c %s "$config_file")" -le 131072 ] \
+    || fail "invalid_docker_config_file"
+fi
+
 # Resolve symlinks before staging and preserve the exact host-side paths used
 # by existing Compose ownership labels. The project root remains a read-only
 # host bind; only explicitly selected files/directories are overlaid.
@@ -79,6 +95,16 @@ install -m 0400 -o 10001 -g 10001 "$compose_env" "$stage_root/view/$env_rel" || 
 chown -R 10001:10001 "$stage_root/view" || fail "staging_failed"
 find "$stage_root/view" -type d -exec chmod 0700 {} + || fail "staging_failed"
 
+# Stage only the explicitly configured Docker config.json, if one exists.
+# The stage is private to UID 10001, read-only in the container and removed
+# by the existing EXIT/signal cleanup traps. No original permission is changed.
+mkdir -m 0700 "$stage_root/docker-config" || fail "staging_unavailable"
+chown 10001:10001 "$stage_root/docker-config" || fail "staging_failed"
+if [ -f "$config_file" ]; then
+  install -m 0400 -o 10001 -g 10001 "$config_file" "$stage_root/docker-config/config.json" \
+    || fail "staging_failed"
+fi
+
 # Tokens are passed to Docker via the protected updater env file, not via CLI
 # arguments or inherited environment. The base/runtime Compose env snapshot is
 # mounted only read-only and never printed.
@@ -88,7 +114,7 @@ set -- \
   --mount "type=bind,src=/var/run/docker.sock,dst=/var/run/docker.sock" \
   --mount "type=bind,src=$project_dir,dst=$project_dir,readonly" \
   --mount "type=bind,src=$state_dir,dst=$state_dir" \
-  --mount "type=bind,src=$docker_config,dst=/home/updater/.docker,readonly" \
+  --mount "type=bind,src=$stage_root/docker-config,dst=/home/updater/.docker,readonly" \
   --mount "type=bind,src=$stage_root/view/$base_rel,dst=$base_file,readonly"
 
 case "$env_rel" in

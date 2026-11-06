@@ -269,6 +269,27 @@ The base Compose file must be in the project root; nested base files fail
 closed. Production permissions, file ownership, volumes and Compose ownership
 labels are never changed.
 
+The configured host Docker CLI directory may itself be root-only (normally
+`/etc/changd-fusion/docker` mode 0700). The launcher MUST NOT bind that
+directory directly into the UID-10001 container. Instead, it creates a separate
+UID-10001-owned, mode-0700 Docker configuration directory inside its existing
+private `/run` staging area and binds this minimal view read-only at
+`/home/updater/.docker`. Only a root-owned, regular, non-symlink,
+single-hardlink `config.json` up to 128 KiB is copied, if present, as mode
+0400. An absent file yields an empty configuration directory for public GHCR;
+other host Docker files and credential helper binaries are never copied.
+
+At runtime the updater accepts only direct `ghcr.io` registry authentication
+in `config.json`. Credential helpers (`credsStore`, `credHelpers`), Docker
+contexts, foreign registries and unexpected keys fail closed with static codes.
+Operators using a credential helper must explicitly provision a separate
+GHCR-only direct-auth configuration before activation; the updater never
+modifies credentials or host Docker configuration. The pinned image is still
+verified and the host Docker client can use its existing protected configuration
+for the initial immutable updater image pull. Snapshot files are securely
+removed on exit, errors and termination, without writing sensitive contents
+to logs or changing original permissions.
+
 The launcher keeps its parent process alive for cleanup on exit or signals,
 uses a scoped Docker `--cidfile` for interruption handling, and never prints
 snapshot contents. Filesystem errors are emitted only as sanitized categories,
