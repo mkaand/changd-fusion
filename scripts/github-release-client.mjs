@@ -14,7 +14,35 @@ export class GitHubReleaseClient{
  async downloadArtifact(id){const{response:first}=await this.fetchBounded(new URL(`/repos/${this.repository}/actions/artifacts/${id}/zip`,this.baseUrl),{redirect:"manual",authorization:true,limit:0});if(first.status!==302)throw Error(`artifact_http_${first.status}`);const location=first.headers.get("location");if(!location)throw Error("artifact_redirect_missing");const target=new URL(location),local=this.baseUrl.hostname==="127.0.0.1"&&target.hostname==="127.0.0.1",trusted=[...this.artifactHosts].some(host=>host.startsWith(".")?target.hostname.endsWith(host):target.hostname===host);if((!local&&target.protocol!=="https:")||(!local&&!trusted))throw Error("untrusted_artifact_redirect");const{response,body}=await this.fetchBounded(target,{authorization:false,limit:MAX_ARCHIVE,redirect:"error"});if(!response.ok)throw Error(`artifact_download_http_${response.status}`);return body}
  async manifest(run){const a=await this.request(`/repos/${this.repository}/actions/runs/${run.id}/artifacts?per_page=100`);if(/rel="next"/i.test(a.link)||!Array.isArray(a.json.artifacts)||a.json.total_count!==a.json.artifacts.length)throw Error("ambiguous_artifacts");const exact=a.json.artifacts.filter(x=>x.name===`ghcr-release-manifest-${run.head_sha}`);if(exact.length!==1||exact[0].expired)throw Error("manifest_artifact");return extractReleaseManifest(await this.downloadArtifact(exact[0].id),run,this.repository)}
  async ci(sourceSha){if(!SHA.test(sourceSha))throw Error("invalid_sha");const r=await this.request(`/repos/${this.repository}/actions/runs?head_sha=${sourceSha}&per_page=100`);if(/rel="next"/i.test(r.link)||!Array.isArray(r.json.workflow_runs)||r.json.total_count!==r.json.workflow_runs.length)throw Error("ambiguous_ci");const selected=selectCiRun(r.json,sourceSha);const j=await this.request(`/repos/${this.repository}/actions/runs/${selected.id}/jobs?filter=latest&per_page=100`);if(/rel="next"/i.test(j.link)||!Array.isArray(j.json.jobs)||j.json.total_count!==j.json.jobs.length)throw Error("ambiguous_jobs");verifyCiGate(r.json,j.json,sourceSha);return Object.fromEntries(j.json.jobs.map(x=>[x.name,x.conclusion]))}
- async sourceLineage(ancestorSha,descendantSha){if(!SHA.test(ancestorSha)||!SHA.test(descendantSha))throw Error("invalid_sha");if(ancestorSha===descendantSha)return true;const comparison=await this.request(`/repos/${this.repository}/compare/${ancestorSha}...${descendantSha}`);if(/rel="next"/i.test(comparison.link))throw Error("ambiguous_compare");const compared=comparison.json;if(!["ahead","identical"].includes(compared?.status)||compared?.base_commit?.sha!==ancestorSha||compared?.merge_base_commit?.sha!==ancestorSha||compared?.head_commit?.sha!==descendantSha)throw Error("untrusted_source_ancestry");return true}
+ async sourceLineage(ancestorSha, descendantSha) {
+  if (!SHA.test(ancestorSha) || !SHA.test(descendantSha)) throw Error("invalid_sha");
+  if (ancestorSha === descendantSha) return true;
+  const path = `/repos/${this.repository}/compare/${ancestorSha}...${descendantSha}`;
+  const comparison = await this.request(path);
+  if (/rel="next"/i.test(comparison.link)) throw Error("ambiguous_compare");
+  const compared = comparison.json;
+  // The GitHub Compare REST response does not expose a head_commit field.
+  // Instead bind the response to the exact SHA pair through its canonical API
+  // URL, then check the graph relation reported by GitHub.
+  const expectedUrl = new URL(path, this.baseUrl).href;
+  const commits = compared?.commits;
+  if (compared?.url !== expectedUrl
+    || compared.status !== "ahead"
+    || compared.base_commit?.sha !== ancestorSha
+    || compared.merge_base_commit?.sha !== ancestorSha
+    || !Number.isSafeInteger(compared.ahead_by) || compared.ahead_by < 1
+    || compared.behind_by !== 0
+    || !Number.isSafeInteger(compared.total_commits) || compared.total_commits !== compared.ahead_by
+    || !Array.isArray(commits) || commits.length < 1 || commits.length > compared.total_commits
+    // An unpaginated Compare response may contain only the first 250 commits.
+    // Check the final SHA when the list is complete; for a truncated list,
+    // its exact URL + status + merge base remain the ancestry proof.
+    || (commits.length === compared.total_commits && commits.at(-1)?.sha !== descendantSha)
+    || (compared.head_commit != null && compared.head_commit.sha !== descendantSha)) {
+    throw Error("untrusted_source_ancestry");
+  }
+  return true;
+}
  async masterLineage(sourceSha){if(!SHA.test(sourceSha))throw Error("invalid_sha");const head=(await this.request(`/repos/${this.repository}/commits/master`)).json?.sha;if(!SHA.test(head??""))throw Error("malformed_master");return this.sourceLineage(sourceSha,head)}
  async attestation(manifest){const images=await this.oci.verifyReleaseImages(manifest);return this.verifier(manifest,{repository:this.repository,workflow:".github/workflows/ghcr-release.yml",images})}
 }

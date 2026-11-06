@@ -17,3 +17,85 @@ test("rejects malformed, missing and duplicate manifests",async()=>{await assert
 test("rejects manifest SHA, digest and architecture mismatches",async()=>{for(const changed of [{source_sha:"e".repeat(40)},{api_image:"latest"},{architecture:"linux/arm64"}])await assert.rejects(extractReleaseManifest(await zip([["release-manifest.json",JSON.stringify({...manifest,...changed})]]),run,"mkaand/changd-fusion"),/invalid_manifest/)});
 test("rejects missing, unsorted or malformed migration evidence",async()=>{for(const changed of [{migrations:undefined},{migrations:[...migrations].reverse()},{migrations:[...migrations.slice(0,-1),{name:"018_fixture.sql",sha256:"bad"}]}])await assert.rejects(extractReleaseManifest(await zip([["release-manifest.json",JSON.stringify({...manifest,...changed})]]),run,"mkaand/changd-fusion"),/invalid_manifest/)});
 test("rejects untrusted redirects and HTTP errors",async()=>{const badFetch=async()=>new Response(null,{status:302,headers:{location:"http://evil.invalid/file"}});await assert.rejects(new GitHubReleaseClient({fetchImpl:badFetch,token:"secret"}).downloadArtifact(1),/untrusted_artifact_redirect/);await assert.rejects(new GitHubReleaseClient({baseUrl:base}).request("/missing"),/github_http_404/)});
+
+
+const ancestorSha = "a".repeat(40);
+const descendantSha = "e".repeat(40);
+const comparePath = "/repos/mkaand/changd-fusion/compare/" + ancestorSha + "..." + descendantSha;
+const validCompare = {
+  url: "https://api.github.com" + comparePath,
+  status: "ahead",
+  base_commit: { sha: ancestorSha },
+  merge_base_commit: { sha: ancestorSha },
+  ahead_by: 38,
+  behind_by: 0,
+  total_commits: 38,
+  commits: [
+    ...Array.from({ length: 37 }, (_, index) => ({ sha: (index + 1).toString(16).padStart(40, "0") })),
+    { sha: descendantSha },
+  ],
+};
+
+function compareClient(document = validCompare, link = "") {
+  const client = new GitHubReleaseClient();
+  client.request = async (path) => {
+    assert.equal(path, comparePath, "only the exact expected SHA comparison is authorized");
+    return { json: document, link };
+  };
+  return client;
+}
+
+test("accepts real GitHub Compare contract with no head_commit field", async () => {
+  assert.equal("head_commit" in validCompare, false);
+  assert.equal(await compareClient().sourceLineage(ancestorSha, descendantSha), true);
+  const client = compareClient();
+  assert.equal(await client.sourceLineage(ancestorSha, ancestorSha), true);
+});
+
+test("rejects wrong ancestry status, URL, merge base, SHA or incomplete evidence", async () => {
+  const wrong = "f".repeat(40);
+  const variations = [
+    { status: "behind" },
+    { status: "diverged" },
+    { status: "identical" },
+    { base_commit: { sha: wrong } },
+    { merge_base_commit: { sha: wrong } },
+    { url: "https://api.github.com/repos/mkaand/changd-fusion/compare/" + ancestorSha + "..." + wrong },
+    { ahead_by: 0 },
+    { ahead_by: 37 },
+    { behind_by: 1 },
+    { total_commits: 0 },
+    { commits: [] },
+    { commits: [...validCompare.commits.slice(0, -1), { sha: wrong }] },
+    { head_commit: { sha: wrong } },
+  ];
+  for (const changed of variations) {
+    await assert.rejects(
+      compareClient({ ...validCompare, ...changed }).sourceLineage(ancestorSha, descendantSha),
+      /untrusted_source_ancestry/,
+      "rejected " + Object.keys(changed).join(", "),
+    );
+  }
+  await assert.rejects(
+    compareClient(validCompare, '<https://api.github.com/next>; rel="next"')
+      .sourceLineage(ancestorSha, descendantSha),
+    /ambiguous_compare/,
+  );
+});
+
+test("handles truncated commit lists without trusting their last entry as the head", async () => {
+  // GitHub may limit the unpaginated commits array to 250; the exact canonical
+  // compare URL, status and merge-base still bind the requested descendant.
+  const larger = {
+    ...validCompare,
+    ahead_by: 301,
+    total_commits: 301,
+    commits: validCompare.commits.slice(0, 37),
+  };
+  assert.equal(await compareClient(larger).sourceLineage(ancestorSha, descendantSha), true);
+  await assert.rejects(
+    compareClient({ ...larger, url: validCompare.url.replace(descendantSha, "f".repeat(40)) })
+      .sourceLineage(ancestorSha, descendantSha),
+    /untrusted_source_ancestry/,
+  );
+});
