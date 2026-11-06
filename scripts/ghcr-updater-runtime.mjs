@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import path from "node:path";
+import { lstatSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { DeploymentStateStore } from "./deployment-state.mjs";
 import { DockerComposeHostAdapter } from "./docker-compose-adapter.mjs";
@@ -39,6 +40,61 @@ export function runtimeConfiguration(environment = process.env) {
   });
 }
 
+
+/**
+ * The launcher mounts a minimal, UID-owned read-only Docker configuration.
+ * Do not permit ambient credential helpers, foreign registry credentials or
+ * Docker contexts: the updater must use the local socket and only GHCR.
+ * Never include parsed credential contents or filesystem paths in errors.
+ */
+export function validateDockerCliConfiguration(environment = process.env) {
+  const directory = environment.DOCKER_CONFIG;
+  if (!directory) return;
+  if (!path.isAbsolute(directory)) throw Error("invalid_docker_config");
+  const file = path.join(directory, "config.json");
+  let parent;
+  try { parent = lstatSync(directory); }
+  catch { throw Error("invalid_docker_config"); }
+  if (!parent.isDirectory() || parent.isSymbolicLink()
+    || parent.uid !== process.getuid() || (parent.mode & 0o777) !== 0o700) {
+    throw Error("invalid_docker_config");
+  }
+  let info;
+  try { info = lstatSync(file); }
+  catch (error) {
+    if (error.code === "ENOENT") return; // public GHCR needs no credentials
+    throw Error("invalid_docker_config");
+  }
+  if (!info.isFile() || info.isSymbolicLink() || info.uid !== process.getuid()
+    || (info.mode & 0o777) !== 0o400 || info.size > 131072) {
+    throw Error("invalid_docker_config");
+  }
+  let data;
+  try { data = JSON.parse(readFileSync(file, "utf8")); }
+  catch { throw Error("invalid_docker_config"); }
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    throw Error("invalid_docker_config");
+  }
+  if (Object.hasOwn(data, "credsStore") || Object.hasOwn(data, "credHelpers")) {
+    throw Error("unsupported_docker_credential_helper");
+  }
+  if (Object.keys(data).some((key) => key !== "auths")) {
+    throw Error("unsupported_docker_configuration");
+  }
+  const auths = data.auths ?? {};
+  if (!auths || typeof auths !== "object" || Array.isArray(auths)) {
+    throw Error("invalid_docker_config");
+  }
+  for (const [registry, credentials] of Object.entries(auths)) {
+    if (registry !== "ghcr.io" || !credentials || typeof credentials !== "object"
+      || Array.isArray(credentials)
+      || Object.entries(credentials).some(([key, value]) =>
+        !["auth", "identitytoken"].includes(key) || typeof value !== "string")) {
+      throw Error("unsupported_docker_configuration");
+    }
+  }
+}
+
 export async function executeUpdaterRuntime({
   environment = process.env,
   client,
@@ -48,6 +104,7 @@ export async function executeUpdaterRuntime({
   telegram,
 } = {}) {
   const config = runtimeConfiguration(environment);
+  validateDockerCliConfiguration(environment);
   stateStore ??= new DeploymentStateStore({ directory: config.stateDirectory, project: config.project });
   if (!stateStore.acquire()) return { updated: false, reason: "concurrent_updater" };
   try {
