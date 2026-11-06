@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFileSync, realpathSync, statSync } from "node:fs";
+import { lstatSync, readFileSync, realpathSync, statSync } from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -15,6 +15,52 @@ const RUNTIME_SERVICES = ["api", "db", "ui", "worker"];
 const UPDATE_SERVICES = ["api", "worker", "ui"];
 const DB_IMAGE = "postgres:16.15-alpine@sha256:f4610795587492cd4fb887c2dc3de301b813278bb6f616992061141b5f15ac36";
 const MAX_OUTPUT = 2_000_000;
+
+const REFERENCE_SECCOMP_URL = new URL("../docker/chromium-seccomp.json", import.meta.url);
+const MAX_SECCOMP_BYTES = 1024 * 1024;
+const SECCOMP_OPTION = /^seccomp=(.+)$/;
+
+/**
+ * Accept server-specific paths only when the profile contents match the
+ * exact policy packaged in the provenance-verified updater image.
+ * Never accept "unconfined", symlinks, path escapes or modified policies.
+ */
+export function validateTrustedSeccompProfile(projectDirectory, option) {
+  if (typeof option !== "string" || !SECCOMP_OPTION.test(option)
+    || /[\0\r\n]/.test(option)) fail("compose_sandbox_contract");
+  const candidate = option.match(SECCOMP_OPTION)[1];
+  if (candidate === "unconfined" || candidate === "default" || candidate.includes(","))
+    fail("compose_sandbox_contract");
+  const selected = path.resolve(projectDirectory, candidate);
+  const relative = path.relative(projectDirectory, selected);
+  if (!relative || relative === ".." || relative.startsWith(".." + path.sep)
+    || path.isAbsolute(relative)) fail("seccomp_profile_outside_project");
+  let actual;
+  let info;
+  try {
+    actual = realpathSync(selected);
+    info = lstatSync(selected);
+  } catch {
+    fail("seccomp_profile_unavailable");
+  }
+  if (actual !== selected || !info.isFile() || info.isSymbolicLink()
+    || info.size < 1 || info.size > MAX_SECCOMP_BYTES)
+    fail("seccomp_profile_untrusted_path");
+  let trusted;
+  let candidateBytes;
+  try {
+    trusted = readFileSync(REFERENCE_SECCOMP_URL);
+    candidateBytes = readFileSync(selected);
+  } catch {
+    fail("seccomp_profile_unavailable");
+  }
+  if (candidateBytes.length !== trusted.length
+    || createHash("sha256").update(candidateBytes).digest("hex")
+      !== createHash("sha256").update(trusted).digest("hex"))
+    fail("seccomp_profile_mismatch");
+  return selected;
+}
+
 
 export class DockerAdapterError extends Error {
   constructor(code) {
@@ -54,21 +100,21 @@ function assertVolume(service, source, target) {
   if (matches.length !== 1) fail("compose_volume_contract");
 }
 
-function assertModelLimits(service, expected) {
+function assertModelLimits(service, expected, projectDirectory) {
   if (Number(service?.cpus) !== expected.cpus
     || Number(service?.mem_limit) !== expected.memory
     || Number(service?.pids_limit) !== expected.pids
     || Number(service?.shm_size) !== expected.shm) {
     fail("compose_resource_contract");
   }
-  if (!Array.isArray(service.security_opt)
-    || !service.security_opt.includes("seccomp=./docker/chromium-seccomp.json")
-    || service.security_opt.some((value) => value.includes("unconfined"))) {
+  if (!Array.isArray(service.security_opt) || service.security_opt.length !== 1) {
     fail("compose_sandbox_contract");
   }
+  const seccompFile = validateTrustedSeccompProfile(projectDirectory, service.security_opt[0]);
   if (String(serviceEnvironment(service).CHROMIUM_CONCURRENCY) !== "1") {
     fail("compose_chromium_concurrency");
   }
+  return seccompFile;
 }
 
 function assertRelease(release) {
@@ -225,7 +271,8 @@ export class DockerComposeHostAdapter {
 
   configurationFingerprint() {
     const hash = createHash("sha256");
-    for (const file of [...this.composeFiles, ...(this.envFile ? [this.envFile] : [])]) {
+    for (const file of [...this.composeFiles, ...(this.envFile ? [this.envFile] : []),
+      ...(this.seccompProfilePath ? [this.seccompProfilePath] : [])]) {
       hash.update(file).update("\0").update(readFileSync(file)).update("\0");
     }
     return hash.digest("hex");
@@ -259,8 +306,9 @@ export class DockerComposeHostAdapter {
     for (const service of Object.values(model.services)) assertServiceNetwork(service);
     assertVolume(db, "database", "/var/lib/postgresql/data");
     for (const service of [api, worker, migrate]) assertVolume(service, "captures", "/data");
-    assertModelLimits(api, { cpus: 0.75, memory: 671_088_640, pids: 192, shm: 67_108_864 });
-    assertModelLimits(worker, { cpus: 1, memory: 1_073_741_824, pids: 256, shm: 268_435_456 });
+    const apiSeccomp = assertModelLimits(api, { cpus: 0.75, memory: 671_088_640, pids: 192, shm: 67_108_864 }, this.projectDirectory);
+    const workerSeccomp = assertModelLimits(worker, { cpus: 1, memory: 1_073_741_824, pids: 256, shm: 268_435_456 }, this.projectDirectory);
+    if (apiSeccomp !== workerSeccomp) fail("compose_sandbox_contract");
     if (String(serviceEnvironment(migrate).CHROMIUM_CONCURRENCY) !== "1") {
       fail("compose_chromium_concurrency");
     }
@@ -269,6 +317,7 @@ export class DockerComposeHostAdapter {
       || Number(ports[0].target) !== 8080 || String(ports[0].published) !== "3000") {
       fail("compose_ui_port_contract");
     }
+    this.seccompProfilePath = apiSeccomp;
     return model;
   }
 
@@ -364,8 +413,8 @@ export class DockerComposeHostAdapter {
   async validateProject(release, services = UPDATE_SERVICES) {
     assertRelease(release);
     if (JSON.stringify(services) !== JSON.stringify(UPDATE_SERVICES)) fail("invalid_update_services");
-    const before = this.configurationFingerprint();
     this.validateEffectiveConfig(release);
+    const before = this.configurationFingerprint();
     const containers = this.inspectProjectContainers();
     if (before !== this.configurationFingerprint()) fail("compose_configuration_changed");
     this.databaseContainerId = containers.db.Id;
