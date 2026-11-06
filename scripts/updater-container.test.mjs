@@ -24,6 +24,17 @@ test("host launcher pins the image, mounts only explicit paths and acknowledges 
   assert.match(launcher, /--user 10001:10001/);
   assert.match(launcher, /src=\/var\/run\/docker\.sock,dst=\/var\/run\/docker\.sock/);
   assert.doesNotMatch(launcher, /--privileged|docker system prune|docker image prune/);
+
+  assert.match(launcher, /mktemp -d \/run\/changd-fusion-updater\./);
+  assert.match(launcher, /install -m 0400 -o 10001 -g 10001/);
+  assert.match(launcher, /trap cleanup EXIT/);
+  assert.match(launcher, /trap on_signal HUP INT TERM/);
+  assert.match(launcher, /--cidfile/);
+  assert.match(launcher, /readonly/);
+  assert.match(launcher, /stage_root\/view/);
+  assert.match(launcher, /unsupported_nested_compose_file/);
+  assert.doesNotMatch(launcher, /chmod\s+0?644\s+["']?\$?(?:base_file|compose_env)|chmod\s+0?755\s+["']?\$?private/);
+
   assert.equal(spawnSync("sh", ["-n", "scripts/run-ghcr-updater-container.sh"]).status, 0);
   assert.equal(spawnSync("sh", ["-n", "scripts/install-ghcr-updater.sh"]).status, 0);
 });
