@@ -57,50 +57,39 @@ export async function discoverRelease(client, trusted) {
     && sha.test(r.head_sha ?? "")
     && r.repository === trusted.repository);
   if (!candidates.length) return null;
-  const verified = [];
-  for (const run of candidates) {
-    const manifest = await client.manifest(run, { timeoutMs: 10_000 });
-    const evidence = {
-      workflow: run,
-      manifest,
-      ci: await client.ci(run.head_sha, { timeoutMs: 10_000 }),
-      masterLineage: await client.masterLineage(run.head_sha),
-      publisher: await client.attestation(manifest),
-    };
-    const check = verifyRelease(evidence, {});
-    if (!check.ok) throw Error(`untrusted_release_candidate_${check.reason}`);
-    verified.push(evidence);
+  // Elect the newest successful trusted publisher run before checking CI.
+  // Historical releases remain immutable evidence, but a later cancelled
+  // CI rerun on an old SHA must not invalidate the current signed release.
+  // Never fall back to an older release if this elected candidate fails.
+  if (new Set(candidates.map((run) => run.id)).size !== candidates.length) {
+    throw Error("ambiguous_release_listing");
   }
-  // A master CI run may legitimately republish an unchanged package version
-  // after an updater-only PR. Keep only the last ancestor-ordered source for
-  // each version; reject incomparable sources or different images for one SHA.
-  const byVersion = new Map();
-  for (const evidence of verified) {
-    const previous = byVersion.get(evidence.manifest.version);
-    if (!previous) {
-      byVersion.set(evidence.manifest.version, evidence);
-      continue;
-    }
-    if (previous.manifest.source_sha === evidence.manifest.source_sha) {
-      if (!sameRelease(previous.manifest, evidence.manifest)) throw Error("ambiguous_release_source");
-      if (evidence.workflow.id > previous.workflow.id) byVersion.set(evidence.manifest.version, evidence);
-      continue;
-    }
-    const earlier = previous.workflow.id < evidence.workflow.id ? previous : evidence;
-    const later = earlier === previous ? evidence : previous;
-    if (!await client.sourceLineage(earlier.manifest.source_sha, later.manifest.source_sha)) {
-      throw Error("ambiguous_release_version");
-    }
-    byVersion.set(evidence.manifest.version, later);
-  }
-  const selected = [...byVersion.values()].sort((left, right) =>
-    compareVersions(left.manifest.version, right.manifest.version));
-  for (let index = 1; index < selected.length; index += 1) {
-    if (!await client.sourceLineage(selected[index - 1].manifest.source_sha, selected[index].manifest.source_sha)) {
+  const ordered = [...candidates].sort((a, b) => b.id - a.id);
+  const run = ordered[0];
+  const manifest = await client.manifest(run, { timeoutMs: 10_000 });
+  const evidence = {
+    workflow: run,
+    manifest,
+    ci: await client.ci(run.head_sha, { timeoutMs: 10_000 }),
+    masterLineage: await client.masterLineage(run.head_sha),
+    publisher: await client.attestation(manifest),
+  };
+  const check = verifyRelease(evidence, {});
+  if (!check.ok) throw Error(`untrusted_release_candidate_${check.reason}`);
+
+  // Preserve ancestry and same-SHA ambiguity checks without revalidating
+  // superseded CI runs (whose later cancellation is unrelated to the chosen
+  // release's provenance). All older publisher SHAs must be ancestors of the
+  // elected SHA; an out-of-order publication must fail closed, not downgrade.
+  for (const older of ordered.slice(1)) {
+    if (older.head_sha === run.head_sha) {
+      const previous = await client.manifest(older, { timeoutMs: 10_000 });
+      if (!sameRelease(previous, manifest)) throw Error("ambiguous_release_source");
+    } else if (!await client.sourceLineage(older.head_sha, run.head_sha)) {
       throw Error("incompatible_release_ancestry");
     }
   }
-  return selected.at(-1);
+  return evidence;
 }
 export function migrationGate(current, candidate) {
   if (current?.bootstrapped === false) return { ok:false, reason:"BOOTSTRAP_REQUIRED" };
