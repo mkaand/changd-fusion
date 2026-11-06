@@ -48,6 +48,8 @@ COPY scripts/deployment-state.mjs \
      scripts/updater-telegram.mjs \
      ./scripts/
 COPY docker-compose.ghcr.yml ./docker-compose.ghcr.yml
+# Trusted Chromium sandbox reference is packaged into the immutable attested image.
+COPY docker/chromium-seccomp.json ./docker/chromium-seccomp.json
 
 ENV NODE_ENV=production \
     HOME=/home/updater \
