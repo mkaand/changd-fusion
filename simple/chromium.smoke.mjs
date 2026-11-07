@@ -70,3 +70,16 @@ test("real interactive Preview reuses one slot, supports disabled JS and scrolli
     assert.equal(queue.status.preview,false,"Preview must release capacity after browser cleanup");
   }finally{queue.close();}
 });
+
+test("a failing real Chromium step releases its slot for the next monitor", {timeout:90000},async()=>{
+  const root=mkdtempSync(path.join(tmpdir(),"fusion-chromium-recovery-")),queue=new BrowserQueue();
+  try{
+    const broken=await queue.capture({...monitor,disable_javascript:false,
+      browser_steps:[{action:"wait_selector",selector:"#changd-fixture-absent",selector_type:"css",timeout_ms:1500,continue_on_error:false}]},root,limits);
+    assert.equal(broken.ok,false,"Absent element should fail this monitor only");
+    assert.equal(queue.status.capture,false,"Failed subprocess must release browser capacity");
+    const next=await queue.capture({...monitor,browser_steps:[],disable_javascript:true},root,limits);
+    assert.equal(next.ok,true,"A fresh Chromium capture must work after another monitor fails");
+    assert.equal(queue.status.capture,false);
+  }finally{queue.close();rmSync(root,{recursive:true,force:true});}
+});
