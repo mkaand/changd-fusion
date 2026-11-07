@@ -11,7 +11,8 @@ import { FusionEngine } from "./engine.mjs";
 import { EgressPolicy } from "../server/dist/egress.js";
 import { previewRegion, releaseRegionPreviewSession, closeRegionPreviewSessions } from "../server/dist/region-picker.js";
 import { previewJinaText } from "../server/dist/text-picker.js";
-import { stepsSchema } from "../server/dist/browser-steps.js";
+import { monitorInput as strictMonitorSchema } from "../server/dist/app.js";
+import { ZodError } from "zod";
 import { telegramSchema,smtpSchema,telegramSummary,deliver } from "../server/dist/notifications.js";
 import { encrypt,decrypt } from "../server/dist/crypto.js";
 import { vaultSchema,sealValues } from "../server/dist/vault.js";
@@ -65,24 +66,8 @@ const monitorDefaults={
   failure_alert_mode:"off",notify_attention:false,muted_until:null,notification_cooldown_seconds:0,
   notification_mode:"immediate",digest_window_seconds:3600
 };
-const allowed=new Set([...Object.keys(monitorDefaults),"name","url","channel_ids","created_at"]);
 function monitorInput(input){
-  if(!input||typeof input!=="object"||Array.isArray(input))throw replyError(422,"Invalid monitor configuration");
-  if(Object.keys(input).some(k=>!allowed.has(k)))throw replyError(422,"Unknown monitor setting");
-  const m={...monitorDefaults,...input};
-  if(typeof m.name!=="string"||!m.name.trim()||m.name.length>120||typeof m.url!=="string"||m.url.length>2048
-      ||!["browser","html","api"].includes(m.kind)||!Array.isArray(m.browser_steps)||m.browser_steps.length>20
-      ||!Array.isArray(m.channel_ids)||m.channel_ids.length>20
-      ||!Number.isInteger(m.interval_seconds)||m.interval_seconds<30||m.interval_seconds>604800
-      ||!Number.isFinite(Number(m.visual_threshold))||Number(m.visual_threshold)<0||Number(m.visual_threshold)>100
-      ||!Number.isFinite(Number(m.pixel_threshold))||Number(m.pixel_threshold)<0||Number(m.pixel_threshold)>1)
-    throw replyError(422,"Invalid monitor configuration");
-  stepsSchema.parse(m.browser_steps);
-  if(m.kind!=="browser"&&(m.visual_enabled||m.browser_steps.length))throw replyError(422,"Browser required for visual monitoring or steps");
-  if(m.capture_mode==="element"&&!m.capture_selector)throw replyError(422,"Element selector is required");
-  if(m.capture_mode==="selected_area"&&!m.capture_area)throw replyError(422,"Selected area coordinates required");
-  if(!m.text_enabled&&!m.visual_enabled)throw replyError(422,"Enable text or visual detection");
-  return m;
+  return strictMonitorSchema.parse(input);
 }
 function channelPublic(c){
   const val=decrypt(c.config.encrypted,CHANNEL_KEY);
@@ -377,9 +362,9 @@ app.get("/{*path}",(req,res)=>{
   res.sendFile(path.join(frontend,"index.html"));
 });
 app.use((error,req,res,_next)=>{
-  const status=Number.isInteger(error.status)?error.status:500;
+  const status=error instanceof ZodError?422:Number.isInteger(error.status)?error.status:500;
   if(status>=500)console.error(JSON.stringify({code:"simple_api_error",route:req.path,status}));
-  res.status(status).json({error:status>=500?"Internal server error":error.message??"Request rejected"});
+  res.status(status).json({error:status>=500?"Internal server error":status===422?"Invalid request":error.message??"Request rejected"});
 });
 const server=app.listen(PORT,"0.0.0.0",()=>{
   console.log(JSON.stringify({status:"ready",port:PORT,database:"sqlite",users:userCount(db),mode:"single-container"}));
