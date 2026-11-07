@@ -395,7 +395,9 @@ updater timer is **disabled**, use the separately approved, one-time
 sudo /usr/local/sbin/changd-fusion-updater-container --adopt-installed "$INSTALLED_SOURCE_SHA"
 ```
 
-Set `INSTALLED_SOURCE_SHA` to the exact 40-character source SHA from the verified live API/Worker release (not the newer updater build SHA). The operation locates that specific signed historical publisher manifest even when newer releases exist; it never substitutes the latest release.\n\nUse an immutable, verified updater image that implements this operation. The
+Set `INSTALLED_SOURCE_SHA` to the exact 40-character source SHA from the verified live API/Worker release (not the newer updater build SHA). The operation locates that specific signed historical publisher manifest even when newer releases exist; it never substitutes the latest release.
+
+Use an immutable, verified updater image that implements this operation. The
 protected updater environment **must** retain `FUSION_UPDATER_DRY_RUN=1`; this
 manual flag is not accepted from the normal systemd timer command. It does not
 pull/recreate application containers, modify the database, clear any maintenance
