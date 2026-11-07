@@ -145,6 +145,19 @@ test("operator adoption discovers exact historical signed source without substit
   );
 });
 
+test("historical adoption passes exact publisher timestamp to CI; current discovery does not", async () => {
+  const publisherTime = "2026-11-07T04:25:23Z";
+  const item = release({ run: { created_at: publisherTime } });
+  const options = [];
+  const client = discoveryClient([item]);
+  const original = client.ci;
+  client.ci = async (sourceSha, args) => { options.push(args); return original(sourceSha); };
+  await discoverRelease(client, { repository, installedSourceSha: s });
+  await discoverRelease(client, { repository });
+  assert.equal(options[0].publishedAt, publisherTime);
+  assert.equal(options[1].publishedAt, undefined);
+});
+
 test("selects newest ancestor-ordered same-version release and rejects non-ancestral collisions", async () => {
   const older = release(), newerSameVersion = release({
     sourceSha: newerSource, id: 18, apiDigest: "e".repeat(64), uiDigest: "f".repeat(64),
