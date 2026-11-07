@@ -50,6 +50,7 @@ test("real import CLI preserves 12 synthetic advanced monitors and decrypts all 
       channels:[{id:channel,user_id:owner,name:"Production-like Telegram",enabled:true,provider:"telegram",config:{encrypted:encrypt(channelConfig,key)}}],
       monitor_channels:monitors.map(m=>({monitor_id:m.id,channel_id:channel})),
       preferences:[{user_id:owner,monitoring_defaults:{interval_seconds:600,notification_enabled:true}}],
+      access:[{public_enabled:true,owner_user_id:owner}],
       vault:[vault]};
     const source=path.join(root,"settings.json"),target=path.join(root,"data");
     mkdirSync(target,{mode:0o700});
@@ -69,6 +70,8 @@ test("real import CLI preserves 12 synthetic advanced monitors and decrypts all 
       assert.equal(db.prepare("SELECT count(*) n FROM events").get().n,0);
       assert.equal(db.prepare("SELECT count(*) n FROM outbox").get().n,0);
       assert.equal(db.prepare("SELECT count(*) n FROM monitor_channels").get().n,12);
+      assert.equal(db.prepare("SELECT value FROM metadata WHERE key='public_enabled'").get().value,"1");
+      assert.equal(db.prepare("SELECT value FROM metadata WHERE key='public_owner'").get().value,owner);
       assert.equal(compareSync(pass,db.prepare("SELECT password_hash FROM users WHERE id=?").get(owner).password_hash),true);
       for(const original of monitors){
         const saved=getMonitor(db,original.id,owner);
