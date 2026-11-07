@@ -1,0 +1,27 @@
+[Unit]
+Description=Changd Fusion immutable GHCR updater
+Wants=network-online.target docker.service
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/changd-fusion/updater.env
+ExecStart=/opt/changd-fusion/deploy/simple-updater.sh update
+User=root
+Group=root
+UMask=0077
+TimeoutStartSec=15min
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6
+
+# Docker socket access is root-equivalent. Keep this unit narrowly scoped and
+# install only reviewed repository revisions.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/changd-fusion-updater /run
+
+[Install]
+WantedBy=multi-user.target

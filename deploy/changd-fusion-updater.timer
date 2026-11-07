@@ -1,0 +1,12 @@
+[Unit]
+Description=Check for a verified Changd Fusion image every five minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+RandomizedDelaySec=30s
+Persistent=false
+Unit=changd-fusion-updater.service
+
+[Install]
+WantedBy=timers.target

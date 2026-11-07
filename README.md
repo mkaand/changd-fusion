@@ -43,6 +43,12 @@ docker compose start fusion
 
 `docker compose down` keeps the named volume; **`docker compose down -v` destroys it**. No automatic updater is enabled. To upgrade, record the previous source commit, back up `/data`, pull a reviewed revision and run `docker compose up -d --build`. Never overwrite a running SQLite database with a backup.
 
+### Optional immutable-image updater
+
+Successful `master` CI publishes the same Simple application as a linux/amd64 image at `ghcr.io/mkaand/changd-fusion`. Ordinary clones continue to build locally. Operators who explicitly choose immutable GHCR deployment can combine `docker-compose.yml` with `docker-compose.ghcr.yml`; production commands must include `--no-build` and a digest-pinned `FUSION_IMAGE_REF`.
+
+The optional host updater under `deploy/` checks the public `master` image about every five minutes, validates the exact running Compose contract and SQLite schema, updates only `fusion`, verifies health and durable record counts, and attempts one controlled rollback. It is **not installed or enabled automatically**. Follow [the updater runbook](deploy/README.md) for the required manual contract review, state bootstrap and systemd activation.
+
 ## Offline backup and restore
 
 Stop the service before a full-volume snapshot, including SQLite WAL and artifacts:
@@ -64,4 +70,4 @@ Optional, one-time tools `simple/export-pg.mjs` and `simple/import-settings.mjs`
 
 `.github/workflows/simple-ci.yml` builds the actual single-service Docker image and tests SQLite integrity, migration, real sandboxed Chromium capture and Preview, queue cleanup, user setup, notification handling and restart persistence. Chromium has a sandbox, scoped egress policy and bounded resources. The app uses session cookies, same-origin protections and owner-scoped storage. Public Access, where enabled, intentionally exposes workspace capabilities; use it only if desired.
 
-**Production deployment is explicit and manual.** GitHub commits do not trigger a VPS updater or automatically modify a running installation. The historic multi-container architecture has been removed from this checkout.
+GHCR publication is automatic only after both required `master` CI jobs pass. Production activation remains an explicit, host-side administrative decision; GitHub has no production credentials. The historic multi-container architecture has been removed from this checkout.
