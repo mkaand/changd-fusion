@@ -28,6 +28,7 @@ test("settings-only import preserves IDs, credentials, advanced monitor configur
     assert.equal(m.capture_mode,"element");
     assert.equal(m.baseline_id,null);
     assert.equal(db.prepare("SELECT password_hash FROM users").get().password_hash,bundle.users[0].password);
+    assert.equal(JSON.parse(db.prepare("SELECT payload FROM users").get().payload).password,undefined);
     assert.equal(JSON.parse(db.prepare("SELECT payload FROM channels").get().payload).config.encrypted,"encrypted-secret");
     assert.equal(db.prepare("SELECT count(*) n FROM monitor_channels").get().n,1);
     assert.equal(db.prepare("SELECT count(*) n FROM vault").get().n,1);
