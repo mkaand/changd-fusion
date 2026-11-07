@@ -43,7 +43,7 @@ export class FusionEngine {
   constructor(db,opts={}) {
     this.db=db;this.dataDir=opts.dataDir;this.publicUrl=opts.publicUrl??"http://127.0.0.1:3000";
     this.channelKey=opts.channelKey;this.browser=opts.browser??new BrowserQueue();
-    this.manual=[];this.manualStatus=new Map();this.working=false;this.closed=false;this.interval=null;
+    this.manual=[];this.manualStatus=new Map();this.working=false;this.runningKind=null;this.closed=false;this.interval=null;
     this.storage=new Storage(path.join(this.dataDir,"artifacts"));
   }
   start(){
@@ -64,6 +64,7 @@ export class FusionEngine {
     if(this.manual.length>=16)throw Error("manual_queue_full");
     const item={id:randomUUID(),monitorId:id,userId,status:"queued",created_at:new Date().toISOString(),updated_at:new Date().toISOString()};
     this.manual.push(item);this.manualStatus.set(item.id,item);
+    if(this.runningKind==="scheduled")this.browser.preemptScheduledCapture();
     setImmediate(()=>void this.tick().catch(()=>{}));
     return item;
   }
@@ -91,10 +92,12 @@ export class FusionEngine {
       monitor=getMonitor(this.db,row.id,row.user_id);
     }
     this.working=true;
+    this.runningKind=item?"manual":"scheduled";
     try {await this.#check(monitor,item);}
     finally {
       if(item&&item.status==="running"){item.status="completed";item.updated_at=new Date().toISOString();}
       this.working=false;
+      this.runningKind=null;
       if(this.manual.length)setImmediate(()=>void this.tick().catch(()=>{}));
     }
     if(this.manualStatus.size>100)for(const [id,run] of this.manualStatus)
@@ -109,6 +112,10 @@ export class FusionEngine {
       if(!vault){this.#failure(m,"private_values_missing",delay,item);return;}
       try {m.private_values=openValues(JSON.parse(vault.payload),this.channelKey,m);}
       catch{this.#failure(m,"authentication_required",delay,item);return;}
+    }
+    if(!item&&this.manual.length){
+      this.db.prepare("UPDATE monitors SET next_run=? WHERE id=?").run(Date.now()+5000,m.id);
+      return;
     }
     const result=await this.browser.capture(m,this.dataDir,{CAPTURE_TIMEOUT_MS:30000});
     if(result.skipped){
