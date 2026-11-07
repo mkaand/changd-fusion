@@ -54,6 +54,8 @@ jobs:
           curl --fail --silent --show-error -b /tmp/fusion-simple-cookies http://127.0.0.1:8127/api/v1/users/me | jq -e '.email=="smoke@example.com"'
           curl --fail --silent --show-error -b /tmp/fusion-simple-cookies http://127.0.0.1:8127/api/v1/jobs | jq -e 'length==0'
           docker compose -f compose.simple.yml exec -T fusion node --test simple/engine.test.mjs
+          # Run real sandboxed Chromium and retained Preview against a public HTTPS fixture.
+          docker compose -f compose.simple.yml exec -T fusion node --test simple/chromium.smoke.mjs
           # Store a disabled advanced monitor without opening a browser.
           monitor="$(jq -nc '{name:"Persistent smoke monitor",url:"https://1.1.1.1",kind:"browser",text_enabled:true,visual_enabled:true,disable_javascript:true,interval_seconds:3600,enabled:false}')"
           curl --fail --silent --show-error -b /tmp/fusion-simple-cookies \
