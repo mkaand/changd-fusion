@@ -83,13 +83,14 @@ export function saveMonitor(db, monitor, userId, { replace=false }={}) {
   }
 }
 export function userCount(db) { return db.prepare("SELECT count(*) AS count FROM users").get().count; }
-export function importConfiguration(db, bundle) {
+export function importConfiguration(db, bundle, { channelKey }={}) {
   if (!bundle || bundle.format !== "changd-fusion-pg-settings-v1"
       || !Array.isArray(bundle.users) || !Array.isArray(bundle.monitors)
       || !Array.isArray(bundle.channels) || !Array.isArray(bundle.monitor_channels)
       || !Array.isArray(bundle.preferences) || !Array.isArray(bundle.vault)) {
     throw Error("invalid_configuration_bundle");
   }
+  if ((bundle.channels.length||bundle.vault.length) && !/^[a-f0-9]{64}$/i.test(channelKey??"")) throw Error("original_channel_key_required");
   if (userCount(db) || db.prepare("SELECT count(*) AS n FROM monitors").get().n)
     throw Error("configuration_import_requires_empty_database");
   return transaction(db,()=>{
@@ -130,6 +131,7 @@ export function importConfiguration(db, bundle) {
         throw Error("invalid_imported_vault");
       db.prepare("INSERT INTO vault(monitor_id,user_id,payload) VALUES(?,?,?)").run(row.monitor_id,row.user_id,JSON.stringify(row));
     }
+    if(channelKey) db.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES('channel_key',?)").run(channelKey);
     db.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES('imported_at',?)").run(new Date().toISOString());
     return { users:users.size,monitors:monitors.size,channels:channels.size,vault:bundle.vault.length };
   });
