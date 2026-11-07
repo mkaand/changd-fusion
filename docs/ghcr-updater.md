@@ -424,6 +424,14 @@ Only the stage is exposed; raw responses, credentials, URLs, and exception
 messages are never printed. Treat any failure as **NO-GO** and diagnose only
 the indicated stage before another separately approved attempt.
 
+Historical adoption verifies the exact installed release against CI evidence
+**completed before the signed publisher workflow began**. A later cancelled
+or failed CI run for the same old SHA does not retroactively invalidate that
+published release; a failed CI run before publication still blocks adoption.
+The ordinary candidate release gate remains unchanged and continues to
+require the latest trusted CI run to be successful. Historical CI selection
+requires complete, unpaginated GitHub evidence with verifiable timestamps.
+
 The observed release is registered as `IDLE` plus `current=<verified release>`,
 **not** a fabricated `SUCCESS` deployment. On any mismatch, stop with state
 unchanged; never edit `deployment-state.json` manually. Review the resulting
