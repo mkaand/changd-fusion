@@ -110,7 +110,18 @@ export class BrowserQueue {
       if(this.#closed||signal?.aborted)return null;
       const token=randomUUID();
       this.#preview=token;
+      // A retained preview lasts at most 45s after its initial (up to 110s)
+      // request. If browser cleanup never releases its slot, let Docker's
+      // restart policy recover the whole one-container runtime.
+      const watchdog=setTimeout(()=>{
+        if(this.#preview===token){
+          console.error(JSON.stringify({code:"preview_capacity_stuck_restart"}));
+          process.exit(1);
+        }
+      },180000);
+      watchdog.unref();
       return {workload:"preview",slot:1,signal,release:async()=>{
+        clearTimeout(watchdog);
         if(this.#preview===token)this.#preview=null;
       }};
     } finally {this.#waiting--;}
