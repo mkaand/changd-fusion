@@ -132,6 +132,15 @@ export function importConfiguration(db, bundle, { channelKey }={}) {
         throw Error("invalid_imported_vault");
       db.prepare("INSERT INTO vault(monitor_id,user_id,payload) VALUES(?,?,?)").run(row.monitor_id,row.user_id,JSON.stringify(row));
     }
+    if(bundle.access!==undefined){
+      if(!Array.isArray(bundle.access)||bundle.access.length>1)throw Error("invalid_imported_access");
+      const access=bundle.access[0];
+      if(access){
+        if(typeof access.public_enabled!=="boolean"||(access.owner_user_id!==null&&access.owner_user_id!==undefined&&!users.has(access.owner_user_id))||(access.public_enabled&&!users.has(access.owner_user_id)))throw Error("invalid_imported_access");
+        if(access.owner_user_id)db.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES('public_owner',?)").run(access.owner_user_id);
+        db.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES('public_enabled',?)").run(access.public_enabled?"1":"0");
+      }
+    }
     if(channelKey) db.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES('channel_key',?)").run(channelKey);
     db.prepare("INSERT OR REPLACE INTO metadata(key,value) VALUES('imported_at',?)").run(new Date().toISOString());
     return { users:users.size,monitors:monitors.size,channels:channels.size,vault:bundle.vault.length };
