@@ -98,11 +98,12 @@ export function validateDockerCliConfiguration(environment = process.env) {
 
 // Manual-only, non-deployment onboarding for a verified live release.
 export async function adoptVerifiedInstalledRuntime({
-  environment = process.env, client, docker, stateStore, maintenance,
+  environment = process.env, sourceSha, client, docker, stateStore, maintenance,
 } = {}) {
   const config = runtimeConfiguration(environment);
   validateDockerCliConfiguration(environment);
   if (!config.dryRun) throw Error("adoption_requires_dry_run");
+  if (!/^[0-9a-f]{40}$/.test(sourceSha ?? "")) throw Error("adoption_invalid_source");
   stateStore ??= new DeploymentStateStore({ directory: config.stateDirectory, project: config.project });
   if (!stateStore.acquire()) return { updated: false, reason: "concurrent_updater" };
   try {
@@ -114,8 +115,8 @@ export async function adoptVerifiedInstalledRuntime({
       throw Error("adoption_state_unsafe");
     }
     client ??= new GitHubReleaseClient({ repository: config.repository, token: config.githubToken });
-    const evidence = await discoverRelease(client, { repository: config.repository });
-    if (!verifyRelease(evidence, {}).ok) throw Error("adoption_release_untrusted");
+    const evidence = await discoverRelease(client, { repository: config.repository, installedSourceSha: sourceSha });
+    if (!verifyRelease(evidence, {}).ok || evidence.manifest.source_sha !== sourceSha) throw Error("adoption_release_untrusted");
     const release = evidence.manifest;
     docker ??= new DockerComposeHostAdapter({
       project: config.project, projectDirectory: config.projectDirectory,
@@ -249,11 +250,10 @@ export function safeRuntimeFailureCode(error) {
 async function main() {
   try {
     const args = process.argv.slice(2);
-    if (args.length > 1 || (args.length === 1 && args[0] !== "--adopt-installed")) {
-      throw Error("invalid_runtime_operation");
-    }
+    if (!(args.length === 0 || (args.length === 2 && args[0] === "--adopt-installed"
+      && /^[0-9a-f]{40}$/.test(args[1])))) throw Error("invalid_runtime_operation");
     const outcome = runtimeOutcome(await (args.length
-      ? adoptVerifiedInstalledRuntime() : executeUpdaterRuntime()));
+      ? adoptVerifiedInstalledRuntime({ sourceSha: args[1] }) : executeUpdaterRuntime()));
     if (outcome.stdout) process.stdout.write(outcome.stdout);
     if (outcome.stderr) process.stderr.write(outcome.stderr);
     process.exitCode = outcome.status;
