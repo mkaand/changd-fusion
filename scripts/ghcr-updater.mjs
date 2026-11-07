@@ -72,7 +72,9 @@ export async function discoverRelease(client, trusted) {
   trusted.onStage?.("release_manifest");
   const manifest = await client.manifest(run, { timeoutMs: 10_000 });
   trusted.onStage?.("release_ci");
-  const ci = await client.ci(run.head_sha, { timeoutMs: 10_000 });
+  const ci = await client.ci(run.head_sha, trusted.installedSourceSha === undefined
+    ? { timeoutMs: 10_000 }
+    : { timeoutMs: 10_000, publishedAt: run.created_at });
   trusted.onStage?.("release_lineage");
   const masterLineage = await client.masterLineage(run.head_sha);
   trusted.onStage?.("release_attestation");
