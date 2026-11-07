@@ -415,6 +415,15 @@ after checking all of the following against the signed current GitHub release:
 - Live deployment health confirms the same source/version and **no active**
   maintenance record. Runtime identity is checked again before the atomic write.
 
+If adoption fails before any state mutation, an unexpected runtime/network error is
+reported as a static `adoption_<stage>_failed` code. Typical stages include
+`release_listing`, `release_manifest`, `release_ci`, `release_lineage`,
+`release_attestation`, `compose_contract`, `bootstrap`,
+`runtime_identity`, `health_snapshot`, and `state_adoption`.
+Only the stage is exposed; raw responses, credentials, URLs, and exception
+messages are never printed. Treat any failure as **NO-GO** and diagnose only
+the indicated stage before another separately approved attempt.
+
 The observed release is registered as `IDLE` plus `current=<verified release>`,
 **not** a fabricated `SUCCESS` deployment. On any mismatch, stop with state
 unchanged; never edit `deployment-state.json` manually. Review the resulting

@@ -44,6 +44,7 @@ export function deploymentPlan(release, config) {
 }
 export async function discoverRelease(client, trusted) {
   if (trusted.installedSourceSha !== undefined && !sha.test(trusted.installedSourceSha)) throw Error("invalid_installed_source");
+  trusted.onStage?.("release_listing");
   const runs = await client.runs({ workflow: "ghcr-release.yml", repository: trusted.repository, timeoutMs: 10_000 });
   if (!Array.isArray(runs) || runs.some((r) => r.nextPage)) throw Error("ambiguous_release_listing");
   const candidates = runs.filter((r) => r.name === "GHCR immutable release"
@@ -68,14 +69,16 @@ export async function discoverRelease(client, trusted) {
   }
   const ordered = [...candidates].sort((a, b) => b.id - a.id);
   const run = ordered[0];
+  trusted.onStage?.("release_manifest");
   const manifest = await client.manifest(run, { timeoutMs: 10_000 });
-  const evidence = {
-    workflow: run,
-    manifest,
-    ci: await client.ci(run.head_sha, { timeoutMs: 10_000 }),
-    masterLineage: await client.masterLineage(run.head_sha),
-    publisher: await client.attestation(manifest),
-  };
+  trusted.onStage?.("release_ci");
+  const ci = await client.ci(run.head_sha, { timeoutMs: 10_000 });
+  trusted.onStage?.("release_lineage");
+  const masterLineage = await client.masterLineage(run.head_sha);
+  trusted.onStage?.("release_attestation");
+  const publisher = await client.attestation(manifest);
+  const evidence = { workflow: run, manifest, ci, masterLineage, publisher };
+  trusted.onStage?.("release_trust");
   const check = verifyRelease(evidence, {});
   if (!check.ok) throw Error(`untrusted_release_candidate_${check.reason}`);
 
@@ -85,10 +88,12 @@ export async function discoverRelease(client, trusted) {
   // elected SHA; an out-of-order publication must fail closed, not downgrade.
   for (const older of ordered.slice(1)) {
     if (older.head_sha === run.head_sha) {
+      trusted.onStage?.("historical_manifest");
       const previous = await client.manifest(older, { timeoutMs: 10_000 });
       if (!sameRelease(previous, manifest)) throw Error("ambiguous_release_source");
-    } else if (!await client.sourceLineage(older.head_sha, run.head_sha)) {
-      throw Error("incompatible_release_ancestry");
+    } else {
+      trusted.onStage?.("historical_lineage");
+      if (!await client.sourceLineage(older.head_sha, run.head_sha)) throw Error("incompatible_release_ancestry");
     }
   }
   return evidence;

@@ -182,6 +182,31 @@ test("adoption fails closed for unsafe state, source mismatch and active mainten
   assert.deepEqual(f.actions, []);
 });
 
+test("manual adoption reports only safe stage on unexpected release discovery/attestation failures", async () => {
+  const env = { ...environment(directory), FUSION_UPDATER_DRY_RUN: "1" };
+  const f = fixtures(directory);
+  f.stateStore.transition(f.stateStore.load(), "FAILED", {
+    failure: { code: "BOOTSTRAP_REQUIRED", stage: "bootstrap" },
+  });
+  const sourceSha = source;
+  const privateDetail = "https://example.invalid/private?token=SECRET";
+  for (const [clientOverride, safeCode] of [
+    [{ ...client, runs: async () => { throw Error(`fetch failed ${privateDetail}`); } }, "adoption_release_listing_failed"],
+    [{ ...client, attestation: async () => { throw Error(`unexpected verifier result ${privateDetail}`); } }, "adoption_release_attestation_failed"],
+  ]) {
+    await assert.rejects(
+      adoptVerifiedInstalledRuntime({ sourceSha, environment: env, client: clientOverride, ...f }),
+      (error) => {
+        assert.equal(safeRuntimeFailureCode(error), safeCode);
+        assert.doesNotMatch(error.message, /SECRET|example\\.invalid/);
+        return true;
+      },
+    );
+    assert.equal(f.stateStore.load().status, "FAILED");
+    assert.deepEqual(f.actions, []);
+  }
+});
+
 test("unbootstrapped v0.3.2 fails before runtime identity or Docker mutation", async () => {
   let runtimeCalls = 0;
   const f = fixtures(directory, { docker: { runtimeIdentity: () => { runtimeCalls++; throw Error("must_not_run"); } },
