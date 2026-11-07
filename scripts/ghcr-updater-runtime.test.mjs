@@ -116,7 +116,7 @@ test("operator-only adoption verifies live release and atomically records IDLE w
     failure: { code: "BOOTSTRAP_REQUIRED", stage: "bootstrap" },
   });
   const env = { ...environment(directory), FUSION_UPDATER_DRY_RUN: "1" };
-  const result = await adoptVerifiedInstalledRuntime({ environment: env, client, ...f });
+  const result = await adoptVerifiedInstalledRuntime({ sourceSha: source, environment: env, client, ...f });
   assert.equal(result.adopted, true);
   assert.equal(runtimeOutcome(result).status, 0);
   const adopted = f.stateStore.load();
@@ -127,7 +127,7 @@ test("operator-only adoption verifies live release and atomically records IDLE w
   assert.deepEqual(f.actions, []);
   assert.deepEqual(f.notifications, []);
   await assert.rejects(
-    adoptVerifiedInstalledRuntime({ environment: env, client, ...f }),
+    adoptVerifiedInstalledRuntime({ sourceSha: source, environment: env, client, ...f }),
     /adoption_state_unsafe/,
   );
 });
@@ -142,14 +142,14 @@ test("adoption fails closed for unsafe state, source mismatch and active mainten
   const bootstrapped = { bootstrapStatus: async () => ({ bootstrapped: true, project, source_sha: oldSource }) };
   const f = fixtures(directory, { docker: liveDocker, maintenance: bootstrapped });
   await assert.rejects(
-    adoptVerifiedInstalledRuntime({ environment: env, client, ...f }),
+    adoptVerifiedInstalledRuntime({ sourceSha: source, environment: env, client, ...f }),
     /adoption_state_unsafe/,
   );
   f.stateStore.transition(f.stateStore.load(), "FAILED", {
     failure: { code: "BOOTSTRAP_REQUIRED", stage: "bootstrap" },
   });
   await assert.rejects(
-    adoptVerifiedInstalledRuntime({ environment: environment(directory), client, ...f }),
+    adoptVerifiedInstalledRuntime({ sourceSha: source, environment: environment(directory), client, ...f }),
     /adoption_requires_dry_run/,
   );
   await assert.rejects(
@@ -173,6 +173,10 @@ test("adoption fails closed for unsafe state, source mismatch and active mainten
       maintenance: { bootstrapStatus: async () => ({ bootstrapped: false, reason: "schema_missing" }) },
     }),
     /adoption_bootstrap_unsafe/,
+  );
+  await assert.rejects(
+    adoptVerifiedInstalledRuntime({ sourceSha: oldSource, environment: env, client, ...f }),
+    /adoption_release_untrusted/,
   );
   assert.equal(f.stateStore.load().status, "FAILED", "failed adoption must not alter durable state");
   assert.deepEqual(f.actions, []);
