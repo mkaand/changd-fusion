@@ -19,6 +19,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends chromium chromium-common chromium-sandbox fonts-liberation && rm -rf /var/lib/apt/lists/* && mkdir -p /data && chown node:node /data
 COPY --from=server-build --chown=node:node /build/server/node_modules ./node_modules
 COPY --from=server-build --chown=node:node /build/server/dist ./server/dist
+COPY --chown=node:node server/package.json ./server/package.json
 COPY --from=ui-build --chown=node:node /build/frontend/dist ./frontend/dist
 COPY --chown=node:node simple ./simple
 USER node:node
