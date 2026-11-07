@@ -45,6 +45,7 @@ export class FusionEngine {
     this.channelKey=opts.channelKey;this.browser=opts.browser??new BrowserQueue();
     this.manual=[];this.manualStatus=new Map();this.working=false;this.runningKind=null;this.closed=false;this.interval=null;
     this.storage=new Storage(path.join(this.dataDir,"artifacts"));
+    this.sendNotification=opts.sendNotification??deliver;
   }
   start(){
     if(this.interval)return;
@@ -188,11 +189,13 @@ export class FusionEngine {
           checkedAt:e.created_at,eventType:e.status};
         try{
           const configuration=decrypt(channel.config.encrypted,this.channelKey);
-          await deliver(channel.provider,configuration,details,this.storage);
-          this.db.prepare("UPDATE outbox SET status='sent',attempts=attempts+1 WHERE id=?").run(row.id);
+          await this.sendNotification(channel.provider,configuration,details,this.storage);
+          const payload={...JSON.parse(row.payload),delivered_at:new Date().toISOString(),last_error:null};
+          this.db.prepare("UPDATE outbox SET status='sent',attempts=attempts+1,payload=? WHERE id=?").run(JSON.stringify(payload),row.id);
         } catch {
           const attempt=row.attempts+1;
-          this.db.prepare("UPDATE outbox SET status=?,attempts=?,next_attempt=? WHERE id=?").run(attempt>=5?"failed":"pending",attempt,Date.now()+Math.min(3600000,30000*2**attempt),row.id);
+          const payload={...JSON.parse(row.payload),last_error:"delivery_failed",last_attempt_at:new Date().toISOString()};
+          this.db.prepare("UPDATE outbox SET status=?,attempts=?,next_attempt=?,payload=? WHERE id=?").run(attempt>=5?"failed":"pending",attempt,Date.now()+Math.min(3600000,30000*2**attempt),JSON.stringify(payload),row.id);
         }
       }
     }finally{this.delivering=false;}
