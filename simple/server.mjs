@@ -377,11 +377,20 @@ app.put(api+"/notifications/:id",safe(async(req,res)=>{
 app.delete(api+"/notifications/:id",(req,res)=>{
   db.prepare("DELETE FROM channels WHERE id=? AND user_id=?").run(req.params.id,req.user.user_id);res.json({ok:true});
 });
-app.get(api+"/notifications/preview/:kind",(req,res)=>{
-  res.json({text:telegramSummary({id:"example",name:"Example monitor",monitorId:"example",
-    textChanged:true,visualChanged:false,textSummary:"Content changed",percent:"0",images:[],
-    link:PUBLIC_URL,checkedAt:new Date().toISOString()}, "UTC")});
-});
+app.get(api+"/notifications/preview/:kind",safe(async(req,res)=>{
+  const kind=z.enum(["text","visual","combined","dimensions","failure","authentication","challenge","test","digest"]).parse(req.params.kind);
+  const attention=kind==="failure"?"persistent_failure":kind==="authentication"?"authentication_required":kind==="challenge"?"challenge_detected":undefined;
+  res.json({text:telegramSummary({
+    id:"preview",name:"Example Product Tracker",monitorId:"preview",
+    textChanged:kind==="text"||kind==="combined",
+    visualChanged:["visual","combined","dimensions"].includes(kind),
+    dimensionChanged:kind==="dimensions",beforeDimensions:{width:1280,height:900},afterDimensions:{width:1280,height:960},
+    percent:"0.35",textSummary:"Added: Price information updated",
+    link:new URL("/jobs/preview",PUBLIC_URL).href,attentionState:attention,
+    checkedAt:new Date("2026-10-11T00:15:00Z"),
+    eventType:kind==="test"?"test":kind==="digest"?"digest":"changed",digestCount:5,images:[]
+  },"UTC")});
+}));
 app.get(api+"/jobs/:id/private-values",requireAccountSession,safe(async(req,res)=>{
   const m=owner(req,req.params.id),row=db.prepare("SELECT payload FROM vault WHERE monitor_id=? AND user_id=?").get(m.id,m.user_id);
   res.setHeader("Cache-Control","private,no-store");
