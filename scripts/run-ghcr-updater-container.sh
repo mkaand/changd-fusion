@@ -5,6 +5,14 @@ umask 077
 fail() { printf '%s\n' "Changd Fusion updater launcher stopped safely: $1" >&2; exit 1; }
 absolute() { case "$1" in /*) ;; *) fail "invalid_path" ;; esac; }
 
+# Only an explicit operator invocation can request installed-release adoption.
+adopt_mode=
+case "$#" in
+  0) ;;
+  1) [ "$1" = "--adopt-installed" ] || fail "invalid_argument"; adopt_mode="$1" ;;
+  *) fail "invalid_argument" ;;
+esac
+
 image=${FUSION_UPDATER_IMAGE:-}
 project=${FUSION_COMPOSE_PROJECT:-}
 project_dir=${FUSION_PROJECT_DIRECTORY:-}
@@ -192,7 +200,7 @@ docker --host=unix:///var/run/docker.sock --config "$docker_config" run --rm --n
   "$@" \
   --tmpfs /tmp:rw,noexec,nosuid,nodev,size=16m \
   --tmpfs /home/updater/.cache:rw,noexec,nosuid,nodev,size=16m \
-  "$image" &
+  "$image" ${adopt_mode:+"$adopt_mode"} &
 child=$!
 set +e
 wait "$child"
