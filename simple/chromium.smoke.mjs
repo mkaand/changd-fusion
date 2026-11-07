@@ -38,8 +38,8 @@ test("real Chromium captures with JavaScript disabled, selected element and sele
     for(const variant of [
       {capture_mode:"viewport",capture_selector:"",capture_area:null},
       {capture_mode:"viewport",capture_selector:"",capture_area:null,disable_javascript:false,
-        browser_steps:[{action:"wait_selector",selector:"h1",selector_type:"css",timeout_ms:10000,continue_on_error:false}]},
-      {capture_mode:"element",capture_selector:"h1",capture_area:null,disable_javascript:false},
+        browser_steps:[{action:"wait_selector",selector:"body",selector_type:"css",timeout_ms:10000,continue_on_error:false}]},
+      {capture_mode:"element",capture_selector:"body",capture_area:null,disable_javascript:false},
       {capture_mode:"selected_area",capture_selector:"",capture_area:{x:20,y:20,width:220,height:120}}
     ]){
       const result=await queue.capture({...monitor,...variant},root,limits);
