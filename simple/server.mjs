@@ -12,8 +12,8 @@ import { EgressPolicy } from "../server/dist/egress.js";
 import { previewRegion, releaseRegionPreviewSession, closeRegionPreviewSessions } from "../server/dist/region-picker.js";
 import { previewJinaText } from "../server/dist/text-picker.js";
 import { monitorInput as strictMonitorSchema } from "../server/dist/app.js";
-import { ZodError } from "zod";
-import { telegramSchema,smtpSchema,telegramSummary,deliver } from "../server/dist/notifications.js";
+import { z,ZodError } from "zod";
+import { telegramSchema,smtpSchema,telegramSummary,telegramValidate,deliver } from "../server/dist/notifications.js";
 import { encrypt,decrypt } from "../server/dist/crypto.js";
 import { vaultSchema,sealValues } from "../server/dist/vault.js";
 import { Storage } from "../server/dist/storage.js";
@@ -217,6 +217,24 @@ app.post(api+"/logout",(req,res)=>{
   db.prepare("DELETE FROM sessions WHERE id=?").run(req.sessionId);
   res.clearCookie("fusion_session",{path:"/"});res.clearCookie("fusion_refresh",{path:"/"});res.json({ok:true});
 });
+app.post(api+"/monitors/notification-channels/bulk",safe(async(req,res)=>{
+  const body=z.object({monitor_ids:z.array(z.string().uuid()).min(1).max(100),channel_id:z.string().uuid(),action:z.enum(["add","remove"]),confirm:z.literal(true)}).strict().parse(req.body);
+  transaction(db,()=>{
+    if(!db.prepare("SELECT 1 FROM channels WHERE id=? AND user_id=?").get(body.channel_id,req.user.user_id))
+      throw replyError(404,"Channel not found");
+    const monitorIds=[...new Set(body.monitor_ids)];
+    for(const id of monitorIds){
+      if(!db.prepare("SELECT 1 FROM monitors WHERE id=? AND user_id=?").get(id,req.user.user_id))
+        throw replyError(404,"Monitor not found");
+    }
+    for(const id of monitorIds) {
+      if(body.action==="add")
+        db.prepare("INSERT OR IGNORE INTO monitor_channels(monitor_id,channel_id) VALUES(?,?)").run(id,body.channel_id);
+      else db.prepare("DELETE FROM monitor_channels WHERE monitor_id=? AND channel_id=?").run(id,body.channel_id);
+    }
+  });
+  res.status(204).end();
+}));
 app.get(api+"/jobs",(req,res)=>res.json(listMonitors(db,req.user.user_id)));
 app.post(api+"/jobs",safe(async(req,res)=>{
   const input=monitorInput(req.body);
@@ -269,7 +287,9 @@ app.get(api+"/jobs/:id/history",safe(async(req,res)=>{
   const m=owner(req,req.params.id),page=Math.max(1,Math.min(100000,Number(req.query.page)||1)),size=Math.max(1,Math.min(100,Number(req.query.page_size)||20));
   const status=typeof req.query.status==="string"?req.query.status:null;
   const rows=db.prepare("SELECT e.*,b.screenshot before_image,a.screenshot after_image FROM events e LEFT JOIN captures b ON b.id=e.before_id LEFT JOIN captures a ON a.id=e.after_id WHERE e.monitor_id=? AND (? IS NULL OR e.status=?) ORDER BY e.created_at DESC LIMIT ? OFFSET ?").all(m.id,status,status,req.query.page===undefined?100:size,req.query.page===undefined?0:(page-1)*size);
-  const items=rows.map(row=>({...JSON.parse(row.payload),before_image:row.before_image,after_image:row.after_image,deliveries:[]}));
+  const deliveryRows=db.prepare("SELECT o.*,json_extract(c.payload,'$.name') channel_name FROM outbox o JOIN channels c ON c.id=o.channel_id WHERE o.event_id=? ORDER BY o.next_attempt DESC");
+  const items=rows.map(row=>({...JSON.parse(row.payload),before_image:row.before_image,after_image:row.after_image,
+    deliveries:deliveryRows.all(row.id).map(d=>({id:d.id,channel_id:d.channel_id,channel_name:d.channel_name,attempts:d.attempts,status:d.status,next_attempt:new Date(d.next_attempt).toISOString(),...JSON.parse(d.payload)}))}));
   if(req.query.page===undefined)return res.json(items);
   const count=db.prepare("SELECT count(*) n FROM events WHERE monitor_id=? AND (? IS NULL OR status=?)").get(m.id,status,status).n;
   res.json({items,total:count,page,page_size:size});
@@ -348,9 +368,7 @@ app.delete(api+"/jobs/:id/private-values",safe(async(req,res)=>{
   const m=owner(req,req.params.id);db.prepare("DELETE FROM vault WHERE monitor_id=? AND user_id=?").run(m.id,m.user_id);res.json({ok:true});
 }));
 const previewProgress=new Map();
-app.post(api+"/region-preview",safe(async(req,res)=>{
-  const body=req.body??{},monitor={...monitorDefaults,...body.monitor,id:body.monitor_id??"preview",kind:"browser",visual_enabled:true};
-  if(body.monitor_id)owner(req,body.monitor_id);
+async function handleSimplePreview(req,res,monitor,body,options={}){
   await policy.target(monitor.url);
   const cancellation=new AbortController();
   const onClose=()=>{if(!res.writableEnded)cancellation.abort();};
@@ -358,14 +376,30 @@ app.post(api+"/region-preview",safe(async(req,res)=>{
   const rid=body.preview_request_id;
   try {
     const result=await previewRegion(monitor,cfg,body.point,policy,{
-      ownerId:req.user.user_id,id:body.session_id,retain:true,
+      ownerId:req.user.user_id,id:body.session_id,retain:options.retain!==false,
       captureLayout:body.mode!=="area",refresh:!!body.refresh,scrollDeltaY:body.scroll_delta_y,
       signal:cancellation.signal,
       progress:stage=>{if(isUuid(rid))previewProgress.set(rid,{ownerId:req.user.user_id,stage,at:Date.now()});},
       acquireCapacity:async (_onWait,waitMs)=>engine.browser.acquirePreview({signal:cancellation.signal,waitMs:Math.min(12000,waitMs)})
     });
+    if(isUuid(rid))previewProgress.set(rid,{ownerId:req.user.user_id,stage:"ready",at:Date.now()});
     res.json(result);
+  } catch(error) {
+    if(error && Number.isInteger(error.status) && typeof error.failure_code==="string")
+      return res.status(error.status).json({error:error.message,preview_stage:error.stage,failure_code:error.failure_code,...(error.step?{step:error.step,action:error.action}:{})});
+    throw error;
   } finally {req.off("aborted",onClose);res.off("close",onClose);}
+}
+app.post(api+"/region-preview",safe(async(req,res)=>{
+  const body=req.body??{};
+  if(body.monitor_id)owner(req,body.monitor_id);
+  const monitor={...monitorDefaults,...body.monitor,id:body.monitor_id??"preview",kind:"browser",visual_enabled:true};
+  await handleSimplePreview(req,res,monitor,body);
+}));
+app.post(api+"/jobs/:id/region-preview",safe(async(req,res)=>{
+  const monitor=owner(req,req.params.id);
+  const point=Object.keys(req.body??{}).length?z.object({x:z.number().finite(),y:z.number().finite()}).strict().parse(req.body):undefined;
+  await handleSimplePreview(req,res,{...monitor,kind:"browser",visual_enabled:true},{point},{retain:false});
 }));
 app.get(api+"/region-preview/status/:id",(req,res)=>{
   const p=previewProgress.get(req.params.id);
@@ -397,13 +431,58 @@ app.get(api+"/analytics",(req,res)=>{
   const total=rows.reduce((n,r)=>n+r.n,0);
   res.json({summary:{total,changed:rows.find(r=>r.status==="changed")?.n??0,failed:rows.find(r=>r.status==="failed")?.n??0,successful:total-(rows.find(r=>r.status==="failed")?.n??0)},distribution:rows.map(r=>({status:r.status,count:r.n})),trend:[]});
 });
-app.get(api+"/deliveries",(req,res)=>res.json({items:[],total:0,page:1,page_size:20}));
+app.get(api+"/deliveries",safe(async(req,res)=>{
+  const query=z.object({
+    page:z.coerce.number().int().min(1).max(100000).default(1),
+    page_size:z.coerce.number().int().min(1).max(100).default(20),
+    status:z.enum(["pending","retrying","sending","sent","failed"]).optional()
+  }).strict().parse(req.query);
+  const from="FROM outbox o JOIN channels c ON c.id=o.channel_id JOIN events e ON e.id=o.event_id JOIN monitors m ON m.id=e.monitor_id";
+  const status="CASE WHEN o.status='pending' AND o.attempts>0 THEN 'retrying' ELSE o.status END";
+  const where="WHERE c.user_id=? AND m.user_id=? AND (? IS NULL OR "+status+"=?)";
+  const params=[req.user.user_id,req.user.user_id,query.status??null,query.status??null];
+  const rows=db.prepare("SELECT o.*,json_extract(c.payload,'$.name') channel_name,m.id monitor_id,json_extract(m.payload,'$.name') monitor_name,"+status+" display_status "+from+" "+where+" ORDER BY o.next_attempt DESC,o.id DESC LIMIT ? OFFSET ?").all(...params,query.page_size,(query.page-1)*query.page_size);
+  const total=db.prepare("SELECT count(*) n "+from+" "+where).get(...params).n;
+  res.json({items:rows.map(row=>({
+    id:row.id,event_id:row.event_id,channel_id:row.channel_id,channel_name:row.channel_name,monitor_id:row.monitor_id,monitor_name:row.monitor_name,
+    attempts:row.attempts,status:row.display_status,next_attempt:new Date(row.next_attempt).toISOString(),
+    delivered_at:JSON.parse(row.payload).delivered_at??null,last_error:JSON.parse(row.payload).last_error??null
+  })),total,page:query.page,page_size:query.page_size});
+}));
+app.post(api+"/deliveries/:id/retry",safe(async(req,res)=>{
+  if(!isUuid(req.params.id))throw replyError(404,"Failed delivery not found");
+  if(req.user.user_type!==2)throw replyError(403,"Administrator required");
+  const row=db.prepare("SELECT o.* FROM outbox o JOIN channels c ON c.id=o.channel_id JOIN events e ON e.id=o.event_id JOIN monitors m ON m.id=e.monitor_id WHERE o.id=? AND o.status='failed' AND c.enabled=1 AND c.user_id=? AND m.user_id=?").get(req.params.id,req.user.user_id,req.user.user_id);
+  if(!row)throw replyError(404,"Failed delivery not found");
+  const payload={...JSON.parse(row.payload),last_error:null};
+  const updated=db.prepare("UPDATE outbox SET status='pending',attempts=0,next_attempt=?,payload=? WHERE id=? AND status='failed'").run(Date.now(),JSON.stringify(payload),row.id);
+  if(!updated.changes)throw replyError(409,"Delivery is no longer failed");
+  setImmediate(()=>void engine.deliverPending().catch(()=>{}));
+  res.status(202).json({queued:true});
+}));
 app.post(api+"/notifications/:id/test",safe(async(req,res)=>{
+  const channel=db.prepare("SELECT payload FROM channels WHERE id=? AND user_id=?").get(req.params.id,req.user.user_id);
+  if(!channel)throw replyError(404,"Channel not found");
+  const {monitor_id}=z.object({monitor_id:z.string().uuid()}).strict().parse(req.body);
+  const monitor=owner(req,monitor_id),eventId=randomUUID(),createdAt=Date.now();
+  const event={id:eventId,monitor_id:monitor.id,status:"test",text_changed:true,visual_changed:false,text_diff:[{value:"Test notification",added:true,removed:false}],created_at:new Date(createdAt).toISOString()};
+  transaction(db,()=>{
+    db.prepare("INSERT INTO events(id,monitor_id,status,payload,created_at) VALUES(?,?,?,?,?)")
+      .run(eventId,monitor.id,"test",JSON.stringify(event),createdAt);
+    db.prepare("INSERT INTO outbox(id,event_id,channel_id,next_attempt,payload) VALUES(?,?,?,?,?)")
+      .run(randomUUID(),eventId,req.params.id,createdAt,JSON.stringify({eventId}));
+  });
+  setImmediate(()=>void engine.deliverPending().catch(()=>{}));
+  res.status(202).json({queued:true});
+}));
+app.post(api+"/notifications/:id/validate",safe(async(req,res)=>{
   const row=db.prepare("SELECT payload FROM channels WHERE id=? AND user_id=?").get(req.params.id,req.user.user_id);
   if(!row)throw replyError(404,"Channel not found");
-  const c=JSON.parse(row.payload),cfg=decrypt(c.config.encrypted,CHANNEL_KEY);
-  await deliver(c.provider,cfg,{id:randomUUID(),name:"Test notification",monitorId:"test",textChanged:true,visualChanged:false,percent:"0",textSummary:"Delivery test",link:PUBLIC_URL,images:[]},storage);
-  res.json({ok:true});
+  const channel=JSON.parse(row.payload);
+  if(channel.provider!=="telegram")throw replyError(400,"Telegram channel required");
+  const config=telegramSchema.parse(decrypt(channel.config.encrypted,CHANNEL_KEY));
+  try{res.json({valid:true,bot:await telegramValidate(config.token)});}
+  catch{throw replyError(400,"Telegram bot validation failed");}
 }));
 app.use(api,(_req,res)=>res.status(404).json({error:"Unsupported API endpoint in simple preview"}));
 const frontend=path.resolve(path.dirname(fileURLToPath(import.meta.url)),"../frontend/dist");
