@@ -5,7 +5,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { openSimpleDatabase,saveMonitor,getMonitor } from "./db.mjs";
-import { FusionEngine } from "./engine.mjs";
+import { FusionEngine,compareCaptures,textDirectionMatches,queueEventNotification } from "./engine.mjs";
 test("baseline, changed event and failed capture preserve settings",async()=>{
   const dir=mkdtempSync(path.join(tmpdir(),"fusion-simple-engine-"));let db,engine;
   try{
@@ -85,4 +85,66 @@ test("notification delivery records success, failure and safe retry metadata",as
     assert.equal(JSON.parse(row.payload).last_error,"delivery_failed");
     assert.equal(JSON.stringify(row).includes("secret server failure"),false);
   } finally {engine?.close();db?.close();rmSync(dir,{recursive:true,force:true});}
+});
+
+test("existing text and HTTP comparison semantics remain intact",()=>{
+  const m={text_enabled:true,visual_enabled:false,normalize_whitespace:true,ignore_text:[],ignore_case:false,monitor_http_error_pages:true};
+  const before={text_content:"Available",http_status:200},after={text:"Unavailable",http_status:404,screenshot:null};
+  const changed=compareCaptures(before,after,m,"/unused");
+  assert.equal(changed.textChanged,true);
+  assert.equal(changed.httpStatusChanged,true);
+  assert.equal(textDirectionMatches(changed.textDiff,"added"),true);
+  assert.equal(textDirectionMatches(changed.textDiff,"removed"),true);
+  const keyword=compareCaptures({text_content:"Product sold out",http_status:200},{text:"Product available",http_status:200,screenshot:null},
+    {...m,extraction_mode:"keyword_presence",keyword:"available",monitor_http_error_pages:false},"/unused");
+  assert.equal(keyword.textChanged,true);
+  assert.equal(textDirectionMatches(keyword.textDiff,"added"),true);
+  assert.equal(textDirectionMatches(keyword.textDiff,"removed"),false);
+  assert.equal(compareCaptures(null,after,m,"/unused").textChanged,false,"first capture is a baseline");
+});
+
+test("notification mute, duplicate, cooldown and digest use one SQLite transaction store",async()=>{
+  const dir=mkdtempSync(path.join(tmpdir(),"fusion-simple-parity-"));let db,engine;
+  try {
+    db=openSimpleDatabase(path.join(dir,"fusion.sqlite"));
+    const {encrypt}=await import("../server/dist/crypto.js");
+    const userId=randomUUID(),id=randomUUID(),channelId=randomUUID(),key="c".repeat(64);
+    db.prepare("INSERT INTO users(id,email,password_hash,payload) VALUES(?,?,?,?)")
+      .run(userId,"parity@example.com","hash",JSON.stringify({user_id:userId,email:"parity@example.com",user_type:2}));
+    const monitor={id,user_id:userId,name:"Notifications",url:"https://example.com",kind:"api",
+      notification_enabled:true,notification_mode:"immediate",notification_cooldown_seconds:0};
+    saveMonitor(db,{...monitor,enabled:true,paused:false,next_run:new Date().toISOString()},userId);
+    db.prepare("INSERT INTO channels(id,user_id,payload) VALUES(?,?,?)")
+      .run(channelId,userId,JSON.stringify({id:channelId,user_id:userId,name:"Bot",provider:"telegram",enabled:true,
+        config:{encrypted:encrypt({token:"123456:"+ "a".repeat(25),chat_id:"1234",timezone:"UTC"},key)}}));
+    db.prepare("INSERT INTO monitor_channels(monitor_id,channel_id) VALUES(?,?)").run(id,channelId);
+    let eventNo=0;
+    const emit=(m=monitor,now=Date.now(),text="new value",directionAllowed=true)=>{
+      const event={id:randomUUID(),monitor_id:id,status:"changed",text_diff:[{value:text,added:true,removed:false}],created_at:new Date(now).toISOString(),notification_state:"not_requested"};
+      db.prepare("INSERT INTO events(id,monitor_id,status,payload,created_at) VALUES(?,?,?,?,?)").run(event.id,id,event.status,JSON.stringify(event),now);
+      queueEventNotification(db,m,event,now,{directionAllowed});
+      eventNo++;
+      return event;
+    };
+    const first=emit();
+    assert.equal(first.notification_state,"queued");
+    assert.equal(db.prepare("SELECT count(*) n FROM outbox").get().n,1);
+    assert.equal(emit().notification_state,"duplicate_suppressed");
+    assert.equal(emit({...monitor,notification_cooldown_seconds:3600},Date.now(),"another update").notification_state,"cooldown");
+    assert.equal(emit({...monitor,muted_until:new Date(Date.now()+3600000).toISOString()},Date.now(),"muted event").notification_state,"muted");
+    assert.equal(emit(monitor,Date.now(),"direction filter",false).notification_state,"direction_filtered");
+    const digestMonitor={...monitor,notification_mode:"digest",digest_window_seconds:300};
+    assert.equal(emit(digestMonitor,Date.now(),"change A").notification_state,"digest_pending");
+    assert.equal(emit(digestMonitor,Date.now(),"change B").notification_state,"digest_pending");
+    assert.equal(db.prepare("SELECT event_count FROM notification_digests").get().event_count,2);
+    db.prepare("UPDATE notification_digests SET due_at=?").run(Date.now()-1);
+    const delivered=[];
+    engine=new FusionEngine(db,{dataDir:dir,channelKey:key,publicUrl:"http://localhost:8127",
+      browser:{close(){}},sendNotification:async(_p,_c,event)=>delivered.push(event)});
+    await engine.deliverPending();
+    assert.equal(db.prepare("SELECT count(*) n FROM notification_digests").get().n,0);
+    assert.equal(db.prepare("SELECT count(*) n FROM events WHERE status='digest'").get().n,1);
+    assert.equal(delivered.length,2,"one immediate alert and one consolidated digest");
+    assert.equal(delivered.find(e=>e.eventType==="digest")?.digestCount,2);
+  }finally{engine?.close();db?.close();rmSync(dir,{recursive:true,force:true});}
 });
