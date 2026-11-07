@@ -137,7 +137,7 @@ app.use((req,res,next)=>{
 app.post(api+"/login",safe(async(req,res)=>{
   const email=String(req.body?.email??"").toLowerCase().trim(),password=String(req.body?.password??"");
   const user=db.prepare("SELECT * FROM users WHERE email=?").get(email);
-  if(!user||!(await compare(password,user.password_hash)))throw replyError(401,"Invalid email or password");
+  if(!user||JSON.parse(user.payload).status===0||!(await compare(password,user.password_hash)))throw replyError(401,"Invalid email or password");
   setSession(res,user.id);res.json({ok:true});
 }));
 app.post(api+"/session/refresh",safe(async(req,res)=>{
@@ -161,12 +161,31 @@ app.use(api,(req,res,next)=>{
     req.publicAccess=false;
     req.sessionId=session.id;
     return next();
-  }catch{return res.status(401).json({error:"Authentication required"});}
+  }catch{
+    if(getMeta("public_enabled")==="1"){
+      const ownerId=getMeta("public_owner"),record=ownerId?db.prepare("SELECT * FROM users WHERE id=?").get(ownerId):null;
+      if(record){
+        const saved=JSON.parse(record.payload);
+        if(saved.status!==0){
+          req.user={user_id:record.id,email:record.email,firstname:saved.firstname??"",lastname:saved.lastname??"",user_type:saved.user_type??0};
+          req.publicAccess=true;req.sessionId=null;return next();
+        }
+      }
+    }
+    return res.status(401).json({error:"Authentication required"});
+  }
 });
-app.get(api+"/users/me",(req,res)=>res.json({...req.user,public_access:!!req.publicAccess}));
+function requireAccountSession(req,res,next){
+  if(req.publicAccess)return res.status(403).json({error:"Account security is unavailable in public access"});
+  next();
+}
+app.get(api+"/users/me",(req,res)=>res.json(req.publicAccess
+  ? {user_id:null,firstname:"Public",lastname:"Access",email:null,user_type:0,public_access:true}
+  : {...req.user,public_access:false}));
 // Protected account operations remain separate from ordinary workspace access.
 const securityGrants=new Map();
 function requireSecurity(req,res,next){
+  if(req.publicAccess)return res.status(403).json({error:"Account security verification required"});
   const token=cookie(req,"fusion_security");
   const grant=token?securityGrants.get(sha(token)):undefined;
   if(!grant||grant.user!==req.user.user_id||grant.session!==req.sessionId||grant.expires<now())
@@ -182,11 +201,13 @@ app.post(api+"/security/verify",safe(async(req,res)=>{
   const row=db.prepare("SELECT * FROM users WHERE id=?").get(req.user.user_id);
   if(!row||email!==row.email.toLowerCase()||!(await compare(password,row.password_hash)))
     throw replyError(401,"Invalid email or password");
+  // Public workspace owner can step up with credentials, creating a real session.
+  const sessionId=req.publicAccess?setSession(res,row.id):req.sessionId;
   const token=randomBytes(32).toString("base64url");
-  securityGrants.set(sha(token),{user:row.id,session:req.sessionId,expires:now()+600000});
+  securityGrants.set(sha(token),{user:row.id,session:sessionId,expires:now()+600000});
   res.cookie("fusion_security",token,{...authCookies,maxAge:600000});res.json({ok:true});
 }));
-app.post(api+"/security/leave",(req,res)=>{
+app.post(api+"/security/leave",requireAccountSession,(req,res)=>{
   const token=cookie(req,"fusion_security");if(token)securityGrants.delete(sha(token));
   res.clearCookie("fusion_security",{path:"/"});res.json({ok:true});
 });
@@ -211,10 +232,23 @@ app.post(api+"/logout-all",requireSecurity,(req,res)=>{
   res.clearCookie("fusion_session",{path:"/"});res.clearCookie("fusion_refresh",{path:"/"});
   res.clearCookie("fusion_security",{path:"/"});res.json({ok:true});
 });
-app.get(api+"/account/public-access",requireSecurity,(req,res)=>res.json({public_enabled:false,owner_user_id:null}));
-app.put(api+"/account/public-access",requireSecurity,(_req,res)=>res.status(501).json({error:"Public workspace mode is not yet supported in Simple preview"}));
+app.get(api+"/account/public-access",requireSecurity,(req,res)=>{
+  const ownerId=getMeta("public_owner")??null;
+  res.json({public_enabled:getMeta("public_enabled")==="1",owner_user_id:ownerId});
+});
+app.put(api+"/account/public-access",requireSecurity,safe(async(req,res)=>{
+  if(req.user.user_type!==2)throw replyError(403,"Administrator required");
+  const {enabled}=z.object({enabled:z.boolean(),confirm:z.literal(true)}).strict().parse(req.body);
+  const currentOwner=getMeta("public_owner");
+  if(currentOwner&&currentOwner!==req.user.user_id)throw replyError(403,"Public workspace is owned by another account");
+  transaction(db,()=>{
+    if(!currentOwner)setMeta("public_owner",req.user.user_id);
+    setMeta("public_enabled",enabled?"1":"0");
+  });
+  res.json({enabled});
+}));
 app.post(api+"/logout",(req,res)=>{
-  db.prepare("DELETE FROM sessions WHERE id=?").run(req.sessionId);
+  if(req.sessionId)db.prepare("DELETE FROM sessions WHERE id=?").run(req.sessionId);
   res.clearCookie("fusion_session",{path:"/"});res.clearCookie("fusion_refresh",{path:"/"});res.json({ok:true});
 });
 app.post(api+"/monitors/notification-channels/bulk",safe(async(req,res)=>{
@@ -345,13 +379,13 @@ app.get(api+"/notifications/preview/:kind",(req,res)=>{
     textChanged:true,visualChanged:false,textSummary:"Content changed",percent:"0",images:[],
     link:PUBLIC_URL,checkedAt:new Date().toISOString()}, "UTC")});
 });
-app.get(api+"/jobs/:id/private-values",safe(async(req,res)=>{
+app.get(api+"/jobs/:id/private-values",requireAccountSession,safe(async(req,res)=>{
   const m=owner(req,req.params.id),row=db.prepare("SELECT payload FROM vault WHERE monitor_id=? AND user_id=?").get(m.id,m.user_id);
   res.setHeader("Cache-Control","private,no-store");
   const v=row?JSON.parse(row.payload):null;
   res.json(v?{value_names:v.value_names,expires_at:v.expires_at,updated_at:v.updated_at}:{value_names:[]});
 }));
-app.put(api+"/jobs/:id/private-values",safe(async(req,res)=>{
+app.put(api+"/jobs/:id/private-values",requireAccountSession,safe(async(req,res)=>{
   const m=owner(req,req.params.id),body=vaultSchema.parse(req.body);
   if(m.kind!=="browser"||m.visual_enabled||new URL(m.url).protocol!=="https:")throw replyError(422,"Private values require HTTPS text-only Browser monitor");
   await policy.target(m.url);
@@ -364,7 +398,7 @@ app.put(api+"/jobs/:id/private-values",safe(async(req,res)=>{
   });
   res.json({ok:true});
 }));
-app.delete(api+"/jobs/:id/private-values",safe(async(req,res)=>{
+app.delete(api+"/jobs/:id/private-values",requireAccountSession,safe(async(req,res)=>{
   const m=owner(req,req.params.id);db.prepare("DELETE FROM vault WHERE monitor_id=? AND user_id=?").run(m.id,m.user_id);res.json({ok:true});
 }));
 const previewProgress=new Map();
@@ -416,7 +450,7 @@ app.post(api+"/text-preview",safe(async(req,res)=>{
   if(b.monitor_id)owner(req,b.monitor_id);
   res.json(await previewJinaText({ownerId:req.user.user_id,url:b.url,sessionId:b.session_id,lineIndex:b.line_index,selectedValue:b.selected_value,query:b.query,offset:b.offset,limit:b.limit},cfg,policy));
 }));
-app.get(api+"/system/diagnostics",(req,res)=>{
+app.get(api+"/system/diagnostics",requireAccountSession,(req,res)=>{
   const count=db.prepare("SELECT count(*) total,sum(CASE WHEN enabled=1 AND paused=0 AND last_status NOT IN ('persistent_failure','authentication_required','challenge_detected') THEN 1 ELSE 0 END) active,sum(CASE WHEN last_status IN ('persistent_failure','authentication_required','challenge_detected') THEN 1 ELSE 0 END) attention FROM monitors WHERE user_id=?").get(req.user.user_id);
   const delivery=db.prepare("SELECT sum(CASE WHEN o.status='pending' THEN 1 ELSE 0 END) pending,sum(CASE WHEN o.status='failed' THEN 1 ELSE 0 END) failed FROM outbox o JOIN channels c ON c.id=o.channel_id JOIN events e ON e.id=o.event_id JOIN monitors m ON m.id=e.monitor_id WHERE m.user_id=? AND c.user_id=?").get(req.user.user_id,req.user.user_id);
   res.json({api:"ok",monitoring:{total:count.total,active:count.active??0,attention:count.attention??0},deliveries:{pending:delivery.pending??0,failed:delivery.failed??0},retention_days:90});
