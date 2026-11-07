@@ -6,7 +6,7 @@ import { previewExecutionTimeout } from "./capture-timeout.js";
 import { CaptureFailure, HttpError, captureFailure, type CaptureFailureCode, type CaptureStage } from "./errors.js";
 import { checkDimensions, pngDimensions } from "./image.js";
 import { CAPTURE_CLEANUP_TIMEOUT_MS, closeWithDeadline, installCaptureStabilityStyle, navigateForCapture, type Monitor } from "./capture.js";
-import type { ChromiumLease } from "./chromium-capacity.js";
+type ChromiumLease = { readonly workload: "capture" | "preview"; readonly slot: number; readonly signal?: AbortSignal; release(): Promise<void> };
 import { runSteps, StepFailure, warningCode } from "./browser-steps.js";
 import { AttentionFailure, detectAttention } from "./attention.js";
 import { browserViewport, dismissCookieConsent, installBrowserRouting, observeMainFrameStatus } from "./browser-experience.js";

@@ -1,5 +1,0 @@
-**
-!updater/package.json
-!updater/package-lock.json
-!scripts/*.mjs
-!docker-compose.ghcr.yml

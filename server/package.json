@@ -7,17 +7,7 @@
     "node": ">=24 <25"
   },
   "scripts": {
-    "dev": "tsx watch src/index.ts",
-    "build": "tsc",
-    "start": "node dist/index.js",
-    "worker": "tsx src/worker-main.ts",
-    "worker:prod": "node dist/worker-main.js",
-    "migrate": "tsx src/migrate.ts",
-    "create-admin": "tsx src/create-admin.ts",
-    "reset-admin-password": "tsx src/reset-admin-password.ts",
-    "test": "tsx --test --test-timeout=30000 test/*.test.ts",
-    "test:integration": "node scripts/integration-runner.mjs",
-    "test:integration:disable-javascript": "tsx --test --test-timeout=90000 test/integration/disable-javascript-chromium.test.ts"
+    "build": "tsc"
   },
   "dependencies": {
     "bcryptjs": "3.0.3",

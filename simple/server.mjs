@@ -12,7 +12,7 @@ import { FusionEngine } from "./engine.mjs";
 import { EgressPolicy } from "../server/dist/egress.js";
 import { previewRegion, releaseRegionPreviewSession, closeRegionPreviewSessions } from "../server/dist/region-picker.js";
 import { previewJinaText } from "../server/dist/text-picker.js";
-import { monitorInput as strictMonitorSchema } from "../server/dist/app.js";
+import { monitorInput as strictMonitorSchema } from "../server/dist/monitor-schema.js";
 import { z,ZodError } from "zod";
 import { telegramSchema,smtpSchema,telegramSummary,telegramValidate,deliver } from "../server/dist/notifications.js";
 import { encrypt,decrypt } from "../server/dist/crypto.js";
