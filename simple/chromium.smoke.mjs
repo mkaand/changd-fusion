@@ -18,7 +18,7 @@ const monitor={
   selector:"",selector_type:"css",ignore_selectors:[],mask_selectors:[],ignore_text:[],
   normalize_whitespace:true,ignore_case:false,capture_mode:"viewport",
   capture_selector:"",capture_selector_type:"css",capture_area:null,
-  browser_steps:[{action:"wait_selector",selector:"h1",selector_type:"css",timeout_ms:10000,continue_on_error:false}],
+  browser_steps:[],
   step_budget_ms:15000,capture_timeout_ms:45000,monitor_http_error_pages:false,
   disable_javascript:true,block_ads_trackers:false,cookie_banner_handling:false,
   wait_before_capture_ms:0,mobile_view:false,visual_threshold:"0.35",pixel_threshold:"0.1",
@@ -37,7 +37,9 @@ test("real Chromium captures with JavaScript disabled, selected element and sele
   try {
     for(const variant of [
       {capture_mode:"viewport",capture_selector:"",capture_area:null},
-      {capture_mode:"element",capture_selector:"h1",capture_area:null},
+      {capture_mode:"viewport",capture_selector:"",capture_area:null,disable_javascript:false,
+        browser_steps:[{action:"wait_selector",selector:"h1",selector_type:"css",timeout_ms:10000,continue_on_error:false}]},
+      {capture_mode:"element",capture_selector:"h1",capture_area:null,disable_javascript:false},
       {capture_mode:"selected_area",capture_selector:"",capture_area:{x:20,y:20,width:220,height:120}}
     ]){
       const result=await queue.capture({...monitor,...variant},root,limits);
