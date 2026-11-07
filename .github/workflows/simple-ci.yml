@@ -53,3 +53,26 @@ jobs:
           unset token body
           curl --fail --silent --show-error -b /tmp/fusion-simple-cookies http://127.0.0.1:8127/api/v1/users/me | jq -e '.email=="smoke@example.com"'
           curl --fail --silent --show-error -b /tmp/fusion-simple-cookies http://127.0.0.1:8127/api/v1/jobs | jq -e 'length==0'
+          # Store a disabled advanced monitor without opening a browser.
+          monitor="$(jq -nc '{name:"Persistent smoke monitor",url:"https://1.1.1.1",kind:"browser",text_enabled:true,visual_enabled:true,disable_javascript:true,interval_seconds:3600,enabled:false}')"
+          curl --fail --silent --show-error -b /tmp/fusion-simple-cookies \
+            -H 'X-Fusion-Request: 1' -H 'Content-Type: application/json' \
+            -d "$monitor" http://127.0.0.1:8127/api/v1/jobs \
+            | jq -e '.name=="Persistent smoke monitor" and .disable_javascript==true and .enabled==false'
+          # Restart just the single container; SQLite and credentials must persist.
+          docker compose -f compose.simple.yml restart fusion
+          healthy=0
+          for _ in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8127/api/v1/health | jq -e '.status=="ok"' >/dev/null; then healthy=1; break; fi
+            sleep 2
+          done
+          test "$healthy" = 1
+          curl --fail --silent --show-error -b /tmp/fusion-simple-cookies \
+            http://127.0.0.1:8127/api/v1/jobs \
+            | jq -e 'length==1 and .[0].name=="Persistent smoke monitor" and .[0].disable_javascript==true and .[0].enabled==false'
+          # No PostgreSQL or browser lease survives in the one-service architecture.
+          docker compose -f compose.simple.yml config --services | grep -qx fusion
+          docker compose -f compose.simple.yml exec -T fusion node -e \
+            'const { DatabaseSync }=require("node:sqlite");const db=new DatabaseSync("/data/fusion.sqlite");if(db.prepare("SELECT count(*) n FROM monitors").get().n!==1)process.exit(1);db.close()'
+          unset monitor
+
