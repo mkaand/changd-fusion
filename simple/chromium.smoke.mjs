@@ -83,3 +83,20 @@ test("a failing real Chromium step releases its slot for the next monitor", {tim
     assert.equal(queue.status.capture,false);
   }finally{queue.close();rmSync(root,{recursive:true,force:true});}
 });
+
+test("real mobile Preview uses the mobile viewport and releases its slot", {timeout:90000},async()=>{
+  const queue=new BrowserQueue(),ownerId=randomUUID(),mobile={...monitor,mobile_view:true};
+  let active;
+  try{
+    const result=await previewRegion(mobile,limits,undefined,new EgressPolicy(),{
+      ownerId,retain:true,acquireCapacity:async(_onWait,waitMs)=>queue.acquirePreview({waitMs})
+    });
+    active=result.session_id;
+    assert.ok(result.width<600&&result.height>=600,"Mobile capture must use narrow touch viewport");
+    assert.ok(result.image.length>100);
+    const next=await previewRegion(mobile,limits,undefined,new EgressPolicy(),{
+      ownerId,id:result.session_id,retain:true,scrollDeltaY:120
+    });
+    assert.equal(next.reused,true,"Mobile scroll should use the retained interactive session");
+  }finally{if(active)await releaseRegionPreviewSession(ownerId,active);queue.close();}
+});
