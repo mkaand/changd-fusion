@@ -1,0 +1,37 @@
+name: Simple single-container CI
+on:
+  push:
+    branches: [feature/simple-single-container-sqlite]
+  pull_request:
+    paths:
+      - "simple/**"
+      - "compose.simple.yml"
+      - ".github/workflows/simple-ci.yml"
+
+jobs:
+  sqlite-and-code:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - name: Check ESM runtime syntax
+        run: |
+          set -euo pipefail
+          for file in simple/*.mjs; do node --check "$file"; done
+      - name: SQLite and queue regression tests
+        run: node --test simple/db.test.mjs simple/browser-queue.test.mjs
+      - name: Validate one-service Compose
+        run: docker compose -f compose.simple.yml config --services | tee /tmp/simple-services && test "$(cat /tmp/simple-services)" = fusion
+
+  container-build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Build actual single-service image
+        run: docker compose -f compose.simple.yml build fusion
