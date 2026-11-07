@@ -99,3 +99,31 @@ test("handles truncated commit lists without trusting their last entry as the he
     /untrusted_source_ancestry/,
   );
 });
+
+test("historical client CI uses only evidence completed before publisher start", async () => {
+  const successful = { id: 42338055848, name: "CI", path: ".github/workflows/ci.yml",
+    head_sha: source, status: "completed", conclusion: "success", run_attempt: 1,
+    created_at: "2026-11-07T04:20:58Z", updated_at: "2026-11-07T04:25:21Z" };
+  const cancelled = { ...successful, id: 42351306900, conclusion: "cancelled",
+    created_at: "2026-11-07T07:26:43Z", updated_at: "2026-11-07T07:27:39Z" };
+  const requiredJobs = ["verify", "privacy", "docker", "docker-arm64"].map((name) => ({
+    name, status: "completed", conclusion: "success", run_attempt: 1,
+  }));
+  const client = new GitHubReleaseClient();
+  const calls = [];
+  client.request = async (path) => {
+    calls.push(path);
+    if (path.includes("/actions/runs?head_sha=")) return {
+      json: { total_count: 2, workflow_runs: [cancelled, successful] }, link: "",
+    };
+    if (path === "/repos/mkaand/changd-fusion/actions/runs/42338055848/jobs?filter=latest&per_page=100") return {
+      json: { total_count: requiredJobs.length, jobs: requiredJobs }, link: "",
+    };
+    throw Error("unexpected_api_request");
+  };
+  await assert.rejects(client.ci(source), /latest trusted CI workflow run is not successful/);
+  const result = await client.ci(source, { publishedAt: "2026-11-07T04:25:23Z" });
+  assert.deepEqual(Object.keys(result).sort(), ["verify", "privacy", "docker", "docker-arm64"].sort());
+  assert.ok(Object.values(result).every((value) => value === "success"));
+  assert.equal(calls.filter((x) => x.includes("/42338055848/jobs?")).length, 1);
+});
