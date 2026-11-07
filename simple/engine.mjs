@@ -239,6 +239,13 @@ export class FusionEngine {
       for(const row of rows){
         const channel=JSON.parse(row.channel),e=JSON.parse(row.event),m=JSON.parse(row.monitor);
         if(!channel.enabled){this.db.prepare("UPDATE outbox SET status='disabled' WHERE id=?").run(row.id);continue;}
+        // Preserve the legacy Telegram safety gate when importing an unverified channel.
+        if(channel.provider==="telegram" && channel.config?.preview_test_required && !channel.config?.preview_verified && e.status!=="test"){
+          const payload={...JSON.parse(row.payload),last_error:"test_notification_required"};
+          this.db.prepare("UPDATE outbox SET status='failed',attempts=5,payload=? WHERE id=?")
+            .run(JSON.stringify(payload),row.id);
+          continue;
+        }
         const before=e.before_id?this.db.prepare("SELECT screenshot FROM captures WHERE id=?").get(e.before_id):null;
         const after=e.after_id?this.db.prepare("SELECT screenshot FROM captures WHERE id=?").get(e.after_id):null;
         const images=[before?.screenshot,after?.screenshot,e.diff_screenshot].filter(Boolean);
@@ -254,6 +261,11 @@ export class FusionEngine {
           await this.sendNotification(channel.provider,configuration,details,this.storage);
           const payload={...JSON.parse(row.payload),delivered_at:new Date().toISOString(),last_error:null};
           this.db.prepare("UPDATE outbox SET status='sent',attempts=attempts+1,payload=? WHERE id=?").run(JSON.stringify(payload),row.id);
+          if(channel.provider==="telegram" && e.status==="test" && channel.config?.preview_test_required){
+            // A test of old credentials must not unlock a channel edited during delivery.
+            this.db.prepare("UPDATE channels SET payload=json_set(payload,'$.config.preview_verified',json('true')) WHERE id=? AND json_extract(payload,'$.config.encrypted')=? AND json_extract(payload,'$.config.preview_test_required')=1")
+              .run(row.channel_id,channel.config.encrypted);
+          }
         } catch {
           const attempt=row.attempts+1;
           const payload={...JSON.parse(row.payload),last_error:"delivery_failed",last_attempt_at:new Date().toISOString()};
