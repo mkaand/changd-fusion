@@ -96,7 +96,7 @@ services:
         APP_COMMIT: ${APP_COMMIT:-}
         APP_BRANCH: ${APP_BRANCH:-}
         APP_SOURCE_PR: ${APP_SOURCE_PR:-}
-    ports: ["127.0.0.1:3000:8080"]
+    ports: ["127.0.0.1:${FUSION_UI_HOST_PORT:-3000}:8080"]
     depends_on:
       api: { condition: service_healthy }
     restart: unless-stopped

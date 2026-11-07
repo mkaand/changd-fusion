@@ -72,7 +72,7 @@ node scripts/build-ui-with-metadata.mjs -- up -d --build
 
 The documented command verifies build metadata from the local Git checkout before starting Docker Compose. It embeds the package version, verified checkout commit, and a checked-out branch when one exists. Source PR provenance is intentionally unavailable for ordinary clones unless a trusted deployment controller binds a merged PR to the exact commit. A detached checkout preserves the verified commit and leaves Branch unavailable rather than guessing. `docker compose up -d --build` remains compatible, but Docker Compose cannot execute Git verification itself, so the optional metadata fields safely display `Unavailable` when that raw command is used.
 
-The public UI is served through the configured same-origin frontend. PostgreSQL and API ports should remain private behind the reverse proxy. Public registration is disabled by default.
+The public UI is served through the configured same-origin frontend. Compose binds it only to loopback on `FUSION_UI_HOST_PORT` (default `3000`) and always forwards to container port `8080`; choose another valid host port in the protected environment when `3000` is already owned. PostgreSQL and API ports should remain private behind the reverse proxy. Public registration is disabled by default.
 
 ### v0.4.0 interactive browser priority
 

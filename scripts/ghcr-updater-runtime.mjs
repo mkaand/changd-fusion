@@ -3,7 +3,7 @@ import path from "node:path";
 import { lstatSync, readFileSync } from "node:fs";
 import { pathToFileURL } from "node:url";
 import { DeploymentStateStore } from "./deployment-state.mjs";
-import { DockerComposeHostAdapter } from "./docker-compose-adapter.mjs";
+import { DockerComposeHostAdapter, parseUiHostPort } from "./docker-compose-adapter.mjs";
 import { GitHubReleaseClient } from "./github-release-client.mjs";
 import { discoverRelease, runUpdater } from "./ghcr-updater.mjs";
 import { ComposeMaintenanceCoordinator } from "./maintenance-coordinator.mjs";
@@ -26,13 +26,14 @@ export function runtimeConfiguration(environment = process.env) {
   const stateDirectory = required(environment, "FUSION_UPDATER_STATE_DIRECTORY");
   const envFile = required(environment, "FUSION_COMPOSE_ENV_FILE");
   const dryRun = required(environment, "FUSION_UPDATER_DRY_RUN");
+  const uiHostPort = parseUiHostPort(environment.FUSION_UI_HOST_PORT ?? 3000);
   const repository = environment.FUSION_TRUSTED_REPOSITORY ?? TRUSTED_REPOSITORY;
   if (!PROJECT.test(project) || ![projectDirectory, baseFile, overrideFile, stateDirectory, envFile].every(path.isAbsolute)
     || !["0", "1"].includes(dryRun)
     || repository !== TRUSTED_REPOSITORY) throw Error("invalid_updater_configuration");
   return Object.freeze({
     project, projectDirectory, stateDirectory, repository,
-    baseFile, overrideFile, envFile,
+    baseFile, overrideFile, envFile, uiHostPort,
     dryRun: dryRun === "1",
     githubToken: environment.FUSION_GITHUB_TOKEN || undefined,
     telegramToken: environment.FUSION_TELEGRAM_BOT_TOKEN || undefined,
@@ -130,6 +131,7 @@ export async function executeUpdaterRuntime({
       composeFiles: [config.baseFile, config.overrideFile],
       ownershipComposeFiles: [config.baseFile],
       envFile: config.envFile,
+      uiHostPort: config.uiHostPort,
       dryRun: config.dryRun,
     });
     maintenance ??= new ComposeMaintenanceCoordinator({ adapter: docker });

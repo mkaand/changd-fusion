@@ -47,4 +47,25 @@ test("checked-in GHCR override uses immutable images and removes every applicati
   assert.equal(model.services.worker.image, api);
   assert.equal(model.services.migrate.image, api);
   assert.equal(model.services.ui.image, ui);
+  assert.deepEqual(model.services.ui.ports, [{ mode: "ingress", target: 8080, published: "3000", protocol: "tcp", host_ip: "127.0.0.1" }]);
+
+  const custom = spawnSync("docker", [
+    "--host=unix:///var/run/docker.sock",
+    "compose",
+    "--project-directory", repository,
+    "--project-name", "fusion_override_test",
+    "--file", path.join(repository, "docker-compose.yml"),
+    "--file", path.join(repository, "docker-compose.ghcr.yml"),
+    "config", "--format", "json",
+  ], {
+    cwd: repository,
+    env: { ...environment, FUSION_UI_HOST_PORT: "8126" },
+    encoding: "utf8",
+    timeout: 30_000,
+    maxBuffer: 2_000_000,
+    shell: false,
+  });
+  assert.equal(custom.status, 0);
+  assert.deepEqual(JSON.parse(custom.stdout).services.ui.ports,
+    [{ mode: "ingress", target: 8080, published: "8126", protocol: "tcp", host_ip: "127.0.0.1" }]);
 });

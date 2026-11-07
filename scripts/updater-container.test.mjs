@@ -64,6 +64,11 @@ test("systemd remains opt-in, host-Node-free and checks approximately every five
   assert.doesNotMatch(service, /\bnode\b|npm|npx/);
   assert.match(timer, /OnUnitActiveSec=5min/);
   assert.doesNotMatch(timer, /WantedBy=.*multi-user/);
+  const example = await text("systemd/changd-fusion-updater.env.example");
+  const installer = await text("scripts/install-ghcr-updater.sh");
+  assert.match(example, /^FUSION_UI_HOST_PORT=3000$/m);
+  assert.match(installer, /--ui-host-port/);
+  assert.match(installer, /FUSION_UI_HOST_PORT=\$ui_host_port/);
 });
 
 test("updater publication is exact-SHA gated, immutable and attested", async () => {
