@@ -5,7 +5,7 @@ import { pathToFileURL } from "node:url";
 import { DeploymentStateStore } from "./deployment-state.mjs";
 import { DockerComposeHostAdapter, parseUiHostPort } from "./docker-compose-adapter.mjs";
 import { GitHubReleaseClient } from "./github-release-client.mjs";
-import { discoverRelease, runUpdater } from "./ghcr-updater.mjs";
+import { discoverRelease, runUpdater, verifyRelease } from "./ghcr-updater.mjs";
 import { ComposeMaintenanceCoordinator } from "./maintenance-coordinator.mjs";
 import { TelegramUpdaterNotifier } from "./updater-telegram.mjs";
 
@@ -96,6 +96,61 @@ export function validateDockerCliConfiguration(environment = process.env) {
   }
 }
 
+// Manual-only, non-deployment onboarding for a verified live release.
+export async function adoptVerifiedInstalledRuntime({
+  environment = process.env, client, docker, stateStore, maintenance,
+} = {}) {
+  const config = runtimeConfiguration(environment);
+  validateDockerCliConfiguration(environment);
+  if (!config.dryRun) throw Error("adoption_requires_dry_run");
+  stateStore ??= new DeploymentStateStore({ directory: config.stateDirectory, project: config.project });
+  if (!stateStore.acquire()) return { updated: false, reason: "concurrent_updater" };
+  try {
+    const state = stateStore.reconcile(stateStore.load());
+    if (state.status !== "FAILED" || state.failure?.code !== "BOOTSTRAP_REQUIRED"
+      || state.failure?.stage !== "bootstrap" || state.current !== null
+      || state.previous !== null || state.candidate !== null
+      || state.operation_id !== null || state.maintenance_released !== true) {
+      throw Error("adoption_state_unsafe");
+    }
+    client ??= new GitHubReleaseClient({ repository: config.repository, token: config.githubToken });
+    const evidence = await discoverRelease(client, { repository: config.repository });
+    if (!verifyRelease(evidence, {}).ok) throw Error("adoption_release_untrusted");
+    const release = evidence.manifest;
+    docker ??= new DockerComposeHostAdapter({
+      project: config.project, projectDirectory: config.projectDirectory,
+      composeFiles: [config.baseFile, config.overrideFile], ownershipComposeFiles: [config.baseFile],
+      envFile: config.envFile, uiHostPort: config.uiHostPort, dryRun: true,
+    });
+    maintenance ??= new ComposeMaintenanceCoordinator({ adapter: docker });
+    if (!await docker.projectIsExpected(config.project, ["api", "worker", "ui"], release)) {
+      throw Error("adoption_project_unsafe");
+    }
+    const bootstrap = await maintenance.bootstrapStatus(config.project);
+    if (bootstrap?.bootstrapped !== true || bootstrap.project !== config.project
+      || !/^[0-9a-f]{40}$/.test(bootstrap.source_sha ?? "")) {
+      throw Error("adoption_bootstrap_unsafe");
+    }
+    const expected = {
+      version: release.version, source_sha: release.source_sha,
+      api_image: release.api_image, ui_image: release.ui_image,
+    };
+    const matchesRelease = (actual) => Object.keys(expected).every((key) => actual?.[key] === expected[key]);
+    if (!matchesRelease(docker.runtimeIdentity())) throw Error("adoption_runtime_mismatch");
+    const snapshot = await docker.captureBaseline();
+    if (snapshot.maintenance !== null
+      || snapshot.version !== release.version || snapshot.source_sha !== release.source_sha
+      || JSON.stringify(snapshot.migrations) !== JSON.stringify(release.migrations)) {
+      throw Error("adoption_health_or_migration_mismatch");
+    }
+    if (!matchesRelease(docker.runtimeIdentity())) throw Error("adoption_runtime_mismatch");
+    const recorded = stateStore.adoptVerifiedInstalled(state, expected);
+    return { updated: false, adopted: true, source_sha: recorded.current.source_sha };
+  } finally {
+    stateStore.release();
+  }
+}
+
 export async function executeUpdaterRuntime({
   environment = process.env,
   client,
@@ -163,6 +218,7 @@ export async function executeUpdaterRuntime({
 // no application containers were changed. A dry-run's lack of mutation is not
 // an updater failure.
 export function runtimeOutcome(result) {
+  if (result?.adopted === true) return { status: 0, stdout: "Changd Fusion verified installed release recorded for future updates.\n" };
   if (result?.updated === true) {
     return { status: 0, stdout: "Changd Fusion update completed and verified.\n" };
   }
@@ -192,7 +248,12 @@ export function safeRuntimeFailureCode(error) {
 
 async function main() {
   try {
-    const outcome = runtimeOutcome(await executeUpdaterRuntime());
+    const args = process.argv.slice(2);
+    if (args.length > 1 || (args.length === 1 && args[0] !== "--adopt-installed")) {
+      throw Error("invalid_runtime_operation");
+    }
+    const outcome = runtimeOutcome(await (args.length
+      ? adoptVerifiedInstalledRuntime() : executeUpdaterRuntime()));
     if (outcome.stdout) process.stdout.write(outcome.stdout);
     if (outcome.stderr) process.stderr.write(outcome.stderr);
     process.exitCode = outcome.status;
