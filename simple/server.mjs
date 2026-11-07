@@ -155,13 +155,15 @@ app.use(api,(req,res,next)=>{
     if(!session)throw Error("expired-session");
     const record=db.prepare("SELECT * FROM users WHERE id=?").get(session.user_id);
     if(!record)throw Error("missing-user");
-    req.user=JSON.parse(record.payload);
-    req.user.user_id=record.id;
+    const saved=JSON.parse(record.payload);
+    if(saved.status===0)throw Error("inactive-account");
+    req.user={user_id:record.id,email:record.email,firstname:saved.firstname??"",lastname:saved.lastname??"",user_type:saved.user_type??0};
+    req.publicAccess=false;
     req.sessionId=session.id;
     return next();
   }catch{return res.status(401).json({error:"Authentication required"});}
 });
-app.get(api+"/users/me",(req,res)=>res.json({...req.user,public_access:false}));
+app.get(api+"/users/me",(req,res)=>res.json({...req.user,public_access:!!req.publicAccess}));
 app.post(api+"/logout",(req,res)=>{
   db.prepare("DELETE FROM sessions WHERE id=?").run(req.sessionId);
   res.clearCookie("fusion_session",{path:"/"});res.clearCookie("fusion_refresh",{path:"/"});res.json({ok:true});
