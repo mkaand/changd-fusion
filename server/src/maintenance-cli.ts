@@ -18,16 +18,15 @@ async function readInput() {
   return value as Record<string, unknown>;
 }
 
-export async function runMaintenanceCli(action: string, input: Record<string, unknown>) {
-  const pool = makePool(process.env.DATABASE_URL ?? "");
+export async function runMaintenanceCli(action: string, input: Record<string, unknown>, pool = makePool(process.env.DATABASE_URL ?? "")) {
   try {
-    if (action === "begin") return beginMaintenanceDrain(pool, {
+    if (action === "begin") return await beginMaintenanceDrain(pool, {
       project: String(input.project ?? ""), sourceSha: String(input.source_sha ?? ""),
       operationId: input.operation_id ? String(input.operation_id) : undefined,
       timeoutMs: Number(input.timeout_ms ?? 120_000), evidenceTtlMs: Number(input.evidence_ttl_ms ?? 300_000),
     });
-    if (action === "bootstrap-status") return updaterBootstrapStatus(pool, String(input.project ?? ""));
-    if (action === "bootstrap-confirm") return confirmUpdaterBootstrap(pool, {
+    if (action === "bootstrap-status") return await updaterBootstrapStatus(pool, String(input.project ?? ""));
+    if (action === "bootstrap-confirm") return await confirmUpdaterBootstrap(pool, {
       project: String(input.project ?? ""), sourceSha: String(input.source_sha ?? ""), confirmation: String(input.confirmation ?? ""),
     });
     const evidence = input.evidence as DrainEvidence;
