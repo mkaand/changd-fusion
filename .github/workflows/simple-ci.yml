@@ -71,6 +71,7 @@ jobs:
           curl --fail --silent --show-error -b /tmp/fusion-simple-cookies http://127.0.0.1:8127/api/v1/analytics | jq -e '.summary.total==0 and (.trend|length)==0'
           curl --fail --silent --show-error -b /tmp/fusion-simple-cookies http://127.0.0.1:8127/api/v1/deliveries | jq -e '.total==0 and (.items|length)==0'
           docker compose -f compose.simple.yml exec -T fusion node --test simple/engine.test.mjs
+          docker compose -f compose.simple.yml exec -T fusion node --test simple/migration.smoke.mjs
           # Run real sandboxed Chromium and retained Preview against a public HTTPS fixture.
           docker compose -f compose.simple.yml exec -T fusion node --test simple/chromium.smoke.mjs
           # Store a disabled advanced monitor without opening a browser.
