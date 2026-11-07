@@ -154,14 +154,14 @@ test("adoption fails closed for unsafe state, source mismatch and active mainten
   );
   await assert.rejects(
     adoptVerifiedInstalledRuntime({
-      environment: env, client, ...f,
+      sourceSha: source, environment: env, client, ...f,
       docker: { ...f.docker, runtimeIdentity: () => ({ ...live, source_sha: oldSource }) },
     }),
     /adoption_runtime_mismatch/,
   );
   await assert.rejects(
     adoptVerifiedInstalledRuntime({
-      environment: env, client, ...f,
+      sourceSha: source, environment: env, client, ...f,
       docker: { ...f.docker, captureBaseline: async () =>
         ({ ...baseline, maintenance: { state: "draining" }, version: live.version, source_sha: live.source_sha }) },
     }),
@@ -169,7 +169,7 @@ test("adoption fails closed for unsafe state, source mismatch and active mainten
   );
   await assert.rejects(
     adoptVerifiedInstalledRuntime({
-      environment: env, client, ...f,
+      sourceSha: source, environment: env, client, ...f,
       maintenance: { bootstrapStatus: async () => ({ bootstrapped: false, reason: "schema_missing" }) },
     }),
     /adoption_bootstrap_unsafe/,
