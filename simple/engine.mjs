@@ -180,7 +180,7 @@ export class FusionEngine {
     const event={id:eventId,monitor_id:m.id,status,
       text_changed:comparison.textChanged,visual_changed:comparison.visualChanged,http_status_changed:comparison.httpStatusChanged,
       visual_percent:comparison.visualPercent,dimension_changed:comparison.dimensionChanged,before_dimensions:comparison.beforeDimensions,after_dimensions:comparison.afterDimensions,
-      text_diff:comparison.textDiff,diff_screenshot:diffName,http_status:result.http_status,
+      text_diff:comparison.textDiff,diff_screenshot:diffName,http_status:result.http_status,before_http_status:before?.http_status??null,
       warning_code:result.warning??null,execution_ms:Date.now()-started,
       created_at:new Date(now).toISOString(),notification_state:"not_requested",
       before_id:before?.id??null,after_id:afterId};
@@ -210,7 +210,7 @@ export class FusionEngine {
       const payload=JSON.parse(row.payload);payload.last_error=String(code).slice(0,64);
       this.db.prepare("UPDATE monitors SET payload=?,last_run=?,next_run=?,last_status=?,failure_count=? WHERE id=?")
         .run(JSON.stringify(payload),now,now+delay,state,failure,m.id);
-      const event={id:evt,monitor_id:m.id,status:"failed",error:String(code).slice(0,64),
+      const event={id:evt,monitor_id:m.id,status:"failed",error:String(code).slice(0,64),failure_code:String(code).slice(0,64),
         created_at:new Date(now).toISOString(),notification_state:"not_requested"};
       this.db.prepare("INSERT INTO events(id,monitor_id,status,payload,created_at) VALUES(?,?,?,?,?)")
         .run(evt,m.id,"failed",JSON.stringify(event),now);
