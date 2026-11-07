@@ -100,13 +100,17 @@ export function validateDockerCliConfiguration(environment = process.env) {
 export async function adoptVerifiedInstalledRuntime({
   environment = process.env, sourceSha, client, docker, stateStore, maintenance,
 } = {}) {
+  let stage = "configuration";
+  try {
   const config = runtimeConfiguration(environment);
   validateDockerCliConfiguration(environment);
   if (!config.dryRun) throw Error("adoption_requires_dry_run");
   if (!/^[0-9a-f]{40}$/.test(sourceSha ?? "")) throw Error("adoption_invalid_source");
+  stage = "state_lock";
   stateStore ??= new DeploymentStateStore({ directory: config.stateDirectory, project: config.project });
   if (!stateStore.acquire()) return { updated: false, reason: "concurrent_updater" };
   try {
+    stage = "state_read";
     const state = stateStore.reconcile(stateStore.load());
     if (state.status !== "FAILED" || state.failure?.code !== "BOOTSTRAP_REQUIRED"
       || state.failure?.stage !== "bootstrap" || state.current !== null
@@ -115,7 +119,11 @@ export async function adoptVerifiedInstalledRuntime({
       throw Error("adoption_state_unsafe");
     }
     client ??= new GitHubReleaseClient({ repository: config.repository, token: config.githubToken });
-    const evidence = await discoverRelease(client, { repository: config.repository, installedSourceSha: sourceSha });
+    const evidence = await discoverRelease(client, {
+      repository: config.repository, installedSourceSha: sourceSha,
+      onStage: (current) => { stage = current; },
+    });
+    stage = "release_contract";
     if (!verifyRelease(evidence, {}).ok || evidence.manifest.source_sha !== sourceSha) throw Error("adoption_release_untrusted");
     const release = evidence.manifest;
     docker ??= new DockerComposeHostAdapter({
@@ -124,9 +132,11 @@ export async function adoptVerifiedInstalledRuntime({
       envFile: config.envFile, uiHostPort: config.uiHostPort, dryRun: true,
     });
     maintenance ??= new ComposeMaintenanceCoordinator({ adapter: docker });
+    stage = "compose_contract";
     if (!await docker.projectIsExpected(config.project, ["api", "worker", "ui"], release)) {
       throw Error("adoption_project_unsafe");
     }
+    stage = "bootstrap";
     const bootstrap = await maintenance.bootstrapStatus(config.project);
     if (bootstrap?.bootstrapped !== true || bootstrap.project !== config.project
       || !/^[0-9a-f]{40}$/.test(bootstrap.source_sha ?? "")) {
@@ -137,18 +147,29 @@ export async function adoptVerifiedInstalledRuntime({
       api_image: release.api_image, ui_image: release.ui_image,
     };
     const matchesRelease = (actual) => Object.keys(expected).every((key) => actual?.[key] === expected[key]);
+    stage = "runtime_identity";
     if (!matchesRelease(docker.runtimeIdentity())) throw Error("adoption_runtime_mismatch");
+    stage = "health_snapshot";
     const snapshot = await docker.captureBaseline();
     if (snapshot.maintenance !== null
       || snapshot.version !== release.version || snapshot.source_sha !== release.source_sha
       || JSON.stringify(snapshot.migrations) !== JSON.stringify(release.migrations)) {
       throw Error("adoption_health_or_migration_mismatch");
     }
+    stage = "runtime_recheck";
     if (!matchesRelease(docker.runtimeIdentity())) throw Error("adoption_runtime_mismatch");
+    stage = "state_adoption";
     const recorded = stateStore.adoptVerifiedInstalled(state, expected);
     return { updated: false, adopted: true, source_sha: recorded.current.source_sha };
   } finally {
     stateStore.release();
+  }
+  } catch (error) {
+    // Only a fixed stage name is exposed if an unexpected error (including
+    // fetch/TypeError) would otherwise become an unhelpful runtime_failure.
+    // Do not log raw errors, URLs, credentials, or server response bodies.
+    if (typeof error?.message === "string" && /^[a-z][a-z0-9_]{2,100}$/.test(error.message)) throw error;
+    throw Error(`adoption_${stage}_failed`);
   }
 }
 
