@@ -1,4 +1,5 @@
 import express from "express";
+import {rateLimit} from "express-rate-limit";
 import helmet from "helmet";
 import jwt from "jsonwebtoken";
 import { hash, compare } from "bcryptjs";
@@ -46,6 +47,8 @@ app.set("trust proxy","loopback");
 app.use(helmet({contentSecurityPolicy:false}));
 app.use(express.json({limit:"256kb"}));
 app.use(express.urlencoded({extended:false,limit:"8kb"}));
+app.use(rateLimit({windowMs:60000,limit:120,standardHeaders:"draft-8",legacyHeaders:false}));
+const authLimiter=rateLimit({windowMs:900000,limit:15,standardHeaders:"draft-8",legacyHeaders:false});
 const api="/api/v1";
 const safe=f=>async(req,res,next)=>{try{await f(req,res);}catch(error){next(error);}};
 const now=()=>Date.now();
@@ -111,7 +114,7 @@ app.get("/setup",(_req,res)=>{
   res.type("html").send('<!doctype html><meta name="viewport" content="width=device-width, initial-scale=1"><title>Changd Fusion Setup</title><main style="max-width:460px;margin:10vh auto;font:16px system-ui;padding:24px"><h1>Changd Fusion</h1><p>First administrator setup. Read the local setup token with <code>docker compose -f compose.simple.yml exec fusion cat /data/setup-token</code>.</p><form method="POST" action="/api/v1/setup"><p><label>Setup token <input name="token" required autocomplete="off"></label></p><p><label>Email <input type="email" name="email" required></label></p><p><label>Password <input type="password" name="password" required minlength="12"></label></p><button>Activate</button></form></main>');
 });
 app.get(api+"/setup-status",(_req,res)=>res.json({required:!userCount(db)}));
-app.post(api+"/setup",safe(async(req,res)=>{
+app.post(api+"/setup",authLimiter,safe(async(req,res)=>{
   if(userCount(db))throw replyError(409,"Already configured");
   const expected=readFileSync(TOKEN_FILE,"utf8").trim(),received=String(req.body?.token??"");
   if(expected.length!==received.length||!timingSafeEqual(Buffer.from(expected),Buffer.from(received)))throw replyError(403,"Invalid setup token");
@@ -134,7 +137,7 @@ app.use((req,res,next)=>{
   }
   next();
 });
-app.post(api+"/login",safe(async(req,res)=>{
+app.post(api+"/login",authLimiter,safe(async(req,res)=>{
   const email=String(req.body?.email??"").toLowerCase().trim(),password=String(req.body?.password??"");
   const user=db.prepare("SELECT * FROM users WHERE email=?").get(email);
   if(!user||JSON.parse(user.payload).status===0||!(await compare(password,user.password_hash)))throw replyError(401,"Invalid email or password");
@@ -196,7 +199,7 @@ app.get(api+"/users",requireSecurity,(req,res)=>{
   const records=db.prepare("SELECT id,email,payload FROM users ORDER BY email").all();
   res.json(records.map(row=>{const p=JSON.parse(row.payload);return {user_id:row.id,email:row.email,firstname:p.firstname??"",lastname:p.lastname??"",status:p.status??1};}));
 });
-app.post(api+"/security/verify",safe(async(req,res)=>{
+app.post(api+"/security/verify",authLimiter,safe(async(req,res)=>{
   const email=String(req.body?.email??"").toLowerCase(),password=String(req.body?.password??"");
   const row=db.prepare("SELECT * FROM users WHERE id=?").get(req.user.user_id);
   if(!row||email!==row.email.toLowerCase()||!(await compare(password,row.password_hash)))
