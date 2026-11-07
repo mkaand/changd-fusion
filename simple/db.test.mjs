@@ -21,7 +21,7 @@ test("settings-only import preserves IDs, credentials, advanced monitor configur
   const dir=mkdtempSync(path.join(tmpdir(),"fusion-simple-db-"));
   try {
     const db=openSimpleDatabase(path.join(dir,"fusion.sqlite")), bundle=fixture();
-    assert.deepEqual(importConfiguration(db,bundle),{users:1,monitors:1,channels:1,vault:1});
+    assert.deepEqual(importConfiguration(db,bundle,{channelKey:"a".repeat(64)}),{users:1,monitors:1,channels:1,vault:1});
     const m=getMonitor(db,bundle.monitors[0].id,bundle.users[0].user_id);
     assert.deepEqual(m.browser_steps,bundle.monitors[0].browser_steps);
     assert.equal(m.disable_javascript,true);
@@ -31,7 +31,7 @@ test("settings-only import preserves IDs, credentials, advanced monitor configur
     assert.equal(JSON.parse(db.prepare("SELECT payload FROM channels").get().payload).config.encrypted,"encrypted-secret");
     assert.equal(db.prepare("SELECT count(*) n FROM monitor_channels").get().n,1);
     assert.equal(db.prepare("SELECT count(*) n FROM vault").get().n,1);
-    assert.throws(()=>importConfiguration(db,bundle),/empty_database/);
+    assert.throws(()=>importConfiguration(db,bundle,{channelKey:"a".repeat(64)}),/empty_database/);
     db.close();
   } finally { rmSync(dir,{recursive:true,force:true}); }
 });
@@ -40,7 +40,7 @@ test("invalid channel ownership rolls back every table, no partial configuration
   try {
     const db=openSimpleDatabase(path.join(dir,"fusion.sqlite")), bundle=fixture();
     bundle.monitor_channels[0].channel_id=randomUUID();
-    assert.throws(()=>importConfiguration(db,bundle),/invalid_imported_channel_link/);
+    assert.throws(()=>importConfiguration(db,bundle,{channelKey:"a".repeat(64)}),/invalid_imported_channel_link/);
     for(const table of ["users","monitors","channels","preferences","vault","monitor_channels"])
       assert.equal(db.prepare("SELECT count(*) n FROM "+table).get().n,0);
     db.close();
@@ -50,7 +50,7 @@ test("SQLite transactions roll back and preserve original settings on failed upd
   const dir=mkdtempSync(path.join(tmpdir(),"fusion-simple-db-"));
   try {
     const db=openSimpleDatabase(path.join(dir,"fusion.sqlite")), bundle=fixture();
-    importConfiguration(db,bundle);
+    importConfiguration(db,bundle,{channelKey:"a".repeat(64)});
     const m=getMonitor(db,bundle.monitors[0].id,bundle.users[0].user_id);
     assert.throws(()=>transaction(db,()=>{
       saveMonitor(db,{...m,name:"Changed"},m.user_id,{replace:true});
