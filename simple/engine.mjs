@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomUUID,createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
 import { compareText, compareKeywordPresence, compareVisual, normalizeText as existingNormalizeText } from "../server/dist/comparison.js";
@@ -38,6 +38,47 @@ export function compareCaptures(before,after,monitor,root) {
 export function textDirectionMatches(parts,direction) {
   if(!direction||direction==="both")return true;
   return direction==="added"?parts.some(part=>part.added):parts.some(part=>part.removed);
+}
+
+export function queueEventNotification(db,m,event,now,{directionAllowed=true,deduplicate=true}={}){
+  const mark=state=>{
+    event.notification_state=state;
+    db.prepare("UPDATE events SET payload=? WHERE id=?").run(JSON.stringify(event),event.id);
+  };
+  if(m.notification_enabled===false){mark("disabled");return;}
+  if(m.muted_until&&Date.parse(m.muted_until)>now){mark("muted");return;}
+  if(!directionAllowed){mark("direction_filtered");return;}
+  const channels=db.prepare("SELECT mc.channel_id FROM monitor_channels mc JOIN channels c ON c.id=mc.channel_id WHERE mc.monitor_id=? AND c.user_id=? AND json_extract(c.payload,'$.enabled')=1").all(m.id,m.user_id);
+  if(!channels.length){mark("not_requested");return;}
+  const fingerprint=createHash("sha256").update(JSON.stringify({
+    status:event.status,text:event.text_diff??[],visual:event.visual_changed?{percent:event.visual_percent,dimensions:event.dimension_changed}:null,
+    http:event.http_status_changed?event.http_status:null,error:event.status==="failed"?event.error:null
+  })).digest("hex");
+  event.notification_fingerprint=fingerprint;
+  if(m.notification_mode==="digest"){
+    const due=now+Math.max(300000,Number(m.digest_window_seconds??3600)*1000);
+    for(const {channel_id} of channels)db.prepare(
+      "INSERT INTO notification_digests(monitor_id,channel_id,first_event_at,last_event_at,event_count,latest_event_id,due_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(monitor_id,channel_id) DO UPDATE SET last_event_at=excluded.last_event_at,event_count=notification_digests.event_count+1,latest_event_id=excluded.latest_event_id"
+    ).run(m.id,channel_id,now,now,1,event.id,due);
+    mark("digest_pending");return;
+  }
+  if(deduplicate){
+    const duplicate=db.prepare(
+      "SELECT 1 FROM events e JOIN outbox o ON o.event_id=e.id WHERE e.monitor_id=? AND json_extract(e.payload,'$.notification_fingerprint')=? AND o.status IN ('pending','sent') AND e.created_at>? LIMIT 1"
+    ).get(m.id,fingerprint,now-86400000);
+    if(duplicate){mark("duplicate_suppressed");return;}
+  }
+  const cooldown=Number(m.notification_cooldown_seconds??0);
+  if(cooldown>0){
+    const recent=db.prepare(
+      "SELECT 1 FROM events e JOIN outbox o ON o.event_id=e.id WHERE e.monitor_id=? AND o.status IN ('pending','sent') AND e.created_at>? LIMIT 1"
+    ).get(m.id,now-cooldown*1000);
+    if(recent){mark("cooldown");return;}
+  }
+  for(const {channel_id} of channels)db.prepare(
+    "INSERT OR IGNORE INTO outbox(id,event_id,channel_id,next_attempt,payload) VALUES(?,?,?,?,?)"
+  ).run(randomUUID(),event.id,channel_id,now,JSON.stringify({eventId:event.id}));
+  mark("queued");
 }
 
 export class FusionEngine {
@@ -153,30 +194,47 @@ export class FusionEngine {
       payload.baseline_id=afterId;payload.latest_capture_id=afterId;payload.last_percent=comparison.visualPercent;
       this.db.prepare("UPDATE monitors SET payload=?,last_run=?,last_success=?,next_run=?,last_status=?,failure_count=0 WHERE id=?")
         .run(JSON.stringify(payload),now,now,now+delay,status==="changed"?"changed":"healthy",m.id);
-      if(status==="changed"&&m.notification_enabled!==false&&(!comparison.textChanged||comparison.visualChanged||comparison.httpStatusChanged||textDirectionMatches(comparison.textDiff,m.text_direction))){
-        const links=this.db.prepare("SELECT mc.channel_id FROM monitor_channels mc JOIN channels c ON mc.channel_id=c.id WHERE mc.monitor_id=?").all(m.id);
-        for(const {channel_id} of links)this.db.prepare("INSERT OR IGNORE INTO outbox(id,event_id,channel_id,next_attempt,payload) VALUES(?,?,?,?,?)")
-          .run(randomUUID(),eventId,channel_id,now,JSON.stringify({eventId}));
-      }
+      if(status==="changed")queueEventNotification(this.db,m,event,now,{
+        directionAllowed:!comparison.textChanged||comparison.visualChanged||comparison.httpStatusChanged||textDirectionMatches(comparison.textDiff,m.text_direction)
+      });
     });
     if(status==="changed")void this.deliverPending().catch(()=>{});
   }
   #failure(m,code,delay,item){
     const now=Date.now(),failure=Number(m.failure_count??0)+1,evt=randomUUID();
+    const state=failure>=3?"persistent_failure":"temporary_failure";
+    const mode=m.failure_alert_mode??(m.notify_failures?"first_or_persistent":"off");
+    const shouldNotify=mode==="every"||(mode==="first_or_persistent"&&(failure===1||(state==="persistent_failure"&&m.monitor_state!==state)));
     transaction(this.db,()=>{
       const row=this.db.prepare("SELECT payload FROM monitors WHERE id=?").get(m.id);
       const payload=JSON.parse(row.payload);payload.last_error=String(code).slice(0,64);
       this.db.prepare("UPDATE monitors SET payload=?,last_run=?,next_run=?,last_status=?,failure_count=? WHERE id=?")
-        .run(JSON.stringify(payload),now,now+delay,failure>=3?"persistent_failure":"temporary_failure",failure,m.id);
+        .run(JSON.stringify(payload),now,now+delay,state,failure,m.id);
+      const event={id:evt,monitor_id:m.id,status:"failed",error:String(code).slice(0,64),
+        created_at:new Date(now).toISOString(),notification_state:"not_requested"};
       this.db.prepare("INSERT INTO events(id,monitor_id,status,payload,created_at) VALUES(?,?,?,?,?)")
-        .run(evt,m.id,"failed",JSON.stringify({id:evt,monitor_id:m.id,status:"failed",error:String(code).slice(0,64),created_at:new Date(now).toISOString()}),now);
+        .run(evt,m.id,"failed",JSON.stringify(event),now);
+      if(shouldNotify)queueEventNotification(this.db,m,event,now,{deduplicate:false});
     });
+    if(shouldNotify)void this.deliverPending().catch(()=>{});
     if(item){item.status="failed";item.updated_at=new Date().toISOString();}
+  }
+  #flushDigests(){
+    const due=this.db.prepare("SELECT * FROM notification_digests WHERE due_at<=? ORDER BY due_at LIMIT 30").all(Date.now());
+    for(const row of due)transaction(this.db,()=>{
+      const now=Date.now(),id=randomUUID(),event={id,monitor_id:row.monitor_id,status:"digest",
+        created_at:new Date(now).toISOString(),notification_state:"queued",
+        metadata:{digest_count:row.event_count,period_start:new Date(row.first_event_at).toISOString(),period_end:new Date(row.last_event_at).toISOString()}};
+      this.db.prepare("INSERT INTO events(id,monitor_id,status,payload,created_at) VALUES(?,?,?,?,?)").run(id,row.monitor_id,"digest",JSON.stringify(event),now);
+      this.db.prepare("INSERT INTO outbox(id,event_id,channel_id,next_attempt,payload) VALUES(?,?,?,?,?)").run(randomUUID(),id,row.channel_id,now,JSON.stringify({eventId:id}));
+      this.db.prepare("DELETE FROM notification_digests WHERE monitor_id=? AND channel_id=?").run(row.monitor_id,row.channel_id);
+    });
   }
   async deliverPending(){
     if(this.delivering||this.closed)return;
     this.delivering=true;
     try {
+      this.#flushDigests();
       const rows=this.db.prepare("SELECT o.*,c.payload AS channel,e.payload AS event,m.payload AS monitor FROM outbox o JOIN channels c ON c.id=o.channel_id JOIN events e ON e.id=o.event_id JOIN monitors m ON m.id=e.monitor_id WHERE o.status IN ('pending','failed') AND o.next_attempt<=? AND o.attempts<5 ORDER BY o.next_attempt LIMIT 10").all(Date.now());
       for(const row of rows){
         const channel=JSON.parse(row.channel),e=JSON.parse(row.event),m=JSON.parse(row.monitor);
@@ -189,7 +247,8 @@ export class FusionEngine {
           httpStatus:e.http_status,previousHttpStatus:e.before_id?this.db.prepare("SELECT http_status FROM captures WHERE id=?").get(e.before_id)?.http_status:null,httpStatusChanged:e.http_status_changed,
           percent:e.visual_percent,textSummary:safeTextSummary(e.text_diff??[]),
           link:new URL("/jobs/"+m.id,this.publicUrl).href,images,
-          checkedAt:e.created_at,eventType:e.status};
+          checkedAt:e.created_at,eventType:e.status,attentionMessage:e.error??null,
+          digestCount:e.metadata?.digest_count,digestStart:e.metadata?.period_start,digestEnd:e.metadata?.period_end};
         try{
           const configuration=decrypt(channel.config.encrypted,this.channelKey);
           await this.sendNotification(channel.provider,configuration,details,this.storage);
