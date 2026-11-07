@@ -41,7 +41,7 @@ const threshold = z
       Number(n) <= 100 &&
       new Decimal(n).decimalPlaces() <= 10,
   );
-const monitorInput = z
+export const monitorInput = z
   .object({
     name: z.string().trim().min(1).max(120),
     url: z.string().url().max(2048),
@@ -155,7 +155,7 @@ const monitorInput = z
     ...m,
     failure_alert_mode: m.failure_alert_mode ?? (m.notify_failures ? "first_or_persistent" as const : "off" as const),
   }));
-const monitoringDefaults = z.object({
+export const monitoringDefaults = z.object({
   interval_seconds: z.number().int().min(30).max(604800).optional(),
   text_enabled: z.boolean().optional(), visual_enabled: z.boolean().optional(),
   // Selected area needs monitor-specific coordinates and cannot be a global default.
@@ -166,7 +166,7 @@ const monitoringDefaults = z.object({
   notification_mode: z.enum(["immediate", "digest"]).optional(),
   capture_timeout_ms: captureTimeoutSchema.optional(),
 }).strict();
-const credentials = z
+export const credentials = z
   .object({
     email: z
       .email()
@@ -179,7 +179,7 @@ const credentials = z
       .refine((value) => Buffer.byteLength(value, "utf8") <= 72),
   })
   .strict();
-const regionPreviewInput = z
+export const regionPreviewInput = z
   .object({
     session_id: uuid.optional(),
     preview_request_id: uuid.optional(),
@@ -208,12 +208,12 @@ const regionPreviewInput = z
     mode: z.enum(["element", "area"]).optional().default("element"),
   })
   .strict();
-const textPreviewInput = z.object({
+export const textPreviewInput = z.object({
   session_id: uuid.optional(), monitor_id: uuid.optional(), url: z.string().url().max(2048).optional(),
   line_index: z.number().int().min(0).max(200_000).optional(), selected_value: z.string().min(1).max(500).optional(),
   query: z.string().max(200).optional(), offset: z.number().int().min(0).max(200_000).optional(), limit: z.number().int().min(1).max(100).optional(),
 }).strict();
-const channelInput = z
+export const channelInput = z
   .object({
     name: z.string().trim().min(1).max(100),
     provider: z.enum(["smtp", "telegram"]),
