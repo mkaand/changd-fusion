@@ -101,7 +101,7 @@ export function importConfiguration(db, bundle, { channelKey }={}) {
         throw Error("invalid_imported_user");
       users.add(id);
       db.prepare("INSERT INTO users(id,email,password_hash,payload) VALUES(?,?,?,?)")
-        .run(id,user.email.toLowerCase(),user.password,JSON.stringify(user));
+        .run(id,user.email.toLowerCase(),user.password,JSON.stringify(Object.fromEntries(Object.entries(user).filter(([k])=>k!=="password"))));
     }
     for(const item of bundle.monitors) {
       if(!users.has(item.user_id)) throw Error("import_monitor_owner_missing");
