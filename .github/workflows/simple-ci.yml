@@ -1,0 +1,95 @@
+name: Simple single-container CI
+on:
+  push:
+    branches: [master, feature/simple-single-container-sqlite]
+  pull_request:
+
+jobs:
+  sqlite-and-code:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: '24'
+      - name: Check ESM runtime syntax
+        run: |
+          set -euo pipefail
+          for file in simple/*.mjs; do node --check "$file"; done
+      - name: SQLite and queue regression tests
+        run: node --test simple/db.test.mjs simple/browser-queue.test.mjs
+      - name: Validate one-service Compose
+        run: docker compose config --services | tee /tmp/simple-services && test "$(cat /tmp/simple-services)" = fusion
+
+  container-build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+      - name: Build actual single-service image
+        run: docker compose build fusion
+      - name: Smoke test real container, SQLite and first administrator setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'docker compose down -v --remove-orphans >/dev/null 2>&1 || :' EXIT
+          docker compose up -d --no-build fusion
+          ready=0
+          for _ in $(seq 1 45); do
+            if curl --fail --silent http://127.0.0.1:8127/api/v1/health | jq -e '.status=="ok" and .store=="sqlite"' >/dev/null; then ready=1; break; fi
+            sleep 2
+          done
+          if [ "$ready" != 1 ]; then docker compose logs --tail=80 fusion; exit 1; fi
+          token="$(docker compose exec -T fusion cat /data/setup-token | tr -d '\r\n')"
+          body="$(jq -nc --arg token "$token" --arg email 'smoke@example.com' --arg password 'ValidTestPassword123!' '{token:$token,email:$email,password:$password}')"
+          curl --fail --silent --show-error -c /tmp/fusion-simple-cookies -H 'Content-Type: application/json' -d "$body" http://127.0.0.1:8127/api/v1/setup | jq -e '.ok==true'
+          unset token body
+          curl --fail --silent --show-error -b /tmp/fusion-simple-cookies http://127.0.0.1:8127/api/v1/users/me | jq -e '.email=="smoke@example.com"'
+          curl --fail --silent --show-error -b /tmp/fusion-simple-cookies http://127.0.0.1:8127/api/v1/jobs | jq -e 'length==0'
+          # Owner security step-up, public workspace activation and isolation.
+          security="$(jq -nc '{email:"smoke@example.com",password:"ValidTestPassword123!"}')"
+          curl --fail --silent --show-error -b /tmp/fusion-simple-cookies -c /tmp/fusion-simple-cookies \
+            -H 'X-Fusion-Request: 1' -H 'Content-Type: application/json' \
+            -d "$security" http://127.0.0.1:8127/api/v1/security/verify | jq -e '.ok==true'
+          curl --fail --silent --show-error -b /tmp/fusion-simple-cookies \
+            -H 'X-Fusion-Request: 1' -H 'Content-Type: application/json' -X PUT \
+            -d '{"enabled":true,"confirm":true}' http://127.0.0.1:8127/api/v1/account/public-access | jq -e '.enabled==true'
+          curl --fail --silent --show-error http://127.0.0.1:8127/api/v1/users/me | jq -e '.public_access==true and .email==null and .user_id==null'
+          curl --silent -o /dev/null -w '%{http_code}' http://127.0.0.1:8127/api/v1/users | grep -qx 403
+          curl --fail --silent --show-error -b /tmp/fusion-simple-cookies \
+            -H 'X-Fusion-Request: 1' -H 'Content-Type: application/json' -X PUT \
+            -d '{"enabled":false,"confirm":true}' http://127.0.0.1:8127/api/v1/account/public-access | jq -e '.enabled==false'
+          curl --silent -o /dev/null -w '%{http_code}' http://127.0.0.1:8127/api/v1/users/me | grep -qx 401
+          unset security
+          curl --fail --silent --show-error -b /tmp/fusion-simple-cookies http://127.0.0.1:8127/api/v1/analytics | jq -e '.summary.total==0 and (.trend|length)==0'
+          curl --fail --silent --show-error -b /tmp/fusion-simple-cookies http://127.0.0.1:8127/api/v1/deliveries | jq -e '.total==0 and (.items|length)==0'
+          docker compose exec -T fusion node --test simple/engine.test.mjs
+          docker compose exec -T fusion node --test simple/migration.smoke.mjs
+          # Run real sandboxed Chromium and retained Preview against a public HTTPS fixture.
+          docker compose exec -T fusion node --test simple/chromium.smoke.mjs
+          # Store a disabled advanced monitor without opening a browser.
+          monitor="$(jq -nc '{name:"Persistent smoke monitor",url:"https://1.1.1.1",kind:"browser",text_enabled:true,visual_enabled:true,disable_javascript:true,interval_seconds:3600,enabled:false}')"
+          curl --fail --silent --show-error -b /tmp/fusion-simple-cookies \
+            -H 'X-Fusion-Request: 1' -H 'Content-Type: application/json' \
+            -d "$monitor" http://127.0.0.1:8127/api/v1/jobs \
+            | jq -e '.name=="Persistent smoke monitor" and .disable_javascript==true and .enabled==false'
+          # Restart just the single container; SQLite and credentials must persist.
+          docker compose restart fusion
+          healthy=0
+          for _ in $(seq 1 30); do
+            if curl --fail --silent http://127.0.0.1:8127/api/v1/health | jq -e '.status=="ok"' >/dev/null; then healthy=1; break; fi
+            sleep 2
+          done
+          test "$healthy" = 1
+          curl --fail --silent --show-error -b /tmp/fusion-simple-cookies \
+            http://127.0.0.1:8127/api/v1/jobs \
+            | jq -e 'length==1 and .[0].name=="Persistent smoke monitor" and .[0].disable_javascript==true and .[0].enabled==false'
+          # No PostgreSQL or browser lease survives in the one-service architecture.
+          docker compose config --services | grep -qx fusion
+          docker compose exec -T fusion node -e \
+            'const { DatabaseSync }=require("node:sqlite");const db=new DatabaseSync("/data/fusion.sqlite");if(db.prepare("SELECT count(*) n FROM monitors").get().n!==1)process.exit(1);db.close()'
+          unset monitor
+
