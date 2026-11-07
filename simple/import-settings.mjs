@@ -10,6 +10,6 @@ if(!st.isFile() || st.size>20_000_000 || (st.mode&0o077)!==0) throw Error("unsaf
 const bundle=JSON.parse(readFileSync(file,"utf8"));
 const db=openSimpleDatabase(path.join(dataDir,"fusion.sqlite"));
 try {
-  const result=importConfiguration(db,bundle);
+  const result=importConfiguration(db,bundle,{channelKey:process.env.CHANNEL_KEY});
   process.stdout.write(JSON.stringify({status:"ok",...result})+"\n");
 } finally { db.close(); }
