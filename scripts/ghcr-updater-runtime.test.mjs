@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { DeploymentStateStore } from "./deployment-state.mjs";
-import { executeUpdaterRuntime, runtimeConfiguration, runtimeOutcome, safeRuntimeFailureCode, validateDockerCliConfiguration } from "./ghcr-updater-runtime.mjs";
+import { adoptVerifiedInstalledRuntime, executeUpdaterRuntime, runtimeConfiguration, runtimeOutcome, safeRuntimeFailureCode, validateDockerCliConfiguration } from "./ghcr-updater-runtime.mjs";
 
 const project = "fusion_runtime_test";
 const source = "a".repeat(40), oldSource = "d".repeat(40);
@@ -101,6 +101,81 @@ test("same-version master release requires live ancestry proof and causes no dry
     }),
     /installed_source_ancestry_unverified/,
   );
+});
+
+test("operator-only adoption verifies live release and atomically records IDLE without Docker mutation", async () => {
+  const live = { version: manifest.version, source_sha: manifest.source_sha, api_image: api, ui_image: ui };
+  const f = fixtures(directory, {
+    docker: {
+      runtimeIdentity: () => live,
+      captureBaseline: async () => ({ ...baseline, maintenance: null, version: live.version, source_sha: live.source_sha }),
+    },
+    maintenance: { bootstrapStatus: async () => ({ bootstrapped: true, project, source_sha: oldSource }) },
+  });
+  const state = f.stateStore.transition(f.stateStore.load(), "FAILED", {
+    failure: { code: "BOOTSTRAP_REQUIRED", stage: "bootstrap" },
+  });
+  const env = { ...environment(directory), FUSION_UPDATER_DRY_RUN: "1" };
+  const result = await adoptVerifiedInstalledRuntime({ environment: env, client, ...f });
+  assert.equal(result.adopted, true);
+  assert.equal(runtimeOutcome(result).status, 0);
+  const adopted = f.stateStore.load();
+  assert.equal(adopted.status, "IDLE", "adoption must not manufacture deployment SUCCESS");
+  assert.deepEqual(adopted.current, live);
+  assert.equal(adopted.sequence, state.sequence + 1);
+  assert.equal(adopted.failure, null);
+  assert.deepEqual(f.actions, []);
+  assert.deepEqual(f.notifications, []);
+  await assert.rejects(
+    adoptVerifiedInstalledRuntime({ environment: env, client, ...f }),
+    /adoption_state_unsafe/,
+  );
+});
+
+test("adoption fails closed for unsafe state, source mismatch and active maintenance", async () => {
+  const live = { version: manifest.version, source_sha: manifest.source_sha, api_image: api, ui_image: ui };
+  const env = { ...environment(directory), FUSION_UPDATER_DRY_RUN: "1" };
+  const liveDocker = {
+    runtimeIdentity: () => live,
+    captureBaseline: async () => ({ ...baseline, maintenance: null, version: live.version, source_sha: live.source_sha }),
+  };
+  const bootstrapped = { bootstrapStatus: async () => ({ bootstrapped: true, project, source_sha: oldSource }) };
+  const f = fixtures(directory, { docker: liveDocker, maintenance: bootstrapped });
+  await assert.rejects(
+    adoptVerifiedInstalledRuntime({ environment: env, client, ...f }),
+    /adoption_state_unsafe/,
+  );
+  f.stateStore.transition(f.stateStore.load(), "FAILED", {
+    failure: { code: "BOOTSTRAP_REQUIRED", stage: "bootstrap" },
+  });
+  await assert.rejects(
+    adoptVerifiedInstalledRuntime({ environment: environment(directory), client, ...f }),
+    /adoption_requires_dry_run/,
+  );
+  await assert.rejects(
+    adoptVerifiedInstalledRuntime({
+      environment: env, client, ...f,
+      docker: { ...f.docker, runtimeIdentity: () => ({ ...live, source_sha: oldSource }) },
+    }),
+    /adoption_runtime_mismatch/,
+  );
+  await assert.rejects(
+    adoptVerifiedInstalledRuntime({
+      environment: env, client, ...f,
+      docker: { ...f.docker, captureBaseline: async () =>
+        ({ ...baseline, maintenance: { state: "draining" }, version: live.version, source_sha: live.source_sha }) },
+    }),
+    /adoption_health_or_migration_mismatch/,
+  );
+  await assert.rejects(
+    adoptVerifiedInstalledRuntime({
+      environment: env, client, ...f,
+      maintenance: { bootstrapStatus: async () => ({ bootstrapped: false, reason: "schema_missing" }) },
+    }),
+    /adoption_bootstrap_unsafe/,
+  );
+  assert.equal(f.stateStore.load().status, "FAILED", "failed adoption must not alter durable state");
+  assert.deepEqual(f.actions, []);
 });
 
 test("unbootstrapped v0.3.2 fails before runtime identity or Docker mutation", async () => {
