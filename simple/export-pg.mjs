@@ -19,9 +19,10 @@ try {
     channels:"SELECT * FROM fusion_channels ORDER BY id",
     monitor_channels:"SELECT monitor_id,channel_id FROM fusion_monitor_channels ORDER BY monitor_id,channel_id",
     preferences:"SELECT user_id,monitoring_defaults FROM fusion_user_preferences ORDER BY user_id",
+    access:"SELECT public_enabled,owner_user_id FROM fusion_access_settings WHERE singleton=true",
     vault:"SELECT monitor_id,user_id,origin,encrypted,value_names,expires_at,updated_at FROM fusion_monitor_vault ORDER BY monitor_id"
   };
-  const bundle={ format:"changd-fusion-pg-settings-v1",created_at:new Date().toISOString(),users:[],monitors:[],channels:[],monitor_channels:[],preferences:[],vault:[] };
+  const bundle={ format:"changd-fusion-pg-settings-v1",created_at:new Date().toISOString(),users:[],monitors:[],channels:[],monitor_channels:[],preferences:[],access:[],vault:[] };
   for(const [key,sql] of Object.entries(queries)) bundle[key]=(await client.query(sql)).rows;
   await client.query("COMMIT");
   fd=openSync(target,"wx",0o600);
