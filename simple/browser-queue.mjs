@@ -66,6 +66,12 @@ export class BrowserQueue {
       if(this.#running===state)this.#running=null;
     }
   }
+  preemptScheduledCapture(){
+    if(!this.#running)return false;
+    this.#running.cancelled=true;
+    this.#terminate(this.#running);
+    return true;
+  }
   async acquirePreview({signal,waitMs=12000}={}){
     if(this.#closed)return null;
     this.#waiting++;
