@@ -53,6 +53,23 @@ jobs:
           unset token body
           curl --fail --silent --show-error -b /tmp/fusion-simple-cookies http://127.0.0.1:8127/api/v1/users/me | jq -e '.email=="smoke@example.com"'
           curl --fail --silent --show-error -b /tmp/fusion-simple-cookies http://127.0.0.1:8127/api/v1/jobs | jq -e 'length==0'
+          # Owner security step-up, public workspace activation and isolation.
+          security="$(jq -nc '{email:"smoke@example.com",password:"ValidTestPassword123!"}')"
+          curl --fail --silent --show-error -b /tmp/fusion-simple-cookies -c /tmp/fusion-simple-cookies \
+            -H 'X-Fusion-Request: 1' -H 'Content-Type: application/json' \
+            -d "$security" http://127.0.0.1:8127/api/v1/security/verify | jq -e '.ok==true'
+          curl --fail --silent --show-error -b /tmp/fusion-simple-cookies \
+            -H 'X-Fusion-Request: 1' -H 'Content-Type: application/json' -X PUT \
+            -d '{"enabled":true,"confirm":true}' http://127.0.0.1:8127/api/v1/account/public-access | jq -e '.enabled==true'
+          curl --fail --silent --show-error http://127.0.0.1:8127/api/v1/users/me | jq -e '.public_access==true and .email==null and .user_id==null'
+          curl --silent -o /dev/null -w '%{http_code}' http://127.0.0.1:8127/api/v1/users | grep -qx 403
+          curl --fail --silent --show-error -b /tmp/fusion-simple-cookies \
+            -H 'X-Fusion-Request: 1' -H 'Content-Type: application/json' -X PUT \
+            -d '{"enabled":false,"confirm":true}' http://127.0.0.1:8127/api/v1/account/public-access | jq -e '.enabled==false'
+          curl --silent -o /dev/null -w '%{http_code}' http://127.0.0.1:8127/api/v1/users/me | grep -qx 401
+          unset security
+          curl --fail --silent --show-error -b /tmp/fusion-simple-cookies http://127.0.0.1:8127/api/v1/analytics | jq -e '.summary.total==0 and (.trend|length)==0'
+          curl --fail --silent --show-error -b /tmp/fusion-simple-cookies http://127.0.0.1:8127/api/v1/deliveries | jq -e '.total==0 and (.items|length)==0'
           docker compose -f compose.simple.yml exec -T fusion node --test simple/engine.test.mjs
           # Run real sandboxed Chromium and retained Preview against a public HTTPS fixture.
           docker compose -f compose.simple.yml exec -T fusion node --test simple/chromium.smoke.mjs
