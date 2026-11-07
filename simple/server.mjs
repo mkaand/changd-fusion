@@ -235,7 +235,7 @@ app.post(api+"/monitors/notification-channels/bulk",safe(async(req,res)=>{
   });
   res.status(204).end();
 }));
-app.get(api+"/jobs",(req,res)=>res.json(listMonitors(db,req.user.user_id)));
+app.get(api+"/jobs",(req,res)=>res.json(listMonitors(db,req.user.user_id).map(withChannels)));
 app.post(api+"/jobs",safe(async(req,res)=>{
   const input=monitorInput(req.body);
   await policy.target(input.url);
@@ -417,20 +417,46 @@ app.post(api+"/text-preview",safe(async(req,res)=>{
   res.json(await previewJinaText({ownerId:req.user.user_id,url:b.url,sessionId:b.session_id,lineIndex:b.line_index,selectedValue:b.selected_value,query:b.query,offset:b.offset,limit:b.limit},cfg,policy));
 }));
 app.get(api+"/system/diagnostics",(req,res)=>{
-  const count=db.prepare("SELECT count(*) total,sum(CASE WHEN enabled=1 AND paused=0 THEN 1 ELSE 0 END) active FROM monitors WHERE user_id=?").get(req.user.user_id);
-  res.json({api:"ok",monitoring:{total:count.total,active:count.active??0,attention:0},deliveries:{pending:0,failed:0},retention_days:90});
+  const count=db.prepare("SELECT count(*) total,sum(CASE WHEN enabled=1 AND paused=0 AND last_status NOT IN ('persistent_failure','authentication_required','challenge_detected') THEN 1 ELSE 0 END) active,sum(CASE WHEN last_status IN ('persistent_failure','authentication_required','challenge_detected') THEN 1 ELSE 0 END) attention FROM monitors WHERE user_id=?").get(req.user.user_id);
+  const delivery=db.prepare("SELECT sum(CASE WHEN o.status='pending' THEN 1 ELSE 0 END) pending,sum(CASE WHEN o.status='failed' THEN 1 ELSE 0 END) failed FROM outbox o JOIN channels c ON c.id=o.channel_id JOIN events e ON e.id=o.event_id JOIN monitors m ON m.id=e.monitor_id WHERE m.user_id=? AND c.user_id=?").get(req.user.user_id,req.user.user_id);
+  res.json({api:"ok",monitoring:{total:count.total,active:count.active??0,attention:count.attention??0},deliveries:{pending:delivery.pending??0,failed:delivery.failed??0},retention_days:90});
 });
-app.get(api+"/timeline",(req,res)=>{
-  const page=Math.max(1,Number(req.query.page)||1),size=Math.min(100,Math.max(1,Number(req.query.page_size)||25));
-  const rows=db.prepare("SELECT e.payload,m.payload monitor FROM events e JOIN monitors m ON m.id=e.monitor_id WHERE m.user_id=? ORDER BY e.created_at DESC LIMIT ? OFFSET ?").all(req.user.user_id,size,(page-1)*size);
-  const total=db.prepare("SELECT count(*) n FROM events e JOIN monitors m ON m.id=e.monitor_id WHERE m.user_id=?").get(req.user.user_id).n;
-  res.json({items:rows.map(x=>({...JSON.parse(x.payload),monitor_name:JSON.parse(x.monitor).name})),page,page_size:size,total});
-});
-app.get(api+"/analytics",(req,res)=>{
-  const rows=db.prepare("SELECT e.status,count(*) n FROM events e JOIN monitors m ON m.id=e.monitor_id WHERE m.user_id=? GROUP BY e.status").all(req.user.user_id);
-  const total=rows.reduce((n,r)=>n+r.n,0);
-  res.json({summary:{total,changed:rows.find(r=>r.status==="changed")?.n??0,failed:rows.find(r=>r.status==="failed")?.n??0,successful:total-(rows.find(r=>r.status==="failed")?.n??0)},distribution:rows.map(r=>({status:r.status,count:r.n})),trend:[]});
-});
+const eventStatus=z.enum(["baseline","unchanged","changed","failed","reset","legacy","test","digest","extraction_transition"]);
+const eventFilters=z.object({
+  monitor_id:z.string().uuid().optional(),status:eventStatus.optional(),
+  from:z.iso.datetime({offset:true}).optional(),to:z.iso.datetime({offset:true}).optional()
+}).strict().refine(q=>!q.from||!q.to||Date.parse(q.from)<=Date.parse(q.to),{message:"Start date must precede end date"});
+function scopedEvents(query,userId){
+  const where="WHERE m.user_id=? AND (? IS NULL OR e.monitor_id=?) AND (? IS NULL OR e.status=?) AND (? IS NULL OR e.created_at>=?) AND (? IS NULL OR e.created_at<=?)";
+  const params=[userId,query.monitor_id??null,query.monitor_id??null,query.status??null,query.status??null,
+    query.from?Date.parse(query.from):null,query.from?Date.parse(query.from):null,
+    query.to?Date.parse(query.to):null,query.to?Date.parse(query.to):null];
+  return {where,params};
+}
+app.get(api+"/timeline",safe(async(req,res)=>{
+  const query=eventFilters.extend({page:z.coerce.number().int().min(1).max(100000).default(1),page_size:z.coerce.number().int().min(1).max(100).default(25)})
+    .refine(q=>!q.from||!q.to||Date.parse(q.from)<=Date.parse(q.to),{message:"Start date must precede end date"}).parse(req.query);
+  const {where,params}=scopedEvents(query,req.user.user_id);
+  const joined="FROM events e JOIN monitors m ON m.id=e.monitor_id ";
+  const rows=db.prepare("SELECT e.id,e.monitor_id,e.status,e.payload,e.created_at,json_extract(m.payload,'$.name') monitor_name "+joined+where+" ORDER BY e.created_at DESC,e.id DESC LIMIT ? OFFSET ?").all(...params,query.page_size,(query.page-1)*query.page_size);
+  const total=db.prepare("SELECT count(*) n "+joined+where).get(...params).n;
+  const items=rows.map(row=>{
+    const e=JSON.parse(row.payload),diff=e.text_diff??[];
+    return {...e,id:row.id,monitor_id:row.monitor_id,monitor_name:row.monitor_name,status:row.status,
+      created_at:new Date(row.created_at).toISOString(),
+      text_added:diff.some(part=>part.added===true),text_removed:diff.some(part=>part.removed===true)};
+  });
+  res.json({items,total,page:query.page,page_size:query.page_size});
+}));
+app.get(api+"/analytics",safe(async(req,res)=>{
+  const query=eventFilters.parse(req.query),{where,params}=scopedEvents(query,req.user.user_id);
+  const joined="FROM events e JOIN monitors m ON m.id=e.monitor_id ";
+  const rows=db.prepare("SELECT e.status,count(*) n "+joined+where+" GROUP BY e.status ORDER BY n DESC,e.status ASC").all(...params);
+  const total=rows.reduce((n,r)=>n+r.n,0),changed=rows.find(r=>r.status==="changed")?.n??0,failed=rows.find(r=>r.status==="failed")?.n??0;
+  const successful=rows.filter(r=>["baseline","unchanged","changed","extraction_transition"].includes(r.status)).reduce((n,r)=>n+r.n,0);
+  const trend=db.prepare("SELECT strftime('%Y-%m-%d',e.created_at/1000,'unixepoch') day,count(*) total,sum(CASE WHEN e.status='changed' THEN 1 ELSE 0 END) changed,sum(CASE WHEN e.status='failed' THEN 1 ELSE 0 END) failed,sum(CASE WHEN e.status IN ('baseline','unchanged','changed','extraction_transition') THEN 1 ELSE 0 END) successful "+joined+where+" GROUP BY day ORDER BY day ASC").all(...params);
+  res.json({summary:{total,changed,failed,successful},distribution:rows.map(r=>({status:r.status,count:r.n})),trend});
+}));
 app.get(api+"/deliveries",safe(async(req,res)=>{
   const query=z.object({
     page:z.coerce.number().int().min(1).max(100000).default(1),
