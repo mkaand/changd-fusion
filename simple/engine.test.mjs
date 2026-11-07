@@ -44,3 +44,45 @@ test("baseline, changed event and failed capture preserve settings",async()=>{
     assert.equal(db.prepare("SELECT count(*) n FROM events WHERE status='failed'").get().n,1);
   }finally{engine?.close();db?.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+test("notification delivery records success, failure and safe retry metadata",async()=>{
+  const dir=mkdtempSync(path.join(tmpdir(),"fusion-simple-notifications-"));let db,engine;
+  try {
+    db=openSimpleDatabase(path.join(dir,"fusion.sqlite"));
+    const key="a".repeat(64),userId=randomUUID(),id=randomUUID(),channelId=randomUUID();
+    const {encrypt}=await import("../server/dist/crypto.js");
+    db.prepare("INSERT INTO users(id,email,password_hash,payload) VALUES(?,?,?,?)")
+      .run(userId,"notify@example.com","hash",JSON.stringify({user_id:userId,email:"notify@example.com",user_type:2}));
+    saveMonitor(db,{id,user_id:userId,name:"Alert test",url:"https://example.com",kind:"api",enabled:true,paused:false,next_run:new Date(Date.now()+600000).toISOString()},userId);
+    db.prepare("INSERT INTO channels(id,user_id,payload) VALUES(?,?,?)").run(channelId,userId,JSON.stringify({
+      id:channelId,user_id:userId,name:"Test channel",provider:"telegram",enabled:true,
+      config:{encrypted:encrypt({token:"123456:"+ "a".repeat(25),chat_id:"1234",timezone:"UTC"},key)}
+    }));
+    db.prepare("INSERT INTO monitor_channels(monitor_id,channel_id) VALUES(?,?)").run(id,channelId);
+    const eventId=randomUUID(),sendCalls=[];
+    db.prepare("INSERT INTO events(id,monitor_id,status,payload,created_at) VALUES(?,?,?,?,?)").run(eventId,id,"changed",JSON.stringify({
+      id:eventId,monitor_id:id,status:"changed",text_changed:true,visual_changed:false,
+      text_diff:[{value:"changed",added:true,removed:false}],created_at:new Date().toISOString()
+    }),Date.now());
+    const deliveryId=randomUUID();
+    db.prepare("INSERT INTO outbox(id,event_id,channel_id,next_attempt,payload) VALUES(?,?,?,?,?)")
+      .run(deliveryId,eventId,channelId,Date.now(),JSON.stringify({eventId}));
+    engine=new FusionEngine(db,{dataDir:dir,publicUrl:"http://localhost:8127",channelKey:key,
+      browser:{close(){}},sendNotification:async(_provider,_configuration,event)=>{sendCalls.push(event);}});
+    await engine.deliverPending();
+    let row=db.prepare("SELECT * FROM outbox WHERE id=?").get(deliveryId);
+    assert.equal(row.status,"sent");
+    assert.equal(row.attempts,1);
+    assert.ok(JSON.parse(row.payload).delivered_at);
+    assert.equal(JSON.parse(row.payload).last_error,null);
+    assert.equal(sendCalls.length,1);
+    db.prepare("UPDATE outbox SET status='pending',attempts=0,next_attempt=? WHERE id=?").run(Date.now(),deliveryId);
+    engine.sendNotification=async()=>{throw Error("secret server failure: token must not be stored");};
+    await engine.deliverPending();
+    row=db.prepare("SELECT * FROM outbox WHERE id=?").get(deliveryId);
+    assert.equal(row.status,"pending");
+    assert.equal(row.attempts,1);
+    assert.equal(JSON.parse(row.payload).last_error,"delivery_failed");
+    assert.equal(JSON.stringify(row).includes("secret server failure"),false);
+  } finally {engine?.close();db?.close();rmSync(dir,{recursive:true,force:true});}
+});
