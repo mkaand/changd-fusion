@@ -46,13 +46,13 @@ These steps are examples; choose generic host paths appropriate for your install
 
 ## Update and failure behavior
 
-Each run uses `flock`, checks disk and anonymous registry access, resolves the `master` digest, verifies immutable image metadata and current GitHub master SHA, and compares it with atomic local state. The same digest is a silent no-op. Before replacement it checks SQLite integrity/schema plus durable user, monitor, capture, event and channel counts. Compose is called only as:
+Each run uses `flock`, checks disk and anonymous registry access, resolves the `master` digest, verifies immutable image metadata and current GitHub master SHA, and compares it with atomic local state. The same digest is a silent no-op. Before and after replacement it checks SQLite integrity and schema compatibility. Record counts are deliberately not deployment gates because users, monitors, captures, events and channels may change naturally while an update runs. Compose is called only as:
 
 ```text
 up -d --no-build --no-deps fusion
 ```
 
-The existing named `/data` volume and all unrelated services remain untouched. Success requires Docker HEALTHY, the loopback `/api/v1/health` response, the expected digest, the unchanged runtime contract and nondecreasing durable record counts. A failure quarantines that digest and makes one rollback attempt to the last healthy digest. A failed rollback records `recovery_required`; stop the timer and recover manually from the preserved image/state and offline backup. Schema-label mismatch always requires a separately reviewed manual migration.
+The existing named `/data` volume and all unrelated services remain untouched. Success requires Docker HEALTHY, the loopback `/api/v1/health` response, the expected digest, the unchanged runtime contract, SQLite integrity and the compatible schema. A failure quarantines that digest, removes its image only when no container uses it, and makes one rollback attempt to the last healthy digest. A failed rollback records `recovery_required`; every subsequent automatic update is blocked. Stop the timer, recover manually from the preserved image/state and offline backup, then run `simple-updater.sh recover-state`. That explicit command revalidates the runtime contract, immutable running image, health, SQLite integrity and schema before atomically clearing the lock. Schema-label mismatch always requires a separately reviewed manual migration.
 
 After success, cleanup considers only old `ghcr.io/mkaand/changd-fusion` digest references, retains current and rollback digests, and skips every image ID used by any container. No prune command is used.
 

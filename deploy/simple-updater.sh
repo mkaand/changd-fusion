@@ -153,18 +153,15 @@ sqlite_baseline() {
     const scalar=(sql)=>db.prepare(sql).get();
     const integrity=scalar("PRAGMA integrity_check").integrity_check;
     const schema=scalar("SELECT value FROM metadata WHERE key=\"schema_version\"")?.value;
-    const counts={};
-    for(const table of ["users","monitors","captures","events","channels"])
-      counts[table]=scalar(`SELECT count(*) n FROM ${table}`).n;
-    console.log(JSON.stringify({integrity,schema,counts}));db.close();
-  ' | jq -ce '.integrity == "ok" and (.schema | test("^[0-9]+$")) and .'
+    console.log(JSON.stringify({integrity,schema}));db.close();
+  ' | jq -ce 'if (.integrity == "ok" and (.schema | test("^[0-9]+$"))) then . else error("invalid_sqlite_state") end'
 }
 
-baseline_preserved() {
+sqlite_compatible() {
   local before="$1" after="$2"
   jq -en --argjson before "$before" --argjson after "$after" '
-    $after.integrity == "ok" and $after.schema == $before.schema and
-    all($before.counts | keys[]; $after.counts[.] >= $before.counts[.])
+    $before.integrity == "ok" and $after.integrity == "ok" and
+    ($before.schema | test("^[0-9]+$")) and $after.schema == $before.schema
   ' >/dev/null
 }
 
@@ -200,13 +197,16 @@ image_metadata() {
   [[ "$digest" =~ $DIGEST_PATTERN ]] || die "invalid_image_digest" || return
   docker image inspect "$IMAGE_REPOSITORY@$digest" | jq -ce --arg digest "$digest" --arg source "$SOURCE_REPOSITORY" '
     .[0] as $i |
-    ($i.RepoDigests | any(. == ("ghcr.io/mkaand/changd-fusion@" + $digest))) and
-    $i.Os == "linux" and $i.Architecture == "amd64" and
-    $i.Config.Labels["org.opencontainers.image.source"] == $source and
-    ($i.Config.Labels["org.opencontainers.image.revision"] | test("^[0-9a-f]{40}$")) and
-    ($i.Config.Labels["org.opencontainers.image.version"] | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) and
-    ($i.Config.Labels["io.changd-fusion.sqlite-schema"] | test("^[0-9]+$")) and
-    {digest:$digest,revision:$i.Config.Labels["org.opencontainers.image.revision"],version:$i.Config.Labels["org.opencontainers.image.version"],schema:$i.Config.Labels["io.changd-fusion.sqlite-schema"]}
+    if (
+      ($i.RepoDigests | any(. == ("ghcr.io/mkaand/changd-fusion@" + $digest))) and
+      $i.Os == "linux" and $i.Architecture == "amd64" and
+      $i.Config.Labels["org.opencontainers.image.source"] == $source and
+      ($i.Config.Labels["org.opencontainers.image.revision"] | test("^[0-9a-f]{40}$")) and
+      ($i.Config.Labels["org.opencontainers.image.version"] | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) and
+      ($i.Config.Labels["io.changd-fusion.sqlite-schema"] | test("^[0-9]+$"))
+    ) then
+      {digest:$digest,revision:$i.Config.Labels["org.opencontainers.image.revision"],version:$i.Config.Labels["org.opencontainers.image.version"],schema:$i.Config.Labels["io.changd-fusion.sqlite-schema"]}
+    else error("invalid_image_metadata") end
   '
 }
 
@@ -247,10 +247,22 @@ load_state() {
   STATE_FILE="$FUSION_STATE_DIR/state.json"
   [[ -f "$STATE_FILE" ]] || die "bootstrap_required" || return
   STATE="$(jq -ce '
-    .format == 1 and (.healthy_digest | test("^sha256:[0-9a-f]{64}$")) and
-    (.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) and
-    (.failed_digests | type == "array") and .
+    if (
+      .format == 1 and (.healthy_digest | test("^sha256:[0-9a-f]{64}$")) and
+      (.version | test("^[0-9]+\\.[0-9]+\\.[0-9]+$")) and
+      (.failed_digests | type == "array") and
+      all(.failed_digests[]; test("^sha256:[0-9a-f]{64}$")) and
+      (.previous_digest == null or (.previous_digest | test("^sha256:[0-9a-f]{64}$"))) and
+      (.baseline | type == "object") and .baseline.integrity == "ok" and
+      (.baseline.schema | test("^[0-9]+$")) and
+      ((.recovery_required // false) | type == "boolean")
+    ) then . else error("invalid_updater_state") end
   ' "$STATE_FILE")" || die "invalid_updater_state"
+}
+
+assert_state_deployable() {
+  jq -e '(.recovery_required // false) == false' <<<"$STATE" >/dev/null \
+    || die "recovery_required_manual_validation_required"
 }
 
 write_state() { atomic_write "$STATE_FILE" 600 <<<"$1"; }
@@ -268,6 +280,30 @@ bootstrap_state() {
     '{format:1,healthy_digest:$digest,previous_digest:null,version:$version,failed_digests:[],baseline:$baseline,updated_at:(now|todateiso8601)}')"
   write_state "$state"
   log "Initial immutable deployment state recorded; the timer remains disabled."
+}
+
+recover_state() {
+  verify_contract || return
+  load_state || return
+  jq -e '.recovery_required == true' <<<"$STATE" >/dev/null \
+    || die "recovery_state_not_set" || return
+  local digest metadata sqlite previous state
+  digest="$(current_digest)" || return
+  [[ "$digest" =~ $DIGEST_PATTERN ]] || die "current_image_is_not_immutable_ghcr_digest" || return
+  metadata="$(image_metadata "$digest")" || return
+  sqlite="$(sqlite_baseline)" || return
+  [[ "$(jq -r .schema <<<"$metadata")" == "$(jq -r .schema <<<"$sqlite")" ]] \
+    || die "recovered_image_schema_mismatch" || return
+  wait_healthy "$digest" || die "recovered_deployment_unhealthy" || return
+  previous="$(jq -c --arg digest "$digest" 'if .healthy_digest == $digest then .previous_digest else .healthy_digest end' <<<"$STATE")"
+  state="$(jq --arg digest "$digest" --arg version "$(jq -r .version <<<"$metadata")" \
+    --argjson sqlite "$sqlite" --argjson previous "$previous" '
+      .healthy_digest=$digest | .previous_digest=$previous |
+      .version=$version | .baseline=$sqlite | del(.recovery_required) |
+      .recovered_at=(now|todateiso8601) | .updated_at=(now|todateiso8601)
+    ' <<<"$STATE")"
+  write_state "$state"
+  log "Recovery state validated and cleared; review before restarting the timer."
 }
 
 apply_digest() {
@@ -311,6 +347,20 @@ cleanup_old_images() {
   done < <(docker image ls "$IMAGE_REPOSITORY" --digests --no-trunc --format '{{.Digest}} {{.ID}}')
 }
 
+remove_unused_digest() {
+  local digest="$1" protect_current="$2" protect_rollback="$3" image_id container
+  [[ "$digest" =~ $DIGEST_PATTERN ]] || return 1
+  [[ "$digest" == "$protect_current" || "$digest" == "$protect_rollback" ]] && return 0
+  image_id="$(docker image inspect --format '{{.Id}}' "$IMAGE_REPOSITORY@$digest" 2>/dev/null || true)"
+  [[ -n "$image_id" ]] || return 0
+  while read -r container; do
+    [[ -z "$container" ]] && continue
+    if [[ "$(docker inspect --format '{{.Image}}' "$container")" == "$image_id" ]]; then return 0; fi
+  done < <(docker ps -aq)
+  docker image rm "$IMAGE_REPOSITORY@$digest" >/dev/null \
+    || log "Failed candidate image cleanup skipped for $digest"
+}
+
 version_is_older() {
   local candidate="$1" current="$2"
   [[ "$candidate" != "$current" && "$(printf '%s\n%s\n' "$candidate" "$current" | sort -V | head -1)" == "$candidate" ]]
@@ -321,7 +371,8 @@ run_update() {
   verify_contract || return
   check_disk || return
   load_state || return
-  local candidate current previous before metadata master candidate_version candidate_schema current_schema after new_state rollback_ok=0
+  assert_state_deployable || return
+  local candidate current previous rollback_target before metadata master candidate_version candidate_schema current_schema after new_state rollback_ok=0
   candidate="$(discover_digest)" || return
   current="$(jq -r .healthy_digest <<<"$STATE")"
   [[ "$(current_digest)" == "$current" ]] || die "recorded_and_running_digest_mismatch" || return
@@ -330,22 +381,35 @@ run_update() {
     || die "candidate_previously_failed" || return
   check_disk || return
   docker pull "$IMAGE_REPOSITORY@$candidate" >/dev/null || die "immutable_image_pull_failed" || return
-  metadata="$(image_metadata "$candidate")" || return
-  master="$(trusted_master_sha)" || return
-  [[ "$(jq -r .revision <<<"$metadata")" == "$master" ]] || die "image_revision_is_not_current_master" || return
+  rollback_target="$(jq -r '.previous_digest // ""' <<<"$STATE")"
+  metadata="$(image_metadata "$candidate")" \
+    || { remove_unused_digest "$candidate" "$current" "$rollback_target"; return 1; }
+  master="$(trusted_master_sha)" \
+    || { remove_unused_digest "$candidate" "$current" "$rollback_target"; return 1; }
+  if [[ "$(jq -r .revision <<<"$metadata")" != "$master" ]]; then
+    remove_unused_digest "$candidate" "$current" "$rollback_target"
+    die "image_revision_is_not_current_master"
+    return 1
+  fi
   candidate_version="$(jq -r .version <<<"$metadata")"
   if version_is_older "$candidate_version" "$(jq -r .version <<<"$STATE")"; then
+    remove_unused_digest "$candidate" "$current" "$rollback_target"
     die "version_downgrade_rejected"
     return 1
   fi
-  before="$(sqlite_baseline)" || return
+  before="$(sqlite_baseline)" \
+    || { remove_unused_digest "$candidate" "$current" "$rollback_target"; return 1; }
   current_schema="$(jq -r .schema <<<"$before")"
   candidate_schema="$(jq -r .schema <<<"$metadata")"
-  [[ "$candidate_schema" == "$current_schema" ]] || die "sqlite_schema_change_requires_manual_upgrade" || return
+  if [[ "$candidate_schema" != "$current_schema" ]]; then
+    remove_unused_digest "$candidate" "$current" "$rollback_target"
+    die "sqlite_schema_change_requires_manual_upgrade"
+    return 1
+  fi
   previous="$current"
   if apply_digest "$candidate" && wait_healthy "$candidate" && verify_contract; then
     after="$(sqlite_baseline)" || true
-    if [[ -n "$after" ]] && baseline_preserved "$before" "$after"; then
+    if [[ -n "$after" ]] && sqlite_compatible "$before" "$after"; then
       new_state="$(jq --arg digest "$candidate" --arg previous "$previous" --arg version "$candidate_version" --argjson baseline "$after" \
         '.previous_digest=$previous | .healthy_digest=$digest | .version=$version | .baseline=$baseline | .updated_at=(now|todateiso8601)' <<<"$STATE")"
       write_state "$new_state"
@@ -359,8 +423,9 @@ run_update() {
   write_state "$new_state"
   if apply_digest "$previous" && wait_healthy "$previous" && verify_contract; then
     after="$(sqlite_baseline)" || true
-    [[ -n "$after" ]] && baseline_preserved "$before" "$after" && rollback_ok=1
+    [[ -n "$after" ]] && sqlite_compatible "$before" "$after" && rollback_ok=1
   fi
+  remove_unused_digest "$candidate" "$previous" "$rollback_target"
   if (( rollback_ok == 1 )); then
     notify FAILURE "candidate ${candidate:0:19} rejected; previous image restored"
     die "deployment_failed_rollback_succeeded"
@@ -381,6 +446,7 @@ main() {
   case "${1:-update}" in
     snapshot-contract) snapshot_contract ;;
     bootstrap-state) bootstrap_state ;;
+    recover-state) recover_state ;;
     verify) compose_preflight && verify_contract && load_state && sqlite_baseline >/dev/null ;;
     update) run_update ;;
     *) die "unknown_command" ;;
