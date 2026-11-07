@@ -148,3 +148,54 @@ test("notification mute, duplicate, cooldown and digest use one SQLite transacti
     assert.equal(delivered.find(e=>e.eventType==="digest")?.digestCount,2);
   }finally{engine?.close();db?.close();rmSync(dir,{recursive:true,force:true});}
 });
+
+
+test("migrated Telegram channel requires a successful test and rejects stale credential verification",async()=>{
+  const dir=mkdtempSync(path.join(tmpdir(),"fusion-simple-telegram-gate-"));let db,engine;
+  try{
+    db=openSimpleDatabase(path.join(dir,"fusion.sqlite"));
+    const {encrypt}=await import("../server/dist/crypto.js");
+    const key="d".repeat(64),userId=randomUUID(),id=randomUUID(),channelId=randomUUID();
+    const configA=encrypt({token:"123456:"+ "a".repeat(25),chat_id:"1234",timezone:"UTC"},key);
+    const configB=encrypt({token:"123456:"+ "b".repeat(25),chat_id:"1234",timezone:"UTC"},key);
+    db.prepare("INSERT INTO users(id,email,password_hash,payload) VALUES(?,?,?,?)")
+      .run(userId,"gate@example.com","hash",JSON.stringify({user_id:userId,email:"gate@example.com",user_type:2}));
+    saveMonitor(db,{id,user_id:userId,name:"Gate test",url:"https://example.com",kind:"api",enabled:true,paused:false,next_run:new Date(Date.now()+600000).toISOString()},userId);
+    const channel={id:channelId,user_id:userId,name:"Imported Telegram",provider:"telegram",enabled:true,
+      config:{encrypted:configA,preview_test_required:true,preview_verified:false}};
+    const saveChannel=()=>db.prepare("UPDATE channels SET payload=? WHERE id=?").run(JSON.stringify(channel),channelId);
+    db.prepare("INSERT INTO channels(id,user_id,payload) VALUES(?,?,?)").run(channelId,userId,JSON.stringify(channel));
+    const addDelivery=status=>{
+      const eventId=randomUUID(),deliveryId=randomUUID();
+      db.prepare("INSERT INTO events(id,monitor_id,status,payload,created_at) VALUES(?,?,?,?,?)")
+        .run(eventId,id,status,JSON.stringify({id:eventId,monitor_id:id,status,created_at:new Date().toISOString()}),Date.now());
+      db.prepare("INSERT INTO outbox(id,event_id,channel_id,next_attempt,payload) VALUES(?,?,?,?,?)")
+        .run(deliveryId,eventId,channelId,Date.now(),JSON.stringify({eventId}));
+      return deliveryId;
+    };
+    const sent=[];
+    engine=new FusionEngine(db,{dataDir:dir,channelKey:key,browser:{close(){}},sendNotification:async(_p,_c,e)=>sent.push(e.eventType)});
+    const blocked=addDelivery("changed");
+    await engine.deliverPending();
+    let row=db.prepare("SELECT * FROM outbox WHERE id=?").get(blocked);
+    assert.equal(row.status,"failed");
+    assert.equal(row.attempts,5,"unverified channel must not auto-retry an alert");
+    assert.equal(JSON.parse(row.payload).last_error,"test_notification_required");
+    assert.deepEqual(sent,[]);
+    const testId=addDelivery("test");
+    await engine.deliverPending();
+    assert.equal(db.prepare("SELECT status FROM outbox WHERE id=?").get(testId).status,"sent");
+    assert.equal(JSON.parse(db.prepare("SELECT payload FROM channels WHERE id=?").get(channelId).payload).config.preview_verified,true);
+    db.prepare("UPDATE outbox SET status='pending',attempts=0,next_attempt=? WHERE id=?").run(Date.now(),blocked);
+    await engine.deliverPending();
+    assert.equal(db.prepare("SELECT status FROM outbox WHERE id=?").get(blocked).status,"sent");
+    assert.deepEqual(sent,["test","changed"]);
+    // Updating credentials during a test must not authorize the replacement credentials.
+    channel.config.preview_verified=false;saveChannel();
+    engine.sendNotification=async()=>{channel.config.encrypted=configB;saveChannel();};
+    const staleTest=addDelivery("test");
+    await engine.deliverPending();
+    assert.equal(db.prepare("SELECT status FROM outbox WHERE id=?").get(staleTest).status,"sent");
+    assert.equal(JSON.parse(db.prepare("SELECT payload FROM channels WHERE id=?").get(channelId).payload).config.preview_verified,false);
+  }finally{engine?.close();db?.close();rmSync(dir,{recursive:true,force:true});}
+});
