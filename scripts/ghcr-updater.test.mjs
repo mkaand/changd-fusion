@@ -120,6 +120,31 @@ test("selects the newest of two sequential verified releases independent of API 
   }
 });
 
+test("operator adoption discovers exact historical signed source without substituting newest", async () => {
+  const older = release(), newer = release({ sourceSha: newerSource, version: "0.3.4", id: 18,
+    apiDigest: "e".repeat(64), uiDigest: "f".repeat(64) });
+  const calls = [];
+  const selected = await discoverRelease(discoveryClient([newer, older], { calls }), {
+    repository, installedSourceSha: s,
+  });
+  assert.equal(selected.manifest.source_sha, s);
+  assert.equal(selected.manifest.api_image, older.manifest.api_image);
+  assert.deepEqual(calls, ["runs", "manifest:17", `ci:${s}`, `ancestry:${s}`, `attestation:${s}`]);
+  assert.equal(await discoverRelease(discoveryClient([newer]), {
+    repository, installedSourceSha: s,
+  }), null);
+  await assert.rejects(
+    discoverRelease(discoveryClient([older]), { repository, installedSourceSha: "wrong" }),
+    /invalid_installed_source/,
+  );
+  await assert.rejects(
+    discoverRelease(discoveryClient([{
+      ...older, publisher: { ...older.publisher, attested: false },
+    }]), { repository, installedSourceSha: s }),
+    /publisher_provenance/,
+  );
+});
+
 test("selects newest ancestor-ordered same-version release and rejects non-ancestral collisions", async () => {
   const older = release(), newerSameVersion = release({
     sourceSha: newerSource, id: 18, apiDigest: "e".repeat(64), uiDigest: "f".repeat(64),

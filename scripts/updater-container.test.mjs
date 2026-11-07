@@ -22,6 +22,9 @@ test("host launcher pins the image, mounts only explicit paths and acknowledges 
   assert.match(launcher, /--read-only/);
   assert.match(launcher, /--cap-drop ALL/);
   assert.match(launcher, /--security-opt no-new-privileges:true/);
+  assert.match(launcher, /adopt_mode=/);
+  assert.match(launcher, /--adopt-installed/);
+  assert.match(launcher, /invalid_argument/);
   assert.match(launcher, /--user 10001:10001/);
   assert.match(launcher, /src=\/var\/run\/docker\.sock,dst=\/var\/run\/docker\.sock/);
   assert.doesNotMatch(launcher, /--privileged|docker system prune|docker image prune/);

@@ -134,6 +134,23 @@ export class DeploymentStateStore {
     return state;
   }
 
+  // Explicit operator adoption of a separately verified, already-running release.
+  // This records observation as IDLE, never fabricates an updater SUCCESS.
+  adoptVerifiedInstalled(expected, release) {
+    const state = this.load();
+    if (state.sequence !== expected?.sequence || state.status !== "FAILED"
+      || state.failure?.code !== "BOOTSTRAP_REQUIRED" || state.failure?.stage !== "bootstrap"
+      || state.current !== null || state.previous !== null || state.candidate !== null
+      || state.operation_id !== null || state.maintenance_released !== true
+      || !validRelease(release) || release === null) {
+      throw Error("adoption_state_unsafe");
+    }
+    return this.write({
+      ...state, status: "IDLE", current: structuredClone(release),
+      failure: null, operation_id: null, candidate: null,
+    });
+  }
+
   markNotification(state, operationId, error = null) {
     return this.write({ ...state, notification: { ...state.notification,
       success_operation: error ? state.notification?.success_operation ?? null : operationId, error } });

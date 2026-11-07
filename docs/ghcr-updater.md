@@ -380,6 +380,48 @@ the timer, preserve state/database/captures, inspect journal and immutable image
 identities, and follow a separately approved manual recovery; do not edit the
 state file or clear the maintenance record to force progress.
 
+## Operator-only adoption of an already-deployed release
+
+A manual, externally authorized deployment may leave updater state at
+`FAILED/BOOTSTRAP_REQUIRED` with `current=null` even after the bug that caused
+the failure has been fixed. A normal `no_update` or `replay` exit code **does not**
+constitute a verified updater dry-run or persist the installed release.
+
+After the operator independently verifies backups, runtime health, and that the
+updater timer is **disabled**, use the separately approved, one-time
+`--adopt-installed` operation from the current checked-in host launcher:
+
+```sh
+sudo /usr/local/sbin/changd-fusion-updater-container --adopt-installed "$INSTALLED_SOURCE_SHA"
+```
+
+Set `INSTALLED_SOURCE_SHA` to the exact 40-character source SHA from the verified live API/Worker release (not the newer updater build SHA). The operation locates that specific signed historical publisher manifest even when newer releases exist; it never substitutes the latest release.
+
+Use an immutable, verified updater image that implements this operation. The
+protected updater environment **must** retain `FUSION_UPDATER_DRY_RUN=1`; this
+manual flag is not accepted from the normal systemd timer command. It does not
+pull/recreate application containers, modify the database, clear any maintenance
+barrier or enable the timer. It only writes the updater's protected state atomically
+after checking all of the following against the signed current GitHub release:
+- State is the specific pre-mutation `FAILED/BOOTSTRAP_REQUIRED` condition with
+  no prior/candidate/current release, operation or unreleased maintenance barrier;
+  interrupted and `RECOVERY_REQUIRED` states are never eligible.
+- Trusted exact-SHA CI, GHCR attestation and immutable API/UI image digests match
+  the observed running API/Worker/UI, Compose ownership/security/port contracts
+  and healthy API/Worker/DB containers.
+- Existing migration 017/018 bootstrap marker belongs to the configured project
+  (its original source SHA is intentionally preserved); installed migration
+  checksums exactly match the signed release manifest.
+- Live deployment health confirms the same source/version and **no active**
+  maintenance record. Runtime identity is checked again before the atomic write.
+
+The observed release is registered as `IDLE` plus `current=<verified release>`,
+**not** a fabricated `SUCCESS` deployment. On any mismatch, stop with state
+unchanged; never edit `deployment-state.json` manually. Review the resulting
+state and independently authorize the next candidate dry-run and, only after
+functional acceptance, timer activation. Future GitHub releases continue to use
+the normal attested updater path without repeated manual adoption.
+
 ## Remaining release acceptance
 
 Fixture tests exercise the complete updater control flow, but the first approved

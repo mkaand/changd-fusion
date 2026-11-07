@@ -43,6 +43,7 @@ export function deploymentPlan(release, config) {
   return { project:config.project, services:["api","worker","ui"], images:{ api:release.api_image, ui:release.ui_image }, dryRun:Boolean(config.dryRun) };
 }
 export async function discoverRelease(client, trusted) {
+  if (trusted.installedSourceSha !== undefined && !sha.test(trusted.installedSourceSha)) throw Error("invalid_installed_source");
   const runs = await client.runs({ workflow: "ghcr-release.yml", repository: trusted.repository, timeoutMs: 10_000 });
   if (!Array.isArray(runs) || runs.some((r) => r.nextPage)) throw Error("ambiguous_release_listing");
   const candidates = runs.filter((r) => r.name === "GHCR immutable release"
@@ -55,7 +56,8 @@ export async function discoverRelease(client, trusted) {
     && Number.isInteger(r.run_attempt)
     && r.run_attempt >= 1
     && sha.test(r.head_sha ?? "")
-    && r.repository === trusted.repository);
+    && r.repository === trusted.repository
+    && (trusted.installedSourceSha === undefined || r.head_sha === trusted.installedSourceSha));
   if (!candidates.length) return null;
   // Elect the newest successful trusted publisher run before checking CI.
   // Historical releases remain immutable evidence, but a later cancelled
