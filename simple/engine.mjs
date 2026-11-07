@@ -1,9 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { PNG } from "pngjs";
-import pixelmatch from "pixelmatch";
-import { diffWords } from "diff";
+import { compareText, compareKeywordPresence, compareVisual, normalizeText as existingNormalizeText } from "../server/dist/comparison.js";
 import { BrowserQueue } from "./browser-queue.mjs";
 import { getMonitor, transaction } from "./db.mjs";
 import { deliver, safeTextSummary } from "../server/dist/notifications.js";
@@ -12,31 +10,34 @@ import { openValues } from "../server/dist/vault.js";
 import { Storage } from "../server/dist/storage.js";
 
 export function normalizeText(value,monitor) {
-  let text=String(value??"");
-  for(const part of monitor.ignore_text??[]) if(typeof part==="string"&&part)text=text.split(part).join("");
-  if(monitor.normalize_whitespace!==false) text=text.replace(/\s+/g," ").trim();
-  if(monitor.ignore_case) text=text.toLocaleLowerCase();
-  return text;
+  return existingNormalizeText(String(value??""),{
+    ignore_text:monitor.ignore_text??[],normalize_whitespace:monitor.normalize_whitespace!==false,
+    ignore_case:!!monitor.ignore_case
+  });
 }
 export function compareCaptures(before,after,monitor,root) {
   const prior=normalizeText(before?.text_content,monitor),next=normalizeText(after.text,monitor);
-  const textChanged=!!before && monitor.text_enabled!==false && prior!==next;
-  const textDiff=textChanged?diffWords(prior,next).slice(0,100):[];
-  let visualChanged=false,visualPercent=null,dimensionChanged=false,diffImage=null;
-  if(before?.screenshot && after.screenshot && monitor.visual_enabled){
-    const a=PNG.sync.read(readFileSync(path.join(root,"artifacts",before.screenshot)));
-    const b=PNG.sync.read(readFileSync(path.join(root,"artifacts",after.screenshot)));
-    if(a.width!==b.width||a.height!==b.height){
-      visualChanged=true; dimensionChanged=true;
-    }else{
-      const output=new PNG({width:a.width,height:a.height});
-      const changed=pixelmatch(a.data,b.data,output.data,a.width,a.height,{threshold:Number(monitor.pixel_threshold??0.1)});
-      visualPercent=String(changed*100/(a.width*a.height));
-      visualChanged=Number(visualPercent)>Number(monitor.visual_threshold??0.35);
-      if(visualChanged) diffImage=PNG.sync.write(output);
-    }
-  }
-  return {textChanged,textDiff,visualChanged,visualPercent,dimensionChanged,diffImage};
+  const text=before&&monitor.text_enabled!==false
+    ? monitor.extraction_mode==="keyword_presence"&&monitor.keyword
+      ? compareKeywordPresence(prior,next,monitor.keyword)
+      : compareText(prior,next)
+    : {changed:false,parts:[]};
+  const visual=before?.screenshot&&after.screenshot&&monitor.visual_enabled
+    ? compareVisual(
+      readFileSync(path.join(root,"artifacts",before.screenshot)),
+      readFileSync(path.join(root,"artifacts",after.screenshot)),
+      String(monitor.visual_threshold??"0.35"),Number(monitor.pixel_threshold??0.1))
+    : null;
+  const httpStatusChanged=Boolean(before&&monitor.monitor_http_error_pages&&before.http_status!==after.http_status);
+  return {textChanged:text.changed,textDiff:text.parts.slice(0,100),
+    visualChanged:visual?.changed??false,visualPercent:visual?.percent??null,
+    dimensionChanged:visual?.dimensionChanged??false,diffImage:visual?.changed?visual?.diff??null:null,
+    beforeDimensions:visual?.beforeDimensions??null,afterDimensions:visual?.afterDimensions??null,
+    httpStatusChanged};
+}
+export function textDirectionMatches(parts,direction) {
+  if(!direction||direction==="both")return true;
+  return direction==="added"?parts.some(part=>part.added):parts.some(part=>part.removed);
 }
 
 export class FusionEngine {
@@ -134,10 +135,10 @@ export class FusionEngine {
     const afterId=randomUUID(),eventId=randomUUID(),now=Date.now(),first=!before;
     let diffName=null;
     if(comparison.diffImage)diffName=await this.storage.save(comparison.diffImage);
-    const status=first?"baseline":comparison.textChanged||comparison.visualChanged?"changed":"unchanged";
+    const status=first?"baseline":comparison.textChanged||comparison.visualChanged||comparison.httpStatusChanged?"changed":"unchanged";
     const event={id:eventId,monitor_id:m.id,status,
-      text_changed:comparison.textChanged,visual_changed:comparison.visualChanged,
-      visual_percent:comparison.visualPercent,dimension_changed:comparison.dimensionChanged,
+      text_changed:comparison.textChanged,visual_changed:comparison.visualChanged,http_status_changed:comparison.httpStatusChanged,
+      visual_percent:comparison.visualPercent,dimension_changed:comparison.dimensionChanged,before_dimensions:comparison.beforeDimensions,after_dimensions:comparison.afterDimensions,
       text_diff:comparison.textDiff,diff_screenshot:diffName,http_status:result.http_status,
       warning_code:result.warning??null,execution_ms:Date.now()-started,
       created_at:new Date(now).toISOString(),notification_state:"not_requested",
@@ -152,7 +153,7 @@ export class FusionEngine {
       payload.baseline_id=afterId;payload.latest_capture_id=afterId;payload.last_percent=comparison.visualPercent;
       this.db.prepare("UPDATE monitors SET payload=?,last_run=?,last_success=?,next_run=?,last_status=?,failure_count=0 WHERE id=?")
         .run(JSON.stringify(payload),now,now,now+delay,status==="changed"?"changed":"healthy",m.id);
-      if(status==="changed"&&m.notification_enabled!==false){
+      if(status==="changed"&&m.notification_enabled!==false&&(!comparison.textChanged||comparison.visualChanged||comparison.httpStatusChanged||textDirectionMatches(comparison.textDiff,m.text_direction))){
         const links=this.db.prepare("SELECT mc.channel_id FROM monitor_channels mc JOIN channels c ON mc.channel_id=c.id WHERE mc.monitor_id=?").all(m.id);
         for(const {channel_id} of links)this.db.prepare("INSERT OR IGNORE INTO outbox(id,event_id,channel_id,next_attempt,payload) VALUES(?,?,?,?,?)")
           .run(randomUUID(),eventId,channel_id,now,JSON.stringify({eventId}));
@@ -184,6 +185,8 @@ export class FusionEngine {
         const after=e.after_id?this.db.prepare("SELECT screenshot FROM captures WHERE id=?").get(e.after_id):null;
         const images=[before?.screenshot,after?.screenshot,e.diff_screenshot].filter(Boolean);
         const details={id:e.id,name:m.name,monitorId:m.id,textChanged:e.text_changed,visualChanged:e.visual_changed,
+          dimensionChanged:e.dimension_changed,beforeDimensions:e.before_dimensions,afterDimensions:e.after_dimensions,
+          httpStatus:e.http_status,previousHttpStatus:e.before_id?this.db.prepare("SELECT http_status FROM captures WHERE id=?").get(e.before_id)?.http_status:null,httpStatusChanged:e.http_status_changed,
           percent:e.visual_percent,textSummary:safeTextSummary(e.text_diff??[]),
           link:new URL("/jobs/"+m.id,this.publicUrl).href,images,
           checkedAt:e.created_at,eventType:e.status};
