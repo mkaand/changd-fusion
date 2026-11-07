@@ -42,7 +42,7 @@ export function compareCaptures(before,after,monitor,root) {
 export class FusionEngine {
   constructor(db,opts={}) {
     this.db=db;this.dataDir=opts.dataDir;this.publicUrl=opts.publicUrl??"http://127.0.0.1:3000";
-    this.channelKey=opts.channelKey;this.browser=new BrowserQueue();
+    this.channelKey=opts.channelKey;this.browser=opts.browser??new BrowserQueue();
     this.manual=[];this.manualStatus=new Map();this.working=false;this.closed=false;this.interval=null;
     this.storage=new Storage(path.join(this.dataDir,"artifacts"));
   }
