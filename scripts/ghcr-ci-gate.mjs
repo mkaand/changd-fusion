@@ -17,7 +17,7 @@ function newestFirst(runs) {
 export function ciEvidenceAtPublication(runsDocument, sourceSha, publishedAt) {
   if (!/^[0-9a-f]{40}$/.test(sourceSha)
     || typeof publishedAt !== "string"
-    || !/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}Z$/.test(publishedAt)
+    || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(publishedAt)
     || !Number.isFinite(Date.parse(publishedAt))) throw Error("invalid_historical_ci_scope");
   const all = runsDocument?.workflow_runs;
   if (!Array.isArray(all) || runsDocument.total_count !== all.length)
