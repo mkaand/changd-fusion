@@ -20,6 +20,29 @@ export class BrowserQueue {
     },1200);
     hard.unref();child.once("exit",()=>clearTimeout(hard));
   }
+  async #fenceProcessGroup(state){
+    // child exit alone does not prove a Playwright/Chromium descendant exited.
+    // The subprocess was spawned detached, so its PID is the dedicated PGID.
+    const pgid=state.child.pid;
+    if(!pgid||!Number.isSafeInteger(pgid))return;
+    const alive=()=>{
+      try{process.kill(-pgid,0);return true;}
+      catch(error){if(error?.code==="ESRCH")return false;return true;}
+    };
+    if(!alive())return;
+    try{process.kill(-pgid,"SIGTERM");}catch{}
+    await sleep(150);
+    if(!alive())return;
+    try{process.kill(-pgid,"SIGKILL");}catch{}
+    const deadline=Date.now()+2000;
+    while(alive()&&Date.now()<deadline)await sleep(50);
+    if(alive()){
+      // Fail closed via container restart; never allow another Chromium while
+      // the old process tree is not conclusively fenced.
+      console.error(JSON.stringify({code:"capture_process_group_fencing_failed"}));
+      process.exit(1);
+    }
+  }
   async capture(monitor,dataDir,limits={}){
     if(this.#closed)throw Error("queue_closed");
     if(this.#preview||this.#waiting||this.#running)return {skipped:true};
@@ -50,8 +73,10 @@ export class BrowserQueue {
           setTimeout(()=>this.#terminate(state),1000).unref();
         });
         child.once("exit",()=>{
-          clearTimeout(timer);clearTimeout(stuck);
-          resolve(state.cancelled?{skipped:true}:failed?{failed:true,code:failed}:output??{failed:true,code:"capture_process_exit"});
+          void this.#fenceProcessGroup(state).then(()=>{
+            clearTimeout(timer);clearTimeout(stuck);
+            resolve(state.cancelled?{skipped:true}:failed?{failed:true,code:failed}:output??{failed:true,code:"capture_process_exit"});
+          }).catch(()=>process.exit(1));
         });
         child.once("error",()=>{
           failed="capture_spawn_failed";
