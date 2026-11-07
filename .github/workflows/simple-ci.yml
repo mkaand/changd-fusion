@@ -35,3 +35,21 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Build actual single-service image
         run: docker compose -f compose.simple.yml build fusion
+      - name: Smoke test real container, SQLite and first administrator setup
+        shell: bash
+        run: |
+          set -euo pipefail
+          trap 'docker compose -f compose.simple.yml down -v --remove-orphans >/dev/null 2>&1 || :' EXIT
+          docker compose -f compose.simple.yml up -d --no-build fusion
+          ready=0
+          for _ in $(seq 1 45); do
+            if curl --fail --silent http://127.0.0.1:8127/api/v1/health | jq -e '.status=="ok" and .store=="sqlite"' >/dev/null; then ready=1; break; fi
+            sleep 2
+          done
+          if [ "$ready" != 1 ]; then docker compose -f compose.simple.yml logs --tail=80 fusion; exit 1; fi
+          token="$(docker compose -f compose.simple.yml exec -T fusion cat /data/setup-token | tr -d '\r\n')"
+          body="$(jq -nc --arg token "$token" --arg email 'smoke@example.com' --arg password 'ValidTestPassword123!' '{token:$token,email:$email,password:$password}')"
+          curl --fail --silent --show-error -c /tmp/fusion-simple-cookies -H 'Content-Type: application/json' -d "$body" http://127.0.0.1:8127/api/v1/setup | jq -e '.ok==true'
+          unset token body
+          curl --fail --silent --show-error -b /tmp/fusion-simple-cookies http://127.0.0.1:8127/api/v1/users/me | jq -e '.email=="smoke@example.com"'
+          curl --fail --silent --show-error -b /tmp/fusion-simple-cookies http://127.0.0.1:8127/api/v1/jobs | jq -e 'length==0'
