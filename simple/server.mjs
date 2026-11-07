@@ -164,6 +164,55 @@ app.use(api,(req,res,next)=>{
   }catch{return res.status(401).json({error:"Authentication required"});}
 });
 app.get(api+"/users/me",(req,res)=>res.json({...req.user,public_access:!!req.publicAccess}));
+// Protected account operations remain separate from ordinary workspace access.
+const securityGrants=new Map();
+function requireSecurity(req,res,next){
+  const token=cookie(req,"fusion_security");
+  const grant=token?securityGrants.get(sha(token)):undefined;
+  if(!grant||grant.user!==req.user.user_id||grant.session!==req.sessionId||grant.expires<now())
+    return res.status(403).json({error:"Account security verification required"});
+  next();
+}
+app.get(api+"/users",requireSecurity,(req,res)=>{
+  const records=db.prepare("SELECT id,email,payload FROM users ORDER BY email").all();
+  res.json(records.map(row=>{const p=JSON.parse(row.payload);return {user_id:row.id,email:row.email,firstname:p.firstname??"",lastname:p.lastname??"",status:p.status??1};}));
+});
+app.post(api+"/security/verify",safe(async(req,res)=>{
+  const email=String(req.body?.email??"").toLowerCase(),password=String(req.body?.password??"");
+  const row=db.prepare("SELECT * FROM users WHERE id=?").get(req.user.user_id);
+  if(!row||email!==row.email.toLowerCase()||!(await compare(password,row.password_hash)))
+    throw replyError(401,"Invalid email or password");
+  const token=randomBytes(32).toString("base64url");
+  securityGrants.set(sha(token),{user:row.id,session:req.sessionId,expires:now()+600000});
+  res.cookie("fusion_security",token,{...authCookies,maxAge:600000});res.json({ok:true});
+}));
+app.post(api+"/security/leave",(req,res)=>{
+  const token=cookie(req,"fusion_security");if(token)securityGrants.delete(sha(token));
+  res.clearCookie("fusion_security",{path:"/"});res.json({ok:true});
+});
+app.post(api+"/users/changepassword",requireSecurity,safe(async(req,res)=>{
+  const value=req.body?.password;
+  if(typeof value!=="string"||value.length<12||value.length>72||Buffer.byteLength(value,"utf8")>72)
+    throw replyError(422,"Invalid new password");
+  const record=db.prepare("SELECT payload FROM users WHERE id=?").get(req.user.user_id);
+  const payload=JSON.parse(record.payload);
+  delete payload.password;
+  const updatedHash=await hash(value,12);
+  transaction(db,()=>{
+    db.prepare("UPDATE users SET password_hash=?,payload=? WHERE id=?")
+      .run(updatedHash,JSON.stringify(payload),req.user.user_id);
+    db.prepare("DELETE FROM sessions WHERE user_id=?").run(req.user.user_id);
+  });
+  res.clearCookie("fusion_session",{path:"/"});res.clearCookie("fusion_refresh",{path:"/"});
+  res.clearCookie("fusion_security",{path:"/"});res.json({ok:true});
+}));
+app.post(api+"/logout-all",requireSecurity,(req,res)=>{
+  db.prepare("DELETE FROM sessions WHERE user_id=?").run(req.user.user_id);
+  res.clearCookie("fusion_session",{path:"/"});res.clearCookie("fusion_refresh",{path:"/"});
+  res.clearCookie("fusion_security",{path:"/"});res.json({ok:true});
+});
+app.get(api+"/account/public-access",requireSecurity,(req,res)=>res.json({public_enabled:false,owner_user_id:null}));
+app.put(api+"/account/public-access",requireSecurity,(_req,res)=>res.status(501).json({error:"Public workspace mode is not yet supported in Simple preview"}));
 app.post(api+"/logout",(req,res)=>{
   db.prepare("DELETE FROM sessions WHERE id=?").run(req.sessionId);
   res.clearCookie("fusion_session",{path:"/"});res.clearCookie("fusion_refresh",{path:"/"});res.json({ok:true});
