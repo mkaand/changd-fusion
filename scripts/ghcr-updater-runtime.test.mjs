@@ -247,10 +247,13 @@ test("operation lock rejects a concurrent runtime before discovery or mutation",
 test("runtime configuration fails closed on ambiguous mutation mode, relative paths and foreign trust", () => {
   const valid = environment(directory);
   assert.equal(runtimeConfiguration(valid).dryRun, false);
+  assert.equal(runtimeConfiguration(valid).uiHostPort, 3000);
+  assert.equal(runtimeConfiguration({ ...valid, FUSION_UI_HOST_PORT: "8126" }).uiHostPort, 8126);
   for (const changed of [{ FUSION_UPDATER_DRY_RUN: "true" }, { FUSION_COMPOSE_ENV_FILE: "relative.env" },
     { FUSION_COMPOSE_BASE_FILE: "compose.yml" }, { FUSION_COMPOSE_OVERRIDE_FILE: "override.yml" },
-    { FUSION_TRUSTED_REPOSITORY: "foreign/project" }]) {
-    assert.throws(() => runtimeConfiguration({ ...valid, ...changed }), /invalid_updater_configuration/);
+    { FUSION_TRUSTED_REPOSITORY: "foreign/project" }, { FUSION_UI_HOST_PORT: "0" },
+    { FUSION_UI_HOST_PORT: "65536" }, { FUSION_UI_HOST_PORT: "3000/path" }]) {
+    assert.throws(() => runtimeConfiguration({ ...valid, ...changed }), /invalid_updater_configuration|invalid_ui_host_port/);
   }
 });
 

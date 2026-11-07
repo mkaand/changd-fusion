@@ -56,7 +56,7 @@ const app = (image) => ({
   networks: network(),
 });
 
-function composeModel() {
+function composeModel({ hostIp = "127.0.0.1", target = 8080, published = "3000" } = {}) {
   return {
     name: project,
     volumes: {
@@ -82,7 +82,7 @@ function composeModel() {
       ui: {
         image: release.ui_image,
         networks: network(),
-        ports: [{ host_ip: "127.0.0.1", target: 8080, published: "3000" }],
+        ports: [{ host_ip: hostIp, target, published }],
       },
       worker: {
         ...app(release.api_image),
@@ -98,7 +98,7 @@ function composeModel() {
 
 const id = (character) => character.repeat(64);
 
-function container(service, character, configFiles = `${baseFile},${overrideFile}`) {
+function container(service, character, configFiles = `${baseFile},${overrideFile}`, uiHostPort = "3000") {
   const images = { api: release.api_image, worker: release.api_image, ui: release.ui_image, db: dbImage };
   const application = ["api", "worker"].includes(service);
   const limits = service === "api"
@@ -126,6 +126,8 @@ function container(service, character, configFiles = `${baseFile},${overrideFile
       Privileged: false,
       CapAdd: null,
       SecurityOpt: ["seccomp=fixture"],
+    } : service === "ui" ? {
+      PortBindings: { "8080/tcp": [{ HostIp: "127.0.0.1", HostPort: uiHostPort }] },
     } : {},
     Mounts: service === "db"
       ? [{ Type: "volume", Name: `${project}_database`, Destination: "/var/lib/postgresql/data" }]
@@ -209,6 +211,60 @@ test("validates the effective Compose project, ownership and current runtime", a
   assert.equal(listing.options.env.DOCKER_HOST, undefined);
   assert.equal(listing.options.env.FUSION_GITHUB_TOKEN, undefined);
   assert.equal(listing.options.shell, false);
+  const config = fake.calls.find((call) => call.args.includes("config"));
+  assert.equal(config.options.env.FUSION_UI_HOST_PORT, "3000");
+});
+
+test("uses one trusted custom UI port for Compose validation, runtime binding and health", async () => {
+  let deploying = false;
+  const urls = [];
+  const model = composeModel({ published: "8126" });
+  const containers = [
+    container("api", "1"), container("db", "2"),
+    container("ui", "3", `${baseFile},${overrideFile}`, "8126"), container("worker", "4"),
+  ];
+  const fake = fakeSpawn({ model, containers,
+    health: () => healthSnapshot(deploying ? { state: "deploying", project } : null) });
+  const host = adapter(fake, {
+    uiHostPort: "8126",
+    fetchImpl: async (url) => {
+      urls.push(url);
+      return url.endsWith("/api/v1/health")
+        ? new Response(JSON.stringify({ status: "ok", version: "0.3.3", source_sha: source, maintenance: true }), { status: 200 })
+        : new Response("ui", { status: 200 });
+    },
+  });
+  await host.validateProject(release);
+  const baseline = await host.captureBaseline();
+  assert.equal(await host.safeDrain(project, source, authorization()), true);
+  deploying = true;
+  assert.equal(await host.verifyDeploymentHealth({ project, images: { api: release.api_image, ui: release.ui_image } }, baseline), true);
+  assert.deepEqual(urls.sort(), ["http://127.0.0.1:8126/", "http://127.0.0.1:8126/api/v1/health"]);
+  const config = fake.calls.find((call) => call.args.includes("config"));
+  assert.equal(config.options.env.FUSION_UI_HOST_PORT, "8126");
+});
+
+test("rejects UI port mismatch, public binding, wrong target, invalid port and wrong health URL", async () => {
+  for (const model of [
+    composeModel({ published: "3000" }),
+    composeModel({ published: "8126", hostIp: "0.0.0.0" }),
+    composeModel({ published: "8126", target: 8081 }),
+  ]) {
+    const host = adapter(fakeSpawn({ model }), { uiHostPort: 8126 });
+    assert.equal(await host.projectIsExpected(project, ["api", "worker", "ui"], release), false);
+    assert.equal(host.lastFailure, "compose_ui_port_contract");
+  }
+  const runtimeMismatch = defaultContainers().map((value) => value.Config.Labels["com.docker.compose.service"] === "ui"
+    ? container("ui", "5", `${baseFile},${overrideFile}`, "8126") : value);
+  const host = adapter(fakeSpawn({ containers: runtimeMismatch }));
+  assert.equal(await host.projectIsExpected(project, ["api", "worker", "ui"], release), false);
+  assert.equal(host.lastFailure, "container_ui_port_contract");
+  for (const invalid of [0, -1, 65536, 1.5, "080", "65536", "not-a-port"]) {
+    assert.throws(() => adapter(fakeSpawn(), { uiHostPort: invalid }), /invalid_ui_host_port/);
+  }
+  assert.throws(() => adapter(fakeSpawn(), {
+    uiHostPort: 8126, uiBaseUrl: "http://127.0.0.1:3000",
+  }), /invalid_health_endpoint/);
 });
 
 test("accepts the configured production compose basename and first-update ownership labels", async () => {

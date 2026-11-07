@@ -2,12 +2,24 @@ import assert from "node:assert/strict";
 import { randomBytes } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
+import net from "node:net";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import test from "node:test";
 import { createDockerComposeHostAdapter } from "./docker-compose-adapter.mjs";
 
 const enabled = process.env.RUN_DOCKER_ADAPTER_INTEGRATION === "1";
+
+async function availableLoopbackPort() {
+  const server = net.createServer();
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+  const port = server.address().port;
+  await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  return port;
+}
 
 function docker(args, cwd, timeout = 60_000) {
   const environment = { ...process.env };
@@ -33,6 +45,7 @@ test("isolated Compose project ownership is verified without touching unrelated 
   const baseFile = path.join(directory, "docker-compose.yml");
   const overrideFile = path.join(directory, "docker-compose.ghcr.yml");
   const image = "postgres:16.15-alpine";
+  const uiHostPort = await availableLoopbackPort();
   const seccomp = path.resolve("docker/chromium-seccomp.json");
   const applicationService = (cpus, memory, pids, shm) => `
     image: ${image}
@@ -62,6 +75,7 @@ services:
     image: ${image}
     entrypoint: ["sh", "-c", "sleep 300"]
     user: "65534:65534"
+    ports: ["127.0.0.1:${uiHostPort}:8080"]
     networks: [fusion]
 volumes: { database: {}, captures: {} }
 networks: { fusion: {} }
@@ -79,6 +93,7 @@ networks: { fusion: {} }
       project,
       projectDirectory: directory,
       composeFiles: [baseFile, overrideFile],
+      uiHostPort,
     });
     let containers;
     for (let attempt = 0; attempt < 20; attempt += 1) {

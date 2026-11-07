@@ -30,6 +30,18 @@ shell. The GHCR override uses Compose `!reset null` so `migrate`, API, Worker an
 UI cannot inherit local build definitions. Ordinary clone-based Compose usage is
 unchanged when the override is not supplied.
 
+`FUSION_UI_HOST_PORT` is the single trusted UI host-port contract for both
+ordinary Compose and the updater. It defaults to `3000` and accepts only a
+canonical integer TCP port from 1 through 65535. The binding remains
+`127.0.0.1:<configured>:8080`; neither a public host address nor another
+container target is supported. The updater supplies this value explicitly while
+rendering Compose, verifies that the running UI container has the same binding,
+and derives both post-deployment health URLs from it. A mismatch fails closed as
+`unsafe_project`; the updater never learns or trusts a port from a running
+container. Keep the same value in the protected application Compose environment
+and updater environment. This parameter is host configuration, not a repository
+default tied to a particular VPS.
+
 Before mutation, the adapter validates the effective JSON model, exact service
 set, immutable API/UI images, shared API/Worker/migration image, project-scoped
 network and persistent volume names, UI loopback binding, seccomp settings,
@@ -344,8 +356,13 @@ independently of pulling the new GHCR image.
      --project changd-fusion-v030 \
      --project-dir /opt/changd-fusion-v030 \
      --compose-file /opt/changd-fusion-v030/compose.yml \
-     --compose-env /opt/changd-fusion-v030/.env
+     --compose-env /opt/changd-fusion-v030/.env \
+     --ui-host-port 3000
    ```
+
+   Omit `--ui-host-port` for the same default. When the deployment uses another
+   loopback port, pass that reviewed value here and set the identical
+   `FUSION_UI_HOST_PORT` in the protected Compose environment before dry-run.
 
 4. Configure optional read-only GitHub/Telegram credentials in the mode-0600
    environment file. Keep `FUSION_UPDATER_DRY_RUN=1`, run

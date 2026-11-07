@@ -10,6 +10,7 @@ const CONTAINER_ID = /^[0-9a-f]{12,64}$/;
 const API_IMAGE = /^ghcr\.io\/mkaand\/changd-fusion-api@sha256:[0-9a-f]{64}$/;
 const UI_IMAGE = /^ghcr\.io\/mkaand\/changd-fusion-ui@sha256:[0-9a-f]{64}$/;
 const UNIX_SOCKET = /^unix:\/\/\/[^\0\r\n]+$/;
+const TCP_PORT = /^[1-9][0-9]{0,4}$/;
 const EXPECTED_SERVICES = ["api", "db", "migrate", "ui", "worker"];
 const RUNTIME_SERVICES = ["api", "db", "ui", "worker"];
 const UPDATE_SERVICES = ["api", "worker", "ui"];
@@ -72,6 +73,15 @@ export class DockerAdapterError extends Error {
 
 function fail(code) {
   throw new DockerAdapterError(code);
+}
+
+export function parseUiHostPort(value = 3000) {
+  const text = String(value);
+  const port = Number(text);
+  if (!TCP_PORT.test(text) || !Number.isSafeInteger(port) || port > 65_535) {
+    fail("invalid_ui_host_port");
+  }
+  return port;
 }
 
 function exactKeys(value, expected) {
@@ -174,7 +184,8 @@ export class DockerComposeHostAdapter {
     processEnvironment = process.env,
     drainVerifier,
     fetchImpl = fetch,
-    uiBaseUrl = "http://127.0.0.1:3000",
+    uiHostPort = 3000,
+    uiBaseUrl,
     now = Date.now,
   } = {}) {
     if (!PROJECT.test(project ?? "")) fail("invalid_project");
@@ -200,9 +211,11 @@ export class DockerComposeHostAdapter {
     this.processEnvironment = processEnvironment;
     this.drainVerifier = drainVerifier;
     this.now = now;
-    if (uiBaseUrl !== "http://127.0.0.1:3000") fail("invalid_health_endpoint");
+    this.uiHostPort = parseUiHostPort(uiHostPort);
+    const expectedUiBaseUrl = `http://127.0.0.1:${this.uiHostPort}`;
+    if (uiBaseUrl !== undefined && uiBaseUrl !== expectedUiBaseUrl) fail("invalid_health_endpoint");
     this.fetchImpl = fetchImpl;
-    this.uiBaseUrl = uiBaseUrl;
+    this.uiBaseUrl = expectedUiBaseUrl;
     this.usedDrainEvidence = new Set();
     this.drainGrant = null;
     this.validatedRelease = null;
@@ -266,11 +279,13 @@ export class DockerComposeHostAdapter {
     return {
       FUSION_API_IMAGE: release.api_image,
       FUSION_UI_IMAGE: release.ui_image,
+      FUSION_UI_HOST_PORT: String(this.uiHostPort),
     };
   }
 
   configurationFingerprint() {
     const hash = createHash("sha256");
+    hash.update("ui-host-port\0").update(String(this.uiHostPort)).update("\0");
     for (const file of [...this.composeFiles, ...(this.envFile ? [this.envFile] : []),
       ...(this.seccompProfilePath ? [this.seccompProfilePath] : [])]) {
       hash.update(file).update("\0").update(readFileSync(file)).update("\0");
@@ -314,7 +329,7 @@ export class DockerComposeHostAdapter {
     }
     const ports = ui.ports ?? [];
     if (ports.length !== 1 || ports[0].host_ip !== "127.0.0.1"
-      || Number(ports[0].target) !== 8080 || String(ports[0].published) !== "3000") {
+      || Number(ports[0].target) !== 8080 || String(ports[0].published) !== String(this.uiHostPort)) {
       fail("compose_ui_port_contract");
     }
     this.seccompProfilePath = apiSeccomp;
@@ -378,6 +393,15 @@ export class DockerComposeHostAdapter {
     }
     if (!container?.NetworkSettings?.Networks?.[`${this.project}_fusion`]) {
       fail("container_network_contract");
+    }
+    if (service === "ui") {
+      const portBindings = container?.HostConfig?.PortBindings;
+      const bindings = portBindings?.["8080/tcp"];
+      if (!exactKeys(portBindings, ["8080/tcp"]) || !Array.isArray(bindings) || bindings.length !== 1
+        || bindings[0]?.HostIp !== "127.0.0.1"
+        || String(bindings[0]?.HostPort) !== String(this.uiHostPort)) {
+        fail("container_ui_port_contract");
+      }
     }
     const expectedMount = service === "db"
       ? [`${this.project}_database`, "/var/lib/postgresql/data"]
