@@ -31,7 +31,7 @@ import {
   MoreOutlined,
 } from "@ant-design/icons";
 import { api, percent } from "./api";
-import { monitorState, monitorStates, filterMonitors } from "./monitor-status";
+import { monitorState, monitorStateColor, monitorStates, filterMonitors, isMonitorFailure } from "./monitor-status";
 import { useThemeAdapter } from "./theme";
 import { AllMyThemeControls } from "./AllMyThemeControls";
 import { Login } from "./Login";
@@ -532,13 +532,7 @@ export default function FusionApp() {
                 <Card>
                   <Space wrap className="monitor-detail-meta">
                     <Tag
-                      color={
-                        current.last_error
-                          ? "red"
-                          : current.enabled && !current.paused
-                            ? "green"
-                            : "default"
-                      }
+                      color={monitorStateColor(current)}
                     >
                       {monitorState(current).replaceAll("_", " ")}
                     </Tag>
@@ -557,12 +551,12 @@ export default function FusionApp() {
                     <span>Configured interval: {current.interval_seconds}s</span>
                   </Space>
                   <div className="monitor-detail-url-row"><Typography.Paragraph className="monitor-url">{current.url}</Typography.Paragraph><MonitorUrlActions url={current.url} message={message} /></div>
-                  {current.last_error && (
+                  {isMonitorFailure(current) && current.last_error && (
                     <Alert className="monitor-detail-failure" title={current.last_error} type="error" description={`Failed captures preserve the baseline. Failure backoff may delay retries beyond the configured interval. Next attempt: ${current.enabled && !current.paused && current.next_run ? new Date(current.next_run).toLocaleString() : "Not scheduled"}.`} />
                   )}
                   <Typography.Paragraph className="monitor-baseline-help" type="secondary">
-                    Baseline advances only after a combined change event. Failed
-                    captures preserve the baseline.
+                    Each successful capture becomes the baseline for the next comparison.
+                    Failed captures preserve the last valid baseline.
                   </Typography.Paragraph>
                 </Card>
                 <Card size="small" className="event">
@@ -621,16 +615,14 @@ export default function FusionApp() {
                   <Card size="small" className="summary-card">
                     <strong>
                       {
-                        monitors.filter(
-                          (m) => m.enabled && !m.paused && !m.last_error,
-                        ).length
+                        monitors.filter((m) => m.enabled && !m.paused && !isMonitorFailure(m)).length
                       }
                     </strong>{" "}
                     active
                   </Card>
                   <Card size="small" className="summary-card summary-attention">
                     <strong>
-                      {monitors.filter((m) => m.last_error).length}
+                      {monitors.filter((m) => m.enabled && !m.paused && isMonitorFailure(m)).length}
                     </strong>{" "}
                     retrying
                   </Card>
@@ -690,7 +682,7 @@ export default function FusionApp() {
                             {m.text_enabled && <Tag>Text</Tag>}
                             {m.visual_enabled && <Tag color="blue">Visual</Tag>}
                             {m.kind !== "browser" && <Tag>{m.kind}</Tag>}
-                            <Tag color={m.last_error ? "red" : m.enabled && !m.paused ? "green" : "default"}>
+                            <Tag color={monitorStateColor(m)}>
                               {monitorState(m).replaceAll("_", " ")}
                             </Tag>
                             {m.warning_code && <Tag color="gold">Warning</Tag>}
@@ -772,13 +764,7 @@ export default function FusionApp() {
                         render: (_, m: any) => (
                           <Space wrap>
                             <Tag
-                              color={
-                                m.last_error
-                                  ? "red"
-                                  : m.enabled && !m.paused
-                                    ? "green"
-                                    : "default"
-                              }
+                              color={monitorStateColor(m)}
                             >
                               {monitorState(m).replaceAll("_", " ")}
                             </Tag>

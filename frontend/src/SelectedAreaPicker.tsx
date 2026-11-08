@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, InputNumber, Radio, Spin, Typography } from "antd";
 import { ApiError, api } from "./api";
 import { InteractivePreviewSurface } from "./InteractivePreviewSurface";
+import { describePreviewWarning } from "./preview-warning";
 import {
   CAPTURE_VIEWPORT_HEIGHT,
   CAPTURE_VIEWPORT_WIDTH,
@@ -165,8 +166,8 @@ export function SelectedAreaPicker({ monitorId, getDraft, onApply, onScrollStep,
     {loading && preview && <div className="region-preview-updating" role="status"><Spin size="small" /><span>{progressLabels[progress] ?? "Refreshing preview"}</span></div>}
     {!preview && error && <div className="selected-area-actions"><Button type="primary" onClick={() => void load("retry")} disabled={loading}>Retry preview</Button></div>}
     {preview && <>
-      {preview.http_status && preview.http_status >= 400 && <Alert type="warning" showIcon title={`HTTP ${preview.http_status} error page`} description="The preview was captured successfully, but the origin returned an unsuccessful HTTP status." />}
-      {preview.warning && <Alert type="warning" showIcon title={preview.warning === "browser_steps_skipped_http_error" ? "Browser steps were skipped because the initial response was an HTTP error page." : `Browser step warning: ${preview.warning}`} />}
+      {preview.http_status && preview.http_status >= 400 && <Alert className="region-preview-advisory" type="warning" showIcon title={`HTTP ${preview.http_status} error page`} description="The preview was captured successfully, but the origin returned an unsuccessful HTTP status." />}
+      {preview.warning && <Alert className="region-preview-advisory" type="warning" showIcon title={describePreviewWarning(preview.warning)} description={<details><summary>Technical details</summary><code>{preview.warning}</code></details>} />}
       <div className="region-preview-toolbar selected-area-toolbar">
         <Radio.Group value={tool} onChange={(event) => setTool(event.target.value)} aria-label="Selected area interaction mode" optionType="button" options={[{ value: "draw", label: "Draw" }, { value: "pan", label: "Pan" }]} />
         <Button aria-label="Zoom out" onClick={() => setZoom((value) => clampZoom(value - ZOOM_STEP))}>−</Button><output>{Math.round(zoom * 100)}%</output><Button aria-label="Zoom in" onClick={() => setZoom((value) => clampZoom(value + ZOOM_STEP))}>+</Button>

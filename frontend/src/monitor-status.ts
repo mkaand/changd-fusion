@@ -22,6 +22,17 @@ export function monitorState(m: any): string {
             ? "healthy"
             : "waiting_baseline"));
 }
+export function isMonitorFailure(m: any): boolean {
+  return ["temporary_failure", "persistent_failure", "authentication_required", "challenge_detected"].includes(monitorState(m));
+}
+export function monitorStateColor(m: any): string {
+  const state=monitorState(m);
+  if (isMonitorFailure(m)) return "red";
+  if (["paused","disabled"].includes(state)) return "default";
+  if (state === "changed") return "orange";
+  if (state === "waiting_baseline") return "blue";
+  return "green";
+}
 export function filterMonitors(monitors: any[], query: string, state?: string) {
   return monitors.filter(
     (m) =>

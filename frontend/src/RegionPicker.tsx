@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Button, InputNumber, Select, Space, Spin, Switch, Typography } from "antd";
 import { ApiError, api } from "./api";
 import { InteractivePreviewSurface } from "./InteractivePreviewSurface";
+import { describePreviewWarning } from "./preview-warning";
 const PREVIEW_REQUEST_TIMEOUT_MS = 125000;
 const MIN_ZOOM = .5, MAX_ZOOM = 3, ZOOM_STEP = .25;
 type Draft = { url?: string; kind?: string; visual_enabled?: boolean; browser_steps?: unknown[]; step_budget_ms?: number; capture_timeout_ms?: number | null; monitor_http_error_pages?: boolean; disable_javascript?: boolean; block_ads_trackers?: boolean; cookie_banner_handling?: boolean; wait_before_capture_ms?: 0 | 2000 | 5000 | 10000; mobile_view?: boolean };
@@ -185,9 +186,9 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
     {error && <div className="region-preview-error" role="alert" aria-live="assertive"><strong>{error.message}</strong><p>{error.failureCode ? `${error.previewStage ?? "preview"} · ${error.failureCode}${error.previewStep ? ` · step ${error.previewStep}${error.previewAction ? ` (${error.previewAction})` : ""}` : ""}` : "The preview could not be completed."}</p><div className="region-preview-error-actions">{preview?.session_id && lastPoint.current && error.status !== 410 && <Button onClick={() => void load(lastPoint.current, error.failureCode === "stale_preview")}>Retry selection</Button>}<Button onClick={() => void load()}>Refresh preview</Button>{purpose === "region" && <Button onClick={() => { onUseViewport(); releaseSession(); setOpen(false); }}>Use viewport instead</Button>}</div>{error.requestId && <details><summary>Technical details</summary><code>Request ID: {error.requestId}</code></details>}</div>}
     {loading && !preview && <div className="region-preview-loading" role="status" aria-label="Loading region preview"><Spin /><strong>{progressLabels[progress] ?? "Preparing preview"}</strong></div>}
     {preview && <>
-      {preview.http_status && preview.http_status >= 400 && <Alert type="warning" showIcon title={`HTTP ${preview.http_status} error page`} description="The preview was captured successfully, but the origin returned an unsuccessful HTTP status." />}
-      {preview.warning && <Alert type="warning" showIcon title={preview.warning === "browser_steps_skipped_http_error" ? "Browser steps were skipped because the initial response was an HTTP error page." : `Browser step warning: ${preview.warning}`} />}
-      <Typography.Paragraph>This is a secure screenshot of the live browser session. Swipe vertically at Fit zoom to scroll the real page; pinch or use +/− to inspect the screenshot. A replayable Page scroll step is saved with your selection. The preview uses the current form URL through the normal SSRF, TLS, and sandbox restrictions.</Typography.Paragraph>
+      {preview.http_status && preview.http_status >= 400 && <Alert className="region-preview-advisory" type="warning" showIcon title={`HTTP ${preview.http_status} error page`} description="The preview was captured successfully, but the origin returned an unsuccessful HTTP status." />}
+      {preview.warning && <Alert className="region-preview-advisory" type="warning" showIcon title={describePreviewWarning(preview.warning)} description={<details><summary>Technical details</summary><code>{preview.warning}</code></details>} />}
+      <Typography.Paragraph className="region-preview-explanation">This is a secure screenshot of the live browser session. Swipe vertically at Fit zoom to scroll the real page; pinch or use +/− to inspect the screenshot. A replayable Page scroll step is saved with your selection. The preview uses the current form URL through the normal SSRF, TLS, and sandbox restrictions.</Typography.Paragraph>
       <div className="region-preview-toolbar" aria-label="Preview zoom controls">
         <Button aria-label="Zoom out" onClick={() => changeZoom(zoom - ZOOM_STEP)} disabled={zoom <= MIN_ZOOM}>−</Button>
         <output aria-label="Current zoom">{Math.round(zoom * 100)}%</output>

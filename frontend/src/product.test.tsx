@@ -1,7 +1,7 @@
 import { render, screen, cleanup, act } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { it, expect, afterEach, vi } from "vitest";
-import { filterMonitors, monitorState } from "./monitor-status";
+import { filterMonitors, isMonitorFailure, monitorState, monitorStateColor } from "./monitor-status";
 import { useThemeAdapter, setThemePreference, themeConfig, ALLMY_THEME_KEY } from "./theme";
 import { AllMyThemeControls } from "./AllMyThemeControls";
 import { Deliveries } from "./Deliveries";
@@ -40,6 +40,12 @@ it("dashboard search and status filters distinguish paused, disabled and attenti
   expect(filterMonitors(monitors, "", "authentication_required")).toHaveLength(
     1,
   );
+  const staleSuccessful = { enabled: true, monitor_state: "healthy", last_error: "old timeout" };
+  expect(monitorState(staleSuccessful)).toBe("healthy");
+  expect(isMonitorFailure(staleSuccessful)).toBe(false);
+  expect(monitorStateColor(staleSuccessful)).toBe("green");
+  expect(isMonitorFailure({ enabled: true, monitor_state: "temporary_failure" })).toBe(true);
+  expect(isMonitorFailure({ enabled: true, paused: true, monitor_state: "temporary_failure" })).toBe(false);
 });
 it("AllMy controls persist explicit themes, return to Auto and expose the original accessibility states", async () => {
   function Fixture() {

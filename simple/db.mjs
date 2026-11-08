@@ -57,6 +57,9 @@ export function getMonitor(db, id, userId) {
   const row = db.prepare("SELECT * FROM monitors WHERE id=? AND user_id=?").get(id,userId);
   if (!row) return null;
   const monitor = JSON.parse(row.payload);
+  // Older successful rows can retain a stale payload error. Keep history intact,
+  // but do not expose that stale error as current monitor health.
+  if (["healthy","changed"].includes(row.last_status)) monitor.last_error=null;
   return { ...monitor, id: row.id, user_id: row.user_id, enabled: !!row.enabled,
     paused: !!row.paused, monitor_state: row.last_status, failure_count: row.failure_count,
     last_run: row.last_run ? new Date(row.last_run).toISOString() : null,

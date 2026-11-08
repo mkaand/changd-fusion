@@ -61,3 +61,15 @@ test("SQLite transactions roll back and preserve original settings on failed upd
     db.close();
   } finally { rmSync(dir,{recursive:true,force:true}); }
 });
+test("successful legacy monitor rows do not expose stale payload errors",()=>{
+  const dir=mkdtempSync(path.join(tmpdir(),"fusion-simple-db-"));
+  try {
+    const db=openSimpleDatabase(path.join(dir,"fusion.sqlite")), user=randomUUID(), id=randomUUID();
+    db.prepare("INSERT INTO users(id,email,password_hash,payload) VALUES(?,?,?,?)").run(user,"legacy@example.com","hash","{}");
+    saveMonitor(db,{id,name:"Legacy success",url:"https://example.com",enabled:true,paused:false,last_error:"old timeout",next_run:new Date().toISOString()},user);
+    db.prepare("UPDATE monitors SET last_status='healthy' WHERE id=?").run(id);
+    assert.equal(getMonitor(db,id,user).last_error,null);
+    assert.equal(JSON.parse(db.prepare("SELECT payload FROM monitors WHERE id=?").get(id).payload).last_error,"old timeout");
+    db.close();
+  } finally { rmSync(dir,{recursive:true,force:true}); }
+});

@@ -592,6 +592,7 @@ details {
 .browser-steps-editor { margin-bottom:24px; }
 .browser-steps-editor > .ant-btn { max-width:100%; height:auto; min-height:32px; white-space:normal; margin-inline-end:12px; }
 .monitor-detail-failure { margin:16px 0; }
+.manual-run-status { margin-bottom:16px; }
 .monitor-detail-failure .ant-alert-content { min-width:0; }
 .monitor-detail-failure .ant-alert-title, .monitor-detail-failure .ant-alert-message, .monitor-detail-failure .ant-alert-description { white-space:pre-wrap; overflow-wrap:anywhere; line-height:1.6; }
 .monitor-baseline-help { margin:16px 0 0; line-height:1.6; }
@@ -621,6 +622,9 @@ details {
 .region-preview-error details { margin-top:10px; }
 .region-preview-error code,.region-preview-selection code { display:block; max-width:100%; margin:8px 0; white-space:normal; overflow-wrap:anywhere; }
 .region-preview-selection { width:100%; min-width:0; margin-top:12px; padding:12px; border:1px solid #b7eb8f; border-radius:8px; background:#f6ffed; }
+.region-preview-advisory { margin:16px 0 18px; }
+.region-preview-advisory + .region-preview-advisory { margin-top:0; }
+.region-preview-explanation { margin:18px 0; }
 .visual-step-builder { display:grid; grid-template-columns:minmax(0,1fr) minmax(120px,.5fr); gap:12px; align-items:center; margin-top:12px; }
 .visual-step-builder > * { min-width:0; }
 .region-preview-candidates { margin:10px 0; }

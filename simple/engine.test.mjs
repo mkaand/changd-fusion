@@ -22,7 +22,9 @@ test("baseline, changed event and failed capture preserve settings",async()=>{
     const results=[
       {ok:true,text:"first",screenshot:null,http_status:200},
       {ok:true,text:"second",screenshot:null,http_status:200},
-      {failed:true,code:"timeout"}
+      {failed:true,code:"timeout"},
+      {ok:true,text:"third",screenshot:null,http_status:200,warning:"optional_step_failed:2:dismiss_cookie:selector_missing"},
+      {ok:true,text:"fourth",screenshot:null,http_status:200}
     ];
     const browser={status:{preview:false},capture:async()=>results.shift(),close(){}};
     engine=new FusionEngine(db,{dataDir:dir,publicUrl:"http://localhost:8127",channelKey:"a".repeat(64),browser});
@@ -42,6 +44,29 @@ test("baseline, changed event and failed capture preserve settings",async()=>{
     assert.equal(m.disable_javascript,true,"monitor settings must be unchanged");
     assert.equal(m.failure_count,1);
     assert.equal(db.prepare("SELECT count(*) n FROM events WHERE status='failed'").get().n,1);
+    // A subsequent scheduled success clears the failure and advances the valid baseline.
+    db.prepare("UPDATE monitors SET next_run=? WHERE id=?").run(Date.now()-1,id);
+    await engine.tick();
+    m=getMonitor(db,id,userId);
+    assert.equal(m.monitor_state,"changed");
+    assert.equal(m.failure_count,0);
+    assert.equal(m.last_error,null);
+    assert.equal(m.warning_code,"optional_step_failed:2:dismiss_cookie:selector_missing");
+    assert.equal(m.last_http_status,200);
+    assert.ok(m.last_success_at);
+    assert.ok(m.execution_ms >= 0);
+    assert.ok(m.last_change_at);
+    assert.notEqual(m.baseline_id,changedBaseline,"a successful capture advances the baseline after a failure");
+    assert.equal(JSON.parse(db.prepare("SELECT payload FROM monitors WHERE id=?").get(id).payload).last_error,null);
+    // Check now uses the same successful-state transition.
+    const run=engine.enqueue(id,userId);
+    await engine.tick();
+    m=getMonitor(db,id,userId);
+    assert.equal(engine.manualFor(id,userId).id,run.id);
+    assert.equal(engine.manualFor(id,userId).status,"completed");
+    assert.equal(m.monitor_state,"changed");
+    assert.equal(m.failure_count,0);
+    assert.equal(m.last_error,null);
   }finally{engine?.close();db?.close();rmSync(dir,{recursive:true,force:true});}
 });
 
