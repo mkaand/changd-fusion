@@ -32,9 +32,15 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
       - name: Build actual single-service image
-        run: docker compose build fusion
+        env:
+          APP_COMMIT: ${{ github.sha }}
+          APP_BRANCH: ${{ github.head_ref || github.ref_name }}
+        run: docker compose build --build-arg APP_COMMIT="$APP_COMMIT" --build-arg APP_BRANCH="$APP_BRANCH" fusion
       - name: Smoke test real container, SQLite and first administrator setup
         shell: bash
+        env:
+          APP_COMMIT: ${{ github.sha }}
+          APP_BRANCH: ${{ github.head_ref || github.ref_name }}
         run: |
           set -euo pipefail
           trap 'docker compose down -v --remove-orphans >/dev/null 2>&1 || :' EXIT
@@ -45,6 +51,7 @@ jobs:
             sleep 2
           done
           if [ "$ready" != 1 ]; then docker compose logs --tail=80 fusion; exit 1; fi
+          docker compose exec -T fusion node simple/verify-build-metadata.mjs "$APP_COMMIT" "$APP_BRANCH"
           token="$(docker compose exec -T fusion cat /data/setup-token | tr -d '\r\n')"
           body="$(jq -nc --arg token "$token" --arg email 'smoke@example.com' --arg password 'ValidTestPassword123!' '{token:$token,email:$email,password:$password}')"
           curl --fail --silent --show-error -c /tmp/fusion-simple-cookies -H 'Content-Type: application/json' -d "$body" http://127.0.0.1:8127/api/v1/setup | jq -e '.ok==true'
@@ -139,6 +146,9 @@ jobs:
           file: simple/Dockerfile
           push: true
           platforms: linux/amd64
+          build-args: |
+            APP_COMMIT=${{ github.sha }}
+            APP_BRANCH=master
           tags: |
             ${{ env.IMAGE }}:${{ github.sha }}
             ${{ env.IMAGE }}:master
