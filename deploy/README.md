@@ -13,19 +13,21 @@ This is an opt-in host-side updater for the single-container SQLite architecture
 
 Access to `/var/run/docker.sock` is effectively root access. The service therefore runs reviewed local code as root, validates the Compose project and service labels, and mutates only `fusion`. It never uses `down`, removes volumes, builds images, prunes Docker globally or operates on another Compose project.
 
+The updater accepts only the standardized Docker identity: project `changd-fusion`, container `changd-fusion`, service `fusion`, named volume `changd-fusion-data`, network `changd-fusion_default`, and GHCR repository `ghcr.io/mkaand/changd-fusion`. Both the running container and the candidate-digest-resolved Compose configuration must match it exactly.
+
 The published image has immutable digest, source/revision/version and SQLite schema labels. Publication occurs only for a `master` push after the existing SQLite/code and real-container CI jobs succeed. The updater independently requires the image revision to equal GitHub's current `master` SHA. A new SQLite schema is never applied automatically.
 
 ## One-time installation (manual approval required)
 
 These steps are examples; choose generic host paths appropriate for your installation. Do not enable the timer until the contract and bootstrap output have been reviewed.
 
-1. Preserve the current Compose project name, base Compose file, loopback port, network, environment and named `/data` volume. Copy `deploy/changd-fusion-updater.env.example` to `/etc/changd-fusion/updater.env`, make it root-owned mode `0600`, and set the exact existing paths and health URL. The final Compose file must be this repository's `docker-compose.ghcr.yml`.
+1. Confirm the installation already uses the standardized project, container, network and `changd-fusion-data` volume. Older `changd-fusion-simple_simple-data` volumes are never renamed or adopted automatically; stop the old service and complete the controlled offline migration in the root README before configuring the updater. Copy `deploy/changd-fusion-updater.env.example` to `/etc/changd-fusion/updater.env`, make it root-owned mode `0600`, and set the exact existing paths and health URL. The final Compose file must be this repository's `docker-compose.ghcr.yml`.
 2. Back up `/data` using the offline procedure in the root README.
 3. Pin a reviewed, healthy initial image manually and start only the `fusion` service without building:
 
    ```sh
    export FUSION_IMAGE_REF='ghcr.io/mkaand/changd-fusion@sha256:<reviewed-digest>'
-   docker compose --project-name '<existing-project>' \
+   docker compose --project-name 'changd-fusion' \
      -f '<existing-base-compose>' -f '<repo>/docker-compose.ghcr.yml' \
      up -d --no-build --no-deps fusion
    ```

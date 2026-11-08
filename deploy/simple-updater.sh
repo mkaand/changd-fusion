@@ -4,6 +4,10 @@ umask 077
 
 readonly IMAGE_REPOSITORY="ghcr.io/mkaand/changd-fusion"
 readonly SOURCE_REPOSITORY="https://github.com/mkaand/changd-fusion"
+readonly EXPECTED_PROJECT_NAME="changd-fusion"
+readonly EXPECTED_CONTAINER_NAME="changd-fusion"
+readonly EXPECTED_DATA_VOLUME="changd-fusion-data"
+readonly EXPECTED_NETWORK="changd-fusion_default"
 readonly GITHUB_COMMIT_API="https://api.github.com/repos/mkaand/changd-fusion/commits/master"
 readonly REGISTRY_TOKEN_URL="https://ghcr.io/token?service=ghcr.io&scope=repository%3Amkaand%2Fchangd-fusion%3Apull"
 readonly REGISTRY_MANIFEST_URL="https://ghcr.io/v2/mkaand/changd-fusion/manifests/master"
@@ -29,6 +33,7 @@ validate_config() {
   : "${FUSION_STATE_DIR:?FUSION_STATE_DIR is required}"
   : "${FUSION_HEALTH_URL:?FUSION_HEALTH_URL is required}"
   [[ "$FUSION_PROJECT_NAME" =~ ^[a-z0-9][a-z0-9_-]{1,62}$ ]] || die "invalid_project_name" || return
+  [[ "$FUSION_PROJECT_NAME" == "$EXPECTED_PROJECT_NAME" ]] || die "unexpected_project_name" || return
   [[ "$FUSION_PROJECT_DIR" = /* && -d "$FUSION_PROJECT_DIR" ]] || die "invalid_project_directory" || return
   [[ "$FUSION_CONTRACT_FILE" = /* && "$FUSION_STATE_DIR" = /* ]] || die "state_paths_must_be_absolute" || return
   [[ "$FUSION_HEALTH_URL" =~ ^http://127\.0\.0\.1:([1-9][0-9]{0,4})/api/v1/health$ ]] || die "invalid_health_url" || return
@@ -75,9 +80,16 @@ compose_preflight() {
   services="$(FUSION_IMAGE_REF="$IMAGE_REPOSITORY:master" compose config --services)"
   [[ "$services" == "fusion" ]] || die "unexpected_compose_services" || return
   FUSION_IMAGE_REF="$IMAGE_REPOSITORY:master" compose config --format json \
-    | jq -e '
+    | jq -e --arg project "$EXPECTED_PROJECT_NAME" --arg container "$EXPECTED_CONTAINER_NAME" \
+      --arg volume "$EXPECTED_DATA_VOLUME" --arg network "$EXPECTED_NETWORK" '
+      .name == $project and
       (.services | keys) == ["fusion"] and
-      (.services.fusion.volumes | any(.target == "/data" and .type == "volume")) and
+      .services.fusion.container_name == $container and
+      (.services.fusion.volumes | length) == 1 and
+      (.services.fusion.volumes[0].target == "/data" and .services.fusion.volumes[0].type == "volume") and
+      .volumes[.services.fusion.volumes[0].source].name == $volume and
+      (.services.fusion.networks | keys) == ["default"] and
+      .networks.default.name == $network and
       (.services.fusion.ports | length) == 1 and
       (.services.fusion.ports[0].host_ip == "127.0.0.1") and
       (.services.fusion.ports[0].target == 3000) and
@@ -98,6 +110,7 @@ runtime_contract() {
       format: 1,
       project: $i.Config.Labels["com.docker.compose.project"],
       service: $i.Config.Labels["com.docker.compose.service"],
+      container_name: ($i.Name | ltrimstr("/")),
       data_mount: ($i.Mounts | map(select(.Destination == "/data") | {type:.Type,source:.Name,destination:.Destination,rw:.RW})),
       ports: ($i.NetworkSettings.Ports | to_entries | map({container:.key,bindings:(.value // [] | map({host_ip:.HostIp,host_port:.HostPort}))})),
       networks: ($i.NetworkSettings.Networks | keys | sort),
@@ -112,14 +125,15 @@ runtime_contract() {
 }
 
 validate_contract_shape() {
-  jq -e --arg project "$FUSION_PROJECT_NAME" --arg health "$FUSION_HEALTH_URL" '
-    .format == 1 and .project == $project and .service == "fusion" and
+  jq -e --arg project "$EXPECTED_PROJECT_NAME" --arg container "$EXPECTED_CONTAINER_NAME" \
+    --arg volume "$EXPECTED_DATA_VOLUME" --arg network "$EXPECTED_NETWORK" --arg health "$FUSION_HEALTH_URL" '
+    .format == 1 and .project == $project and .service == "fusion" and .container_name == $container and
     (.data_mount | length) == 1 and .data_mount[0].type == "volume" and
-    .data_mount[0].destination == "/data" and .data_mount[0].rw == true and
+    .data_mount[0].source == $volume and .data_mount[0].destination == "/data" and .data_mount[0].rw == true and
     (.ports | length) == 1 and .ports[0].container == "3000/tcp" and
     (.ports[0].bindings | length) == 1 and .ports[0].bindings[0].host_ip == "127.0.0.1" and
     ($health == ("http://127.0.0.1:" + .ports[0].bindings[0].host_port + "/api/v1/health")) and
-    (.networks | length) >= 1 and
+    .networks == [$network] and
     (.security_opt | any(startswith("seccomp="))) and
     .pids_limit > 0 and .memory > 0 and .shm_size > 0 and
     .restart == "unless-stopped"
@@ -156,6 +170,7 @@ target_compose_contract() {
         format: 1,
         project: $compose.name,
         service: "fusion",
+        container_name: $service.container_name,
         data_mount: ($service.volumes | map(select(.target == "/data") | {
           type:.type,source:$compose.volumes[.source].name,destination:.target,rw:(.read_only != true)
         })),
