@@ -209,7 +209,7 @@ sqlite_baseline() {
     const db=new DatabaseSync("/data/fusion.sqlite",{readOnly:true});
     const scalar=(sql)=>db.prepare(sql).get();
     const integrity=scalar("PRAGMA integrity_check").integrity_check;
-    const schema=scalar("SELECT value FROM metadata WHERE key=\"schema_version\"")?.value;
+    const schema=db.prepare("SELECT value FROM metadata WHERE key=?").get("schema_version")?.value;
     console.log(JSON.stringify({integrity,schema}));db.close();
   ' | jq -ce 'if (.integrity == "ok" and (.schema | test("^[0-9]+$"))) then . else error("invalid_sqlite_state") end'
 }
