@@ -15,7 +15,9 @@ RUN --mount=type=secret,id=proxy_ca \
     if [ -s /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
     npm ci --ignore-scripts --no-audit --no-fund
 COPY frontend ./
-RUN npm run build
+ARG APP_COMMIT
+ARG APP_BRANCH
+RUN APP_COMMIT="$APP_COMMIT" APP_BRANCH="$APP_BRANCH" npm run build
 
 FROM node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
 ENV NODE_ENV=production PORT=3000 FUSION_DATA_DIR=/data PLAYWRIGHT_EXECUTABLE_PATH=/usr/bin/chromium

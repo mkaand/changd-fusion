@@ -40,6 +40,13 @@ it("shows safe fallbacks when deployment metadata is unavailable", () => {
   for (const fallback of screen.getAllByText("Unavailable", { exact: true })) expect(fallback).toHaveClass("application-metadata-token");
 });
 
+it("rejects a truncated commit and missing branch", () => {
+  render(<Settings {...props} buildMetadata={{ version: "0.4.1", commit: "a".repeat(39) }} />);
+  expect(screen.getByText("0.4.1", { exact: true })).toBeInTheDocument();
+  expect(screen.getAllByText("Unavailable", { exact: true })).toHaveLength(2);
+  expect(screen.queryByRole("link", { name: /^Commit / })).not.toBeInTheDocument();
+});
+
 it("hides invalid or ambiguous Source PR metadata without hiding an independently verified commit", () => {
   render(<Settings {...props} buildMetadata={{
     version: "0.3.3",
