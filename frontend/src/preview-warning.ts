@@ -5,7 +5,7 @@ export function describePreviewWarning(code: string) {
     const [, index, action, reason] = optional;
     const actionLabel = action === "dismiss_cookie" ? "dismiss the cookie banner" : `run “${action.replaceAll("_", " ")}"`;
     const reasonLabel = reason === "selector_missing" ? "its selector was not found" : reason.replaceAll("_", " ");
-    return `Optional browser step ${Number(index) + 1} could not ${actionLabel} because ${reasonLabel}. The preview is still available.`;
+    return `Optional browser step ${Number(index)} could not ${actionLabel} because ${reasonLabel}. The preview is still available.`;
   }
   return "A browser step reported a warning. The preview is still available.";
 }
