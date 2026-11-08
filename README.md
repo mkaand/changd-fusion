@@ -47,7 +47,7 @@ docker compose start fusion
 
 Successful `master` CI publishes the same Simple application as a linux/amd64 image at `ghcr.io/mkaand/changd-fusion`. Ordinary clones continue to build locally. Operators who explicitly choose immutable GHCR deployment can combine `docker-compose.yml` with `docker-compose.ghcr.yml`; production commands must include `--no-build` and a digest-pinned `FUSION_IMAGE_REF`.
 
-The optional host updater under `deploy/` checks the public `master` image about every five minutes, validates the exact running Compose contract and SQLite schema, updates only `fusion`, verifies health and durable record counts, and attempts one controlled rollback. It is **not installed or enabled automatically**. Follow [the updater runbook](deploy/README.md) for the required manual contract review, state bootstrap and systemd activation.
+The optional host updater under `deploy/` checks the public `master` image about every five minutes, validates the exact running Compose contract and SQLite integrity/schema, updates only `fusion`, verifies health without using record counts as an acceptance gate, and attempts one controlled rollback. It is **not installed or enabled automatically**. Follow [the updater runbook](deploy/README.md) for the required manual contract review, state bootstrap and systemd activation.
 
 ## Offline backup and restore
 
