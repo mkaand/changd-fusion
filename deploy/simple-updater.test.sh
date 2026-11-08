@@ -45,6 +45,29 @@ ok "load_state returns the validated JSON object and rejects booleans"
 ok "sqlite_baseline returns a validated JSON object and fails closed"
 
 (
+  sqlite_file="$(mktemp)"
+  trap 'rm -f "$sqlite_file"' EXIT
+  node -e '
+    const {DatabaseSync}=require("node:sqlite");
+    const db=new DatabaseSync(process.argv[1]);
+    db.exec("CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+    db.prepare("INSERT INTO metadata(key,value) VALUES(?,?)").run("schema_version","1");
+    db.close();
+  ' "$sqlite_file"
+  container_id() { printf 'fixture-container\n'; }
+  docker() {
+    [[ "$1" == "exec" && "$2" == "fixture-container" && "$3" == "node" && "$4" == "-e" ]] || fail "unexpected docker call: $*"
+    local code
+    code="$(printf '%s' "$5" | sed "s#/data/fusion.sqlite#$sqlite_file#g")"
+    node -e "$code"
+  }
+  result="$(sqlite_baseline)"
+  assert_eq "$(jq -r '.integrity + ":" + .schema' <<<"$result")" "ok:1"
+)
+ok "sqlite_baseline executes the actual SQLite metadata query"
+
+
+(
   docker() {
     jq -n --arg digest "$NEW" '[{
       RepoDigests:["ghcr.io/mkaand/changd-fusion@"+$digest],Os:"linux",Architecture:"amd64",
