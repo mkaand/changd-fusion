@@ -64,6 +64,71 @@ ok "sqlite_baseline returns a validated JSON object and fails closed"
 )
 ok "image_metadata returns verified metadata and rejects malformed inspection"
 
+(
+  HEADERS="$(mktemp)"
+  for header in Docker-Content-Digest docker-content-digest DoCkEr-CoNtEnT-DiGeSt; do
+    printf 'HTTP/2 200\r\n%s: %s\r\ncontent-type: application/json\r\n\r\n' "$header" "$NEW" >"$HEADERS"
+    assert_eq "$(parse_digest_header "$HEADERS")" "$NEW"
+  done
+  printf 'HTTP/2 200\r\nDocker-Content-Digest: latest\r\n\r\n' >"$HEADERS"
+  if parse_digest_header "$HEADERS" >/dev/null; then fail invalid-digest-header-accepted; fi
+  printf 'HTTP/2 200\r\ncontent-type: application/json\r\n\r\n' >"$HEADERS"
+  if parse_digest_header "$HEADERS" >/dev/null; then fail missing-digest-header-accepted; fi
+  printf 'Docker-Content-Digest: %s\r\ndocker-content-digest: %s\r\n' "$NEW" "$NEW" >"$HEADERS"
+  if parse_digest_header "$HEADERS" >/dev/null; then fail ambiguous-digest-header-accepted; fi
+)
+ok "registry digest parsing is case-insensitive, CRLF-safe and fail-closed"
+
+(
+  FUSION_PROJECT_NAME=changd-fusion-simple
+  FUSION_PROJECT_DIR=/opt/changd-fusion
+  FUSION_HEALTH_URL=http://127.0.0.1:8127/api/v1/health
+  FUSION_CONTRACT_FILE="$(mktemp)"
+  COMPOSE_FIXTURE="$(mktemp)"
+  cat >"$FUSION_CONTRACT_FILE" <<'JSON'
+{
+  "format":1,"project":"changd-fusion-simple","service":"fusion",
+  "data_mount":[{"type":"volume","source":"changd-fusion-simple_simple-data","destination":"/data","rw":true}],
+  "ports":[{"container":"3000/tcp","bindings":[{"host_ip":"127.0.0.1","host_port":"8127"}]}],
+  "networks":["changd-fusion-simple_default"],
+  "environment":[
+    {"key":"FUSION_DATA_DIR","value":"/data"},
+    {"key":"PLAYWRIGHT_EXECUTABLE_PATH","value":"/usr/bin/chromium"},
+    {"key":"PORT","value":"3000"},
+    {"key":"PUBLIC_URL","value":"http://localhost:8127"}
+  ],
+  "security_opt":["seccomp=/opt/changd-fusion/docker/chromium-seccomp.json"],
+  "memory":1677721600,"pids_limit":256,"shm_size":268435456,"restart":"unless-stopped"
+}
+JSON
+  cat >"$COMPOSE_FIXTURE" <<JSON
+{
+  "name":"changd-fusion-simple",
+  "services":{"fusion":{
+    "image":"$IMAGE_REPOSITORY@$NEW",
+    "volumes":[{"type":"volume","source":"simple-data","target":"/data","volume":{}}],
+    "ports":[{"host_ip":"127.0.0.1","target":3000,"published":"8127","protocol":"tcp"}],
+    "networks":{"default":null},
+    "environment":{"FUSION_DATA_DIR":"/data","PLAYWRIGHT_EXECUTABLE_PATH":"/usr/bin/chromium","PORT":"3000","PUBLIC_URL":"http://localhost:8127"},
+    "security_opt":["seccomp=./docker/chromium-seccomp.json"],
+    "mem_limit":"1677721600","pids_limit":256,"shm_size":"268435456","restart":"unless-stopped"
+  }},
+  "volumes":{"simple-data":{"name":"changd-fusion-simple_simple-data"}},
+  "networks":{"default":{"name":"changd-fusion-simple_default"}}
+}
+JSON
+  compose() { cat "$COMPOSE_FIXTURE"; }
+  verify_target_contract "$NEW"
+  jq '.volumes["simple-data"].name="foreign-data"' "$COMPOSE_FIXTURE" >"$COMPOSE_FIXTURE.next"
+  mv "$COMPOSE_FIXTURE.next" "$COMPOSE_FIXTURE"
+  if verify_target_contract "$NEW" >/dev/null 2>&1; then fail changed-data-volume-accepted; fi
+  jq '.volumes["simple-data"].name="changd-fusion-simple_simple-data" | .services.fusion.environment.PUBLIC_URL="http://changed.invalid"' \
+    "$COMPOSE_FIXTURE" >"$COMPOSE_FIXTURE.next"
+  mv "$COMPOSE_FIXTURE.next" "$COMPOSE_FIXTURE"
+  if verify_target_contract "$NEW" >/dev/null 2>&1; then fail changed-environment-accepted; fi
+)
+ok "resolved target Compose contract allows exact matches and rejects volume or environment drift"
+
 setup_orchestrator() {
   TEST_DIR="$(mktemp -d)"
   FUSION_STATE_DIR="$TEST_DIR"
@@ -78,6 +143,7 @@ setup_orchestrator() {
   : >"$MUTATIONS"
   compose_preflight() { :; }
   verify_contract() { :; }
+  verify_target_contract() { :; }
   check_disk() { :; }
   current_digest() { printf '%s\n' "$OLD"; }
   docker() { [[ "$1" == pull ]]; }
@@ -153,6 +219,16 @@ ok "manual recover-state validates runtime, image, health and SQLite before unlo
   assert_eq "$(cat "$CLEANED")" "$NEW"
 )
 ok "SQLite schema mismatch blocks before mutation and removes the unused pull"
+
+(
+  setup_orchestrator
+  discover_digest() { printf '%s\n' "$NEW"; }
+  verify_target_contract() { return 1; }
+  if run_update; then fail target-contract-drift-returned-success; fi
+  [[ ! -s "$MUTATIONS" ]] || fail target-contract-drift-mutated
+  assert_eq "$(cat "$CLEANED")" "$NEW"
+)
+ok "target Compose drift blocks and cleans the pull before container recreation"
 
 sqlite_compatible \
   '{"integrity":"ok","schema":"1","counts":{"users":10,"monitors":20,"captures":30,"events":40,"channels":5}}' \
@@ -258,6 +334,10 @@ grep -q 'io.changd-fusion.sqlite-schema=\${{ env.SQLITE_SCHEMA_VERSION }}' "$ROO
 ! grep -q 'io.changd-fusion.sqlite-schema=1' "$ROOT/.github/workflows/simple-ci.yml"
 expected_schema="$(node -e 'import("./simple/db.mjs").then(({SCHEMA_VERSION})=>console.log(SCHEMA_VERSION))')"
 [[ "$expected_schema" =~ ^[0-9]+$ ]]
-ok "image publication requires successful master CI and derives the real schema version"
+publish_job="$(sed -n '/^  publish-image:/,$p' "$ROOT/.github/workflows/simple-ci.yml")"
+grep -q 'actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020' <<<"$publish_job"
+grep -q "node-version: '24'" <<<"$publish_job"
+[[ "$(node -p 'process.versions.node.split(".")[0]')" == 24 ]]
+ok "image publication uses Node 24 after successful master CI and derives the real schema version"
 
 printf '1..%d\n' "$PASS"

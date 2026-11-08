@@ -144,6 +144,48 @@ verify_contract() {
   [[ "$expected" == "$actual" ]] || die "runtime_contract_mismatch"
 }
 
+target_compose_contract() {
+  local digest="$1" compose_json
+  [[ "$digest" =~ $DIGEST_PATTERN ]] || die "invalid_target_digest" || return
+  compose_json="$(FUSION_IMAGE_REF="$IMAGE_REPOSITORY@$digest" compose config --format json)" || return
+  jq -n -S --argjson compose "$compose_json" --arg project_dir "$FUSION_PROJECT_DIR" \
+    --arg image "$IMAGE_REPOSITORY@$digest" '
+    ($compose.services.fusion) as $service |
+    if ($service.image != $image) then error("target_image_mismatch") else
+      {
+        format: 1,
+        project: $compose.name,
+        service: "fusion",
+        data_mount: ($service.volumes | map(select(.target == "/data") | {
+          type:.type,source:$compose.volumes[.source].name,destination:.target,rw:(.read_only != true)
+        })),
+        ports: ($service.ports | map({
+          container:((.target|tostring) + "/" + .protocol),
+          bindings:[{host_ip:.host_ip,host_port:.published}]
+        })),
+        networks: ($service.networks | keys | map($compose.networks[.].name) | sort),
+        environment: (($service.environment // {}) | to_entries | sort_by(.key)),
+        security_opt: (($service.security_opt // []) | map(
+          if startswith("seccomp=./") then "seccomp=" + $project_dir + "/" + ltrimstr("seccomp=./") else . end
+        ) | sort),
+        memory: ($service.mem_limit | tonumber),
+        pids_limit: $service.pids_limit,
+        shm_size: ($service.shm_size | tonumber),
+        restart: $service.restart
+      }
+    end
+  '
+}
+
+verify_target_contract() {
+  local digest="$1" expected target
+  [[ -f "$FUSION_CONTRACT_FILE" ]] || die "runtime_contract_missing" || return
+  expected="$(jq -cS . "$FUSION_CONTRACT_FILE")" || die "runtime_contract_invalid" || return
+  target="$(target_compose_contract "$digest" | jq -cS .)" || return
+  validate_contract_shape <<<"$target" || die "unsafe_target_compose_contract" || return
+  [[ "$expected" == "$target" ]] || die "target_compose_contract_mismatch"
+}
+
 sqlite_baseline() {
   local id
   id="$(container_id)" || return
@@ -222,10 +264,31 @@ discover_digest() {
     rm -f "$headers" "$body"; unset token
     die "anonymous_ghcr_manifest_unavailable"; return
   fi
-  digest="$(awk 'BEGIN{IGNORECASE=1} /^Docker-Content-Digest:/ {gsub("\\r",""); print $2}' "$headers" | tail -1)"
+  digest="$(parse_digest_header "$headers")" || {
+    rm -f "$headers" "$body"; unset token
+    die "registry_digest_missing"; return
+  }
   rm -f "$headers" "$body"; unset token
-  [[ "$digest" =~ $DIGEST_PATTERN ]] || die "registry_digest_missing" || return
   printf '%s\n' "$digest"
+}
+
+parse_digest_header() {
+  local headers="$1" values
+  [[ -f "$headers" ]] || return 1
+  values="$(awk '
+    {
+      sub(/\r$/, "", $0)
+      name=$0
+      sub(/:.*/, "", name)
+      if (tolower(name) == "docker-content-digest") {
+        value=$0
+        sub(/^[^:]*:[[:space:]]*/, "", value)
+        print value
+      }
+    }
+  ' "$headers")"
+  [[ -n "$values" && "$(wc -l <<<"$values")" -eq 1 && "$values" =~ $DIGEST_PATTERN ]] || return 1
+  printf '%s\n' "$values"
 }
 
 trusted_master_sha() {
@@ -404,6 +467,10 @@ run_update() {
   if [[ "$candidate_schema" != "$current_schema" ]]; then
     remove_unused_digest "$candidate" "$current" "$rollback_target"
     die "sqlite_schema_change_requires_manual_upgrade"
+    return 1
+  fi
+  if ! verify_target_contract "$candidate"; then
+    remove_unused_digest "$candidate" "$current" "$rollback_target"
     return 1
   fi
   previous="$current"
