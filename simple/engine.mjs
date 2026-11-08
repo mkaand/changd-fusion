@@ -192,6 +192,9 @@ export class FusionEngine {
       const oldState=this.db.prepare("SELECT payload FROM monitors WHERE id=?").get(m.id);
       const payload=JSON.parse(oldState.payload);
       payload.baseline_id=afterId;payload.latest_capture_id=afterId;payload.last_percent=comparison.visualPercent;
+      payload.last_error=null;payload.last_http_status=result.http_status??null;payload.execution_ms=event.execution_ms;
+      payload.warning_code=result.warning??null;
+      if(status==="changed")payload.last_change_at=event.created_at;
       this.db.prepare("UPDATE monitors SET payload=?,last_run=?,last_success=?,next_run=?,last_status=?,failure_count=0 WHERE id=?")
         .run(JSON.stringify(payload),now,now,now+delay,status==="changed"?"changed":"healthy",m.id);
       if(status==="changed")queueEventNotification(this.db,m,event,now,{

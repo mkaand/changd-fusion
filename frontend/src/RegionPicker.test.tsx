@@ -111,6 +111,15 @@ it("builds a CSS browser step from Preview without enabling visual detection", a
   expect(screen.getByText("Step added to the unsaved draft")).toBeInTheDocument();
 });
 
+it("explains optional browser-step warnings while retaining the technical code", async () => {
+  vi.mocked(api).mockResolvedValue({ session_id: "00000000-0000-4000-8000-000000000099", image: "aGVsbG8=", width: 1280, height: 900, warning: "optional_step_failed:2:dismiss_cookie:selector_missing", selection: null });
+  render(<RegionPicker getDraft={() => draft} onSelect={vi.fn()} onUseViewport={vi.fn()} />);
+  await userEvent.setup().click(screen.getByRole("button", { name: "Select region visually" }));
+  expect(await screen.findByText(/Optional browser step 3 could not dismiss the cookie banner/)).toBeInTheDocument();
+  expect(screen.getByText("Technical details")).toBeInTheDocument();
+  expect(screen.getByText("optional_step_failed:2:dismiss_cookie:selector_missing")).toBeInTheDocument();
+});
+
 it("does not select while panning, after pointer cancellation, or twice while a selection is pending", async () => {
   let resolveSelection!: (value: unknown) => void;
   vi.mocked(api)

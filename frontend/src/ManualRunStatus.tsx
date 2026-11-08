@@ -21,5 +21,5 @@ export function ManualRunStatus({ id, refresh }: { id: string; refresh: number }
     failed: "Check now failed. See monitor diagnostics for the capture error.",
     cancelled: "Check now cancelled before capture started.",
   };
-  return <Alert role="status" type={status === "failed" ? "warning" : "info"} title={text[status] ?? "Check now status is unavailable."} />;
+  return <Alert className="manual-run-status" role="status" type={status === "failed" ? "warning" : "info"} title={text[status] ?? "Check now status is unavailable."} />;
 }
