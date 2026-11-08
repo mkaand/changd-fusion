@@ -25,11 +25,19 @@ Open `http://localhost:8127/setup`, enter the one-time setup token and create th
 ## Architecture
 
 - One `fusion` service: React UI, Node.js API, scheduler, Telegram/SMTP outbox and isolated Chromium capture subprocesses
-- One named `simple-data` volume mounted at `/data`: SQLite database, WAL files, captures, encrypted channel information, credentials and setup state
+- One explicitly named `changd-fusion-data` volume mounted at `/data`: SQLite database, WAL files, captures, encrypted channel information, credentials and setup state
 - One internal Chromium execution queue prioritizes user Preview and Check Now over scheduled work. No PostgreSQL, background Worker, separate API/UI service, updater, external browser lease or host Node installation
 - `server/src` contains only the **shared browser/capture/validation library** compiled into the same application image, not a separate runtime service
 
-`compose.simple.yml` remains as an equivalent compatibility entrypoint for existing Simple installations. New installations should use the root `docker-compose.yml` via the default `docker compose` commands.
+`compose.simple.yml` remains an equivalent Simple/SQLite entrypoint and resolves to the same canonical Docker names. New installations should use the root `docker-compose.yml` via the default `docker compose` commands; installations created with the older names require the controlled migration below.
+
+The permanent Docker identities are Compose project `changd-fusion`, container `changd-fusion`, service `fusion`, volume `changd-fusion-data`, network `changd-fusion_default`, and image repository `ghcr.io/mkaand/changd-fusion`.
+
+### Existing Simple installations
+
+Older checkouts used project `changd-fusion-simple` and typically stored data in `changd-fusion-simple_simple-data`. Docker does not rename named volumes, and this repository never deletes or silently substitutes that old volume. **Do not start the new Compose definition until the data migration is complete**; otherwise Docker will correctly create a new, empty `changd-fusion-data` volume.
+
+For a controlled migration, stop the old application, take and verify an offline backup, confirm the exact old volume with `docker volume inspect`, create `changd-fusion-data`, and copy the complete stopped `/data` contents (including SQLite WAL files, captures and ownership) into it. Inspect the copied volume before starting the new Compose project, then verify login, monitors, history and captures. Keep the old volume and backup as rollback material until user acceptance. Never use `down -v`, volume prune, or delete the old volume as part of the migration.
 
 ## Operations
 
@@ -56,7 +64,7 @@ Stop the service before a full-volume snapshot, including SQLite WAL and artifac
 ```sh
 umask 077
 docker compose stop fusion
-docker run --rm -v changd-fusion-simple_simple-data:/data:ro -v "$PWD":/backup alpine:3.21 sh -c 'cd /data && tar -czf /backup/fusion-simple-backup.tar.gz .'
+docker run --rm -v changd-fusion-data:/data:ro -v "$PWD":/backup alpine:3.21 sh -c 'cd /data && tar -czf /backup/fusion-simple-backup.tar.gz .'
 docker compose start fusion
 ```
 

@@ -80,17 +80,17 @@ ok "image_metadata returns verified metadata and rejects malformed inspection"
 ok "registry digest parsing is case-insensitive, CRLF-safe and fail-closed"
 
 (
-  FUSION_PROJECT_NAME=changd-fusion-simple
+  FUSION_PROJECT_NAME=changd-fusion
   FUSION_PROJECT_DIR=/opt/changd-fusion
   FUSION_HEALTH_URL=http://127.0.0.1:8127/api/v1/health
   FUSION_CONTRACT_FILE="$(mktemp)"
   COMPOSE_FIXTURE="$(mktemp)"
   cat >"$FUSION_CONTRACT_FILE" <<'JSON'
 {
-  "format":1,"project":"changd-fusion-simple","service":"fusion",
-  "data_mount":[{"type":"volume","source":"changd-fusion-simple_simple-data","destination":"/data","rw":true}],
+  "format":1,"project":"changd-fusion","service":"fusion","container_name":"changd-fusion",
+  "data_mount":[{"type":"volume","source":"changd-fusion-data","destination":"/data","rw":true}],
   "ports":[{"container":"3000/tcp","bindings":[{"host_ip":"127.0.0.1","host_port":"8127"}]}],
-  "networks":["changd-fusion-simple_default"],
+  "networks":["changd-fusion_default"],
   "environment":[
     {"key":"FUSION_DATA_DIR","value":"/data"},
     {"key":"PLAYWRIGHT_EXECUTABLE_PATH","value":"/usr/bin/chromium"},
@@ -103,31 +103,36 @@ ok "registry digest parsing is case-insensitive, CRLF-safe and fail-closed"
 JSON
   cat >"$COMPOSE_FIXTURE" <<JSON
 {
-  "name":"changd-fusion-simple",
+  "name":"changd-fusion",
   "services":{"fusion":{
+    "container_name":"changd-fusion",
     "image":"$IMAGE_REPOSITORY@$NEW",
-    "volumes":[{"type":"volume","source":"simple-data","target":"/data","volume":{}}],
+    "volumes":[{"type":"volume","source":"changd-fusion-data","target":"/data","volume":{}}],
     "ports":[{"host_ip":"127.0.0.1","target":3000,"published":"8127","protocol":"tcp"}],
     "networks":{"default":null},
     "environment":{"FUSION_DATA_DIR":"/data","PLAYWRIGHT_EXECUTABLE_PATH":"/usr/bin/chromium","PORT":"3000","PUBLIC_URL":"http://localhost:8127"},
     "security_opt":["seccomp=./docker/chromium-seccomp.json"],
     "mem_limit":"1677721600","pids_limit":256,"shm_size":"268435456","restart":"unless-stopped"
   }},
-  "volumes":{"simple-data":{"name":"changd-fusion-simple_simple-data"}},
-  "networks":{"default":{"name":"changd-fusion-simple_default"}}
+  "volumes":{"changd-fusion-data":{"name":"changd-fusion-data"}},
+  "networks":{"default":{"name":"changd-fusion_default"}}
 }
 JSON
   compose() { cat "$COMPOSE_FIXTURE"; }
   verify_target_contract "$NEW"
-  jq '.volumes["simple-data"].name="foreign-data"' "$COMPOSE_FIXTURE" >"$COMPOSE_FIXTURE.next"
+  jq '.volumes["changd-fusion-data"].name="foreign-data"' "$COMPOSE_FIXTURE" >"$COMPOSE_FIXTURE.next"
   mv "$COMPOSE_FIXTURE.next" "$COMPOSE_FIXTURE"
   if verify_target_contract "$NEW" >/dev/null 2>&1; then fail changed-data-volume-accepted; fi
-  jq '.volumes["simple-data"].name="changd-fusion-simple_simple-data" | .services.fusion.environment.PUBLIC_URL="http://changed.invalid"' \
+  jq '.volumes["changd-fusion-data"].name="changd-fusion-data" | .services.fusion.environment.PUBLIC_URL="http://changed.invalid"' \
     "$COMPOSE_FIXTURE" >"$COMPOSE_FIXTURE.next"
   mv "$COMPOSE_FIXTURE.next" "$COMPOSE_FIXTURE"
   if verify_target_contract "$NEW" >/dev/null 2>&1; then fail changed-environment-accepted; fi
+  jq '.services.fusion.environment.PUBLIC_URL="http://localhost:8127" | .services.fusion.container_name="foreign-container"' \
+    "$COMPOSE_FIXTURE" >"$COMPOSE_FIXTURE.next"
+  mv "$COMPOSE_FIXTURE.next" "$COMPOSE_FIXTURE"
+  if verify_target_contract "$NEW" >/dev/null 2>&1; then fail changed-container-name-accepted; fi
 )
-ok "resolved target Compose contract allows exact matches and rejects volume or environment drift"
+ok "resolved target Compose contract allows exact matches and rejects container, volume or environment drift"
 
 setup_orchestrator() {
   TEST_DIR="$(mktemp -d)"
@@ -249,21 +254,53 @@ ok "deployment acceptance ignores record counts while preserving integrity and s
 ok "deployment is digest-only, no-build and fusion-service scoped"
 
 (
-  FUSION_PROJECT_NAME=changd-fusion-simple
+  FUSION_PROJECT_NAME=changd-fusion
   FUSION_HEALTH_URL=http://127.0.0.1:8127/api/v1/health
   contract='{
-    "format":1,"project":"changd-fusion-simple","service":"fusion",
-    "data_mount":[{"type":"volume","source":"changd-fusion-simple_simple-data","destination":"/data","rw":true}],
+    "format":1,"project":"changd-fusion","service":"fusion","container_name":"changd-fusion",
+    "data_mount":[{"type":"volume","source":"changd-fusion-data","destination":"/data","rw":true}],
     "ports":[{"container":"3000/tcp","bindings":[{"host_ip":"127.0.0.1","host_port":"8127"}]}],
-    "networks":["changd-fusion-simple_default"],"environment":[],
+    "networks":["changd-fusion_default"],"environment":[],
     "security_opt":["seccomp=/opt/changd-fusion/docker/chromium-seccomp.json"],
     "memory":1677721600,"pids_limit":256,"shm_size":268435456,"restart":"unless-stopped"
   }'
   validate_contract_shape <<<"$contract"
+  if validate_contract_shape <<<"$(jq '.container_name="foreign-container"' <<<"$contract")"; then fail foreign-container-accepted; fi
   if validate_contract_shape <<<"$(jq '.ports[0].bindings[0].host_ip="0.0.0.0"' <<<"$contract")"; then fail public-bind-accepted; fi
   if validate_contract_shape <<<"$(jq '.data_mount[0].destination="/tmp"' <<<"$contract")"; then fail wrong-volume-accepted; fi
 )
 ok "runtime contract pins loopback port, /data volume and positive resource limits"
+
+(
+  for compose_file in docker-compose.yml compose.simple.yml; do
+    model="$(docker compose -f "$ROOT/$compose_file" config --format json)"
+    jq -e --arg image "$IMAGE_REPOSITORY" '
+      .name == "changd-fusion" and
+      (.services | keys) == ["fusion"] and
+      .services.fusion.container_name == "changd-fusion" and
+      (.services.fusion.volumes | length) == 1 and
+      .services.fusion.volumes[0].source == "changd-fusion-data" and
+      .services.fusion.volumes[0].target == "/data" and
+      .volumes["changd-fusion-data"].name == "changd-fusion-data" and
+      (.services.fusion.networks | keys) == ["default"] and
+      .networks.default.name == "changd-fusion_default"
+    ' <<<"$model" >/dev/null || fail "nonstandard-compose-identity:$compose_file"
+  done
+)
+ok "both Simple Compose entrypoints resolve the standardized Docker identities"
+
+(
+  FUSION_PROJECT_NAME=changd-fusion
+  FUSION_PROJECT_DIR="$ROOT"
+  FUSION_COMPOSE_FILES="$ROOT/docker-compose.yml:$ROOT/docker-compose.ghcr.yml"
+  FUSION_CONTRACT_FILE="$ROOT/.unused-contract"
+  FUSION_STATE_DIR="$ROOT/.unused-state"
+  FUSION_HEALTH_URL=http://127.0.0.1:8127/api/v1/health
+  validate_config
+  FUSION_PROJECT_NAME=changd-fusion-simple
+  if validate_config >/dev/null 2>&1; then fail legacy-project-name-accepted; fi
+)
+ok "updater configuration requires the standardized Compose project"
 
 (
   REMOVED="$(mktemp)"

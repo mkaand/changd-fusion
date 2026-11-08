@@ -1,7 +1,8 @@
-# Opt-in preview; production Compose remains untouched.
-name: changd-fusion-simple
+# Equivalent Simple/SQLite Compose entrypoint.
+name: changd-fusion
 services:
   fusion:
+    container_name: changd-fusion
     build:
       context: .
       dockerfile: simple/Dockerfile
@@ -18,9 +19,15 @@ services:
     ports:
       - "127.0.0.1:${FUSION_SIMPLE_PORT:-8127}:3000"
     volumes:
-      - simple-data:/data
+      - changd-fusion-data:/data
+    networks:
+      - default
     shm_size: 256mb
     pids_limit: 256
     mem_limit: 1600m
 volumes:
-  simple-data:
+  changd-fusion-data:
+    name: changd-fusion-data
+networks:
+  default:
+    name: changd-fusion_default
