@@ -1,0 +1,4 @@
+# Opt-in production override. Always invoke Compose with --no-build.
+services:
+  fusion:
+    image: ${FUSION_IMAGE_REF:?Set FUSION_IMAGE_REF to ghcr.io/mkaand/changd-fusion@sha256:...}
