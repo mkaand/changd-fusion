@@ -104,10 +104,19 @@ ok "registry digest parsing is case-insensitive, CRLF-safe and fail-closed"
 
 (
   FUSION_PROJECT_NAME=changd-fusion
-  FUSION_PROJECT_DIR=/opt/changd-fusion
+  TEST_DIR="$(mktemp -d)"
+  FUSION_PROJECT_DIR="$TEST_DIR"
   FUSION_HEALTH_URL=http://127.0.0.1:8127/api/v1/health
   FUSION_CONTRACT_FILE="$(mktemp)"
   COMPOSE_FIXTURE="$(mktemp)"
+  mkdir -p "$TEST_DIR/docker"
+  cat >"$TEST_DIR/docker/chromium-seccomp.json" <<'JSON'
+{
+  "syscalls": [{"action": "SCMP_ACT_ERRNO", "names": ["clone3", "io_uring_setup"]}],
+  "defaultAction": "SCMP_ACT_ERRNO",
+  "architectures": ["SCMP_ARCH_X86_64"]
+}
+JSON
   cat >"$FUSION_CONTRACT_FILE" <<'JSON'
 {
   "format":1,"project":"changd-fusion","service":"fusion","container_name":"changd-fusion",
@@ -120,7 +129,7 @@ ok "registry digest parsing is case-insensitive, CRLF-safe and fail-closed"
     {"key":"PORT","value":"3000"},
     {"key":"PUBLIC_URL","value":"http://localhost:8127"}
   ],
-  "security_opt":["seccomp=/opt/changd-fusion/docker/chromium-seccomp.json"],
+  "security_opt":["seccomp={\"architectures\":[\"SCMP_ARCH_X86_64\"],\"defaultAction\":\"SCMP_ACT_ERRNO\",\"syscalls\":[{\"names\":[\"clone3\",\"io_uring_setup\"],\"action\":\"SCMP_ACT_ERRNO\"}]}"],
   "memory":1677721600,"pids_limit":256,"shm_size":268435456,"restart":"unless-stopped"
 }
 JSON
@@ -143,6 +152,11 @@ JSON
 JSON
   compose() { cat "$COMPOSE_FIXTURE"; }
   verify_target_contract "$NEW"
+  jq '.syscalls[0].names += ["unshare"]' "$TEST_DIR/docker/chromium-seccomp.json" >"$TEST_DIR/docker/chromium-seccomp.json.next"
+  mv "$TEST_DIR/docker/chromium-seccomp.json.next" "$TEST_DIR/docker/chromium-seccomp.json"
+  if verify_target_contract "$NEW" >/dev/null 2>&1; then fail changed-seccomp-profile-accepted; fi
+  jq '.syscalls[0].names |= map(select(. != "unshare"))' "$TEST_DIR/docker/chromium-seccomp.json" >"$TEST_DIR/docker/chromium-seccomp.json.next"
+  mv "$TEST_DIR/docker/chromium-seccomp.json.next" "$TEST_DIR/docker/chromium-seccomp.json"
   jq '.volumes["changd-fusion-data"].name="foreign-data"' "$COMPOSE_FIXTURE" >"$COMPOSE_FIXTURE.next"
   mv "$COMPOSE_FIXTURE.next" "$COMPOSE_FIXTURE"
   if verify_target_contract "$NEW" >/dev/null 2>&1; then fail changed-data-volume-accepted; fi
@@ -155,7 +169,7 @@ JSON
   mv "$COMPOSE_FIXTURE.next" "$COMPOSE_FIXTURE"
   if verify_target_contract "$NEW" >/dev/null 2>&1; then fail changed-container-name-accepted; fi
 )
-ok "resolved target Compose contract allows exact matches and rejects container, volume or environment drift"
+ok "seccomp JSON normalization accepts equivalent profiles and blocks profile or other contract drift"
 
 setup_orchestrator() {
   TEST_DIR="$(mktemp -d)"
