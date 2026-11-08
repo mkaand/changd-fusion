@@ -192,13 +192,40 @@ target_compose_contract() {
   '
 }
 
+normalize_seccomp_contract() {
+  local contract="$1" option profile normalized options=()
+  while IFS= read -r option; do
+    if [[ "$option" != seccomp=* ]]; then
+      options+=("$option")
+      continue
+    fi
+
+    profile="${option#seccomp=}"
+    if [[ "$profile" == \{* ]]; then
+      normalized="$(jq -ceS 'if type == "object" then . else error("invalid_seccomp_profile") end' <<<"$profile")" \
+        || die "invalid_seccomp_profile" || return
+    else
+      [[ "$profile" = /* && -f "$profile" && -r "$profile" ]] \
+        || die "invalid_seccomp_profile_path" || return
+      normalized="$(jq -ceS 'if type == "object" then . else error("invalid_seccomp_profile") end' "$profile")" \
+        || die "invalid_seccomp_profile" || return
+    fi
+    options+=("seccomp=$normalized")
+  done < <(jq -er '.security_opt[] | strings' <<<"$contract") || return
+
+  normalized="$(jq -cn --args '$ARGS.positional | sort' "${options[@]}")" || return
+  jq -cS --argjson security_opt "$normalized" '.security_opt = $security_opt' <<<"$contract"
+}
+
 verify_target_contract() {
-  local digest="$1" expected target
+  local digest="$1" expected target normalized_expected normalized_target
   [[ -f "$FUSION_CONTRACT_FILE" ]] || die "runtime_contract_missing" || return
   expected="$(jq -cS . "$FUSION_CONTRACT_FILE")" || die "runtime_contract_invalid" || return
   target="$(target_compose_contract "$digest" | jq -cS .)" || return
   validate_contract_shape <<<"$target" || die "unsafe_target_compose_contract" || return
-  [[ "$expected" == "$target" ]] || die "target_compose_contract_mismatch"
+  normalized_expected="$(normalize_seccomp_contract "$expected")" || return
+  normalized_target="$(normalize_seccomp_contract "$target")" || return
+  [[ "$normalized_expected" == "$normalized_target" ]] || die "target_compose_contract_mismatch"
 }
 
 sqlite_baseline() {
