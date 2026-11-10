@@ -27,7 +27,8 @@ export type Monitor = {
   kind: "browser" | "html" | "api";
   text_enabled: boolean;
   text_direction?: "added" | "removed" | "both";
-  text_source?: "direct" | "jina";
+  text_source?: "direct" | "jina" | "markdown_new";
+  markdown_render?: "auto" | "browser";
   extraction_mode?: "full_text" | "selected_text" | "keyword_presence";
   keyword?: string | null;
   extraction_rule?: SelectedTextRule | null;
@@ -129,6 +130,16 @@ export function jinaReaderFetchOptions(m: Pick<Monitor, "text_source" | "extract
 
 function fetchJinaReader(m: Pick<Monitor, "url" | "text_source" | "extraction_mode">, policy: EgressPolicy, timeout: number) {
   return safeFetch(`https://r.jina.ai/${m.url}`, policy, timeout, 2_000_000, jinaReaderFetchOptions(m));
+}
+async function fetchMarkdownNew(m: Pick<Monitor, "url" | "markdown_render">, policy: EgressPolicy, timeout: number) {
+  await policy.target(m.url);
+  const response = await fetch("https://markdown.new/", { method:"POST", headers:{"content-type":"application/json","accept":"application/json,text/markdown"}, body:JSON.stringify({url:m.url,method:m.markdown_render??"auto"}), signal:AbortSignal.timeout(timeout) });
+  if (response.status === 402) throw new HttpError(422,"markdown.new may require paid access or have no free allowance remaining.");
+  if (response.status === 429) throw new HttpError(422,"markdown.new may be rate limited. Keep the existing baseline and retry later.");
+  if (!response.ok) throw new HttpError(422,`markdown.new returned HTTP ${response.status}. Keep the existing baseline and retry.`);
+  const value=await response.json().catch(async()=>({markdown:await response.text()}));
+  const text=typeof value === "string" ? value : value.markdown ?? value.text ?? value.content ?? "";
+  return validateJinaReaderContent(Buffer.from(String(text)));
 }
 
 async function cdpScreenshot(context: BrowserContext, page: Page, clip?: { x: number; y: number; width: number; height: number }) {
@@ -385,11 +396,10 @@ export async function capture(
         422,
         "Private workflows require HTTPS and text-only capture",
       );
-    if (m.text_source === "jina" && m.text_enabled && !m.visual_enabled) {
+    if ((m.text_source === "jina" || m.text_source === "markdown_new") && m.text_enabled && !m.visual_enabled) {
       enterStage("navigation");
-      const response = await fetchJinaReader(m, policy, captureTimeoutMs);
+      const readerText = m.text_source === "jina" ? validateJinaReaderContent((await fetchJinaReader(m, policy, captureTimeoutMs)).body) : await fetchMarkdownNew(m, policy, captureTimeoutMs);
       enterStage("text_extraction");
-      const readerText = validateJinaReaderContent(response.body);
       const text = m.extraction_mode === "selected_text"
           ? normalizeText(applySelectedTextRule(readableJinaLines(readerText).join("\n"), m.extraction_rule!), { ...m, ignore_text: [], ignore_case: false, normalize_whitespace: true })
           : normalizeText(readerText, m);
