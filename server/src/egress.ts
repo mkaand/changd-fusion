@@ -79,13 +79,15 @@ export type SafeFetchOptions = {
   jinaNoCache?: boolean;
   markdownNewBody?: string;
 };
+export type SafeFetchResult = { body: Buffer; contentType: string; status: number };
 export async function safeFetch(
   input: string,
   policy: EgressPolicy,
   timeout = 30000,
   maxBytes = 2_000_000,
   options: SafeFetchOptions = {},
-): Promise<{ body: Buffer; contentType: string }> {
+): Promise<SafeFetchResult> {
+  if (options.markdownNewBody && input !== "https://markdown.new/") throw new HttpError(400, "Invalid markdown.new endpoint");
   const deadline = Date.now() + timeout;
   for (let hop = 0; hop < 6; hop++) {
     const target = await policy.target(input);
@@ -109,7 +111,7 @@ export async function safeFetch(
           method: options.markdownNewBody ? "POST" : "GET",
           headers: {
             "User-Agent": "Changd-Fusion/0.2",
-            Accept: "application/json,text/html",
+            Accept: options.markdownNewBody ? "text/markdown,application/json" : "application/json,text/html",
             ...(options.jinaNoCache && target.url.hostname === "r.jina.ai" ? { "X-No-Cache": "true" } : {}),
             ...(options.markdownNewBody && target.url.hostname === "markdown.new" ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(options.markdownNewBody).toString() } : {}),
           },
@@ -145,10 +147,13 @@ export async function safeFetch(
       req.on("error", reject);
       req.end(options.markdownNewBody);
     });
+    if (options.markdownNewBody && [301, 302, 303, 307, 308].includes(result.status)) throw new HttpError(422, "markdown.new redirect refused");
     if ([301, 302, 303, 307, 308].includes(result.status) && result.location) {
       input = new URL(result.location, target.url).href;
       continue;
     }
+    if (result.status < 200 || result.status >= 300)
+      if (options.markdownNewBody) return result;
     if (result.status < 200 || result.status >= 300)
       throw (
         detectAttention(result.status, target.url.pathname, "", false, false) ??

@@ -131,14 +131,26 @@ export function jinaReaderFetchOptions(m: Pick<Monitor, "text_source" | "extract
 function fetchJinaReader(m: Pick<Monitor, "url" | "text_source" | "extraction_mode">, policy: EgressPolicy, timeout: number) {
   return safeFetch(`https://r.jina.ai/${m.url}`, policy, timeout, 2_000_000, jinaReaderFetchOptions(m));
 }
-async function fetchMarkdownNew(m: Pick<Monitor, "url" | "markdown_render">, policy: EgressPolicy, timeout: number) {
+export function parseMarkdownNewResponse(body: Buffer, contentType: string) {
+  const raw=body.toString("utf8");
+  let text: unknown=raw;
+  if (/json/i.test(contentType)) {
+    let value: unknown;
+    try { value=JSON.parse(raw); } catch { throw new HttpError(422,"markdown.new returned invalid JSON. Keep the existing baseline and retry."); }
+    text=typeof value === "string" ? value : value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string,unknown>).markdown ?? (value as Record<string,unknown>).text ?? (value as Record<string,unknown>).content : undefined;
+  }
+  if (typeof text !== "string") throw new HttpError(422,"markdown.new returned invalid content. Keep the existing baseline and retry.");
+  return validateJinaReaderContent(Buffer.from(text));
+}
+export async function fetchMarkdownNew(m: Pick<Monitor, "url" | "markdown_render">, policy: EgressPolicy, timeout: number) {
   await policy.target(m.url);
   const body=JSON.stringify({url:m.url,method:m.markdown_render??"auto"});
   const response=await safeFetch("https://markdown.new/",policy,timeout,2_000_000,{markdownNewBody:body});
-  const raw=response.body.toString("utf8");
-  let text=raw;
-  if (/json/i.test(response.contentType)) { try { const value=JSON.parse(raw); text=typeof value === "string" ? value : value.markdown ?? value.text ?? value.content ?? ""; } catch { throw new HttpError(422,"markdown.new returned invalid JSON. Keep the existing baseline and retry."); } }
-  return validateJinaReaderContent(Buffer.from(String(text)));
+  if (response.status === 402) throw new HttpError(422,"markdown.new free allowance may be exhausted or paid access may be required.");
+  if (response.status === 429) throw new HttpError(422,"markdown.new may be rate limited or its quota exceeded.");
+  if (response.status >= 500) throw new HttpError(422,"markdown.new may be temporarily unavailable.");
+  if (response.status < 200 || response.status >= 300) throw new HttpError(422,`markdown.new returned HTTP ${response.status}.`);
+  return parseMarkdownNewResponse(response.body,response.contentType);
 }
 
 async function cdpScreenshot(context: BrowserContext, page: Page, clip?: { x: number; y: number; width: number; height: number }) {
