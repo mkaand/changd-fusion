@@ -98,6 +98,21 @@ it("turns a one-finger Fit gesture into real backend scroll and a replayable fri
   expect(onAddStep).toHaveBeenNthCalledWith(2, { action: "click", selector: "#target", selector_type: "css", timeout_ms: 5000, continue_on_error: false });
 });
 
+it("sends a horizontal Fit gesture to the retained browser session", async () => {
+  const session = "00000000-0000-4000-8000-000000000099";
+  vi.mocked(api)
+    .mockResolvedValueOnce({ session_id: session, image: "aGVsbG8=", width: 390, height: 844, scroll_x: 0, scroll_y: 0, selection: null })
+    .mockResolvedValueOnce({ session_id: session, image: "c2Nyb2xsZWQ=", width: 390, height: 844, scroll_x: 180, scroll_y: 0, selection: null });
+  render(<RegionPicker mobilePage getDraft={() => ({ ...draft, mobile_view: true })} onSelect={vi.fn()} onUseViewport={vi.fn()} />);
+  const image = await screen.findByAltText("Secure monitor preview");
+  Object.defineProperty(image, "getBoundingClientRect", { value: () => ({ left: 0, top: 0, width: 390, height: 844 }) });
+  const canvas = image.closest(".region-preview-canvas")!;
+  fireEvent.pointerDown(image, { pointerId: 51, pointerType: "touch", clientX: 280, clientY: 300 });
+  fireEvent.pointerMove(canvas, { pointerId: 51, pointerType: "touch", clientX: 100, clientY: 300 });
+  fireEvent.pointerUp(canvas, { pointerId: 51, pointerType: "touch", clientX: 100, clientY: 300 });
+  await waitFor(() => expect(api).toHaveBeenLastCalledWith("/region-preview", "POST", expect.objectContaining({ session_id: session, scroll_delta_x: 180, scroll_delta_y: 0 }), expect.anything()));
+});
+
 it("builds a CSS browser step from Preview without enabling visual detection", async () => {
   const onAddStep = vi.fn();
   vi.mocked(api).mockResolvedValue({ session_id: "00000000-0000-4000-8000-000000000099", image: "aGVsbG8=", width: 1280, height: 900, http_status: 403, selection: { selector: "#reject-cookies", label: "Exact: button", x: 20, y: 20, width: 120, height: 44 } });
