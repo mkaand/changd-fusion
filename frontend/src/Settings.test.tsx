@@ -41,8 +41,8 @@ it("shows safe fallbacks when deployment metadata is unavailable", () => {
 });
 
 it("rejects a truncated commit and missing branch", () => {
-  render(<Settings {...props} buildMetadata={{ version: "0.4.1", commit: "a".repeat(39) }} />);
-  expect(screen.getByText("0.4.1", { exact: true })).toBeInTheDocument();
+  render(<Settings {...props} buildMetadata={{ version: "0.4.2", commit: "a".repeat(39) }} />);
+  expect(screen.getByText("0.4.2", { exact: true })).toBeInTheDocument();
   expect(screen.getAllByText("Unavailable", { exact: true })).toHaveLength(2);
   expect(screen.queryByRole("link", { name: /^Commit / })).not.toBeInTheDocument();
 });

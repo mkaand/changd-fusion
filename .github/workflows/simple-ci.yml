@@ -14,6 +14,13 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '24'
+      - name: Build backend and run frontend regression suite
+        run: |
+          npm --prefix server ci --ignore-scripts --no-audit --no-fund
+          npm --prefix server run build
+          npm --prefix frontend ci --ignore-scripts --no-audit --no-fund
+          npm --prefix frontend test
+          npm --prefix frontend run build
       - name: Check ESM runtime syntax
         run: |
           set -euo pipefail
@@ -31,15 +38,17 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Build actual single-service image
         env:
-          APP_COMMIT: ${{ github.sha }}
+          APP_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
           APP_BRANCH: ${{ github.head_ref || github.ref_name }}
         run: docker compose build --build-arg APP_COMMIT="$APP_COMMIT" --build-arg APP_BRANCH="$APP_BRANCH" fusion
       - name: Smoke test real container, SQLite and first administrator setup
         shell: bash
         env:
-          APP_COMMIT: ${{ github.sha }}
+          APP_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
           APP_BRANCH: ${{ github.head_ref || github.ref_name }}
         run: |
           set -euo pipefail
@@ -52,6 +61,10 @@ jobs:
           done
           if [ "$ready" != 1 ]; then docker compose logs --tail=80 fusion; exit 1; fi
           docker compose exec -T fusion node simple/verify-build-metadata.mjs "$APP_COMMIT" "$APP_BRANCH"
+          docker compose exec -T fusion node -e 'if(!process.version.startsWith("v24."))process.exit(1)'
+          docker compose exec -T fusion chromium --version
+          docker compose exec -T fusion ffmpeg -version
+          docker compose exec -T fusion ffprobe -version
           token="$(docker compose exec -T fusion cat /data/setup-token | tr -d '\r\n')"
           body="$(jq -nc --arg token "$token" --arg email 'smoke@example.com' --arg password 'ValidTestPassword123!' '{token:$token,email:$email,password:$password}')"
           curl --fail --silent --show-error -c /tmp/fusion-simple-cookies -H 'Content-Type: application/json' -d "$body" http://127.0.0.1:8127/api/v1/setup | jq -e '.ok==true'
@@ -75,7 +88,7 @@ jobs:
           unset security
           curl --fail --silent --show-error -b /tmp/fusion-simple-cookies http://127.0.0.1:8127/api/v1/analytics | jq -e '.summary.total==0 and (.trend|length)==0'
           curl --fail --silent --show-error -b /tmp/fusion-simple-cookies http://127.0.0.1:8127/api/v1/deliveries | jq -e '.total==0 and (.items|length)==0'
-          docker compose exec -T fusion node --test simple/engine.test.mjs
+          docker compose exec -T fusion node --test simple/*.test.mjs
           docker compose exec -T fusion node --test simple/migration.smoke.mjs
           # Run real sandboxed Chromium and retained Preview against a public HTTPS fixture.
           docker compose exec -T fusion node --test simple/chromium.smoke.mjs

@@ -73,3 +73,25 @@ test("successful legacy monitor rows do not expose stale payload errors",()=>{
     db.close();
   } finally { rmSync(dir,{recursive:true,force:true}); }
 });
+test("existing SQLite WAL data and metadata remain readable across a 0.4.2 reopen",()=>{
+  const dir=mkdtempSync(path.join(tmpdir(),"fusion-v042-compat-"));
+  try {
+    const file=path.join(dir,"fusion.sqlite"),user=randomUUID(),id=randomUUID(),capture=randomUUID(),event=randomUUID();
+    let db=openSimpleDatabase(file);
+    db.prepare("INSERT INTO users(id,email,password_hash,payload) VALUES(?,?,?,?)").run(user,"upgrade@example.com","hash","{}");
+    saveMonitor(db,{id,name:"Existing",url:"https://example.com",kind:"browser",enabled:true,paused:false,
+      baseline_id:capture,latest_capture_id:capture,notification_enabled:true,next_run:new Date().toISOString()},user);
+    db.prepare("INSERT INTO captures(id,monitor_id,text_content,screenshot,http_status,created_at) VALUES(?,?,?,?,?,?)")
+      .run(capture,id,"Original baseline",null,200,Date.now());
+    db.prepare("INSERT INTO events(id,monitor_id,before_id,after_id,status,payload,created_at) VALUES(?,?,?,?,?,?,?)")
+      .run(event,id,null,capture,"baseline",JSON.stringify({id:event,status:"baseline"}),Date.now());
+    db.close();
+    db=openSimpleDatabase(file);
+    assert.equal(db.prepare("PRAGMA journal_mode").get().journal_mode,"wal");
+    assert.equal(db.prepare("SELECT value FROM metadata WHERE key='schema_version'").get().value,"1");
+    assert.equal(getMonitor(db,id,user).baseline_id,capture);
+    assert.equal(db.prepare("SELECT text_content FROM captures WHERE id=?").get(capture).text_content,"Original baseline");
+    assert.equal(JSON.parse(db.prepare("SELECT payload FROM events WHERE id=?").get(event).payload).status,"baseline");
+    db.close();
+  } finally {rmSync(dir,{recursive:true,force:true});}
+});
