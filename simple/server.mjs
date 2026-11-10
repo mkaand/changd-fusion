@@ -423,7 +423,7 @@ async function handleSimplePreview(req,res,monitor,body,options={}){
   try {
     const result=await previewRegion(monitor,cfg,body.point,policy,{
       ownerId:req.user.user_id,id:body.session_id,retain:options.retain!==false,
-      captureLayout:body.mode!=="area",refresh:!!body.refresh,scrollDeltaY:body.scroll_delta_y,
+      captureLayout:body.mode!=="area",refresh:!!body.refresh,scrollDelta:{x:Number(body.scroll_delta_x)||0,y:Number(body.scroll_delta_y)||0},
       signal:cancellation.signal,
       progress:stage=>{if(isUuid(rid))previewProgress.set(rid,{ownerId:req.user.user_id,stage,at:Date.now()});},
       acquireCapacity:async (_onWait,waitMs)=>engine.browser.acquirePreview({signal:cancellation.signal,waitMs:Math.min(12000,waitMs)})

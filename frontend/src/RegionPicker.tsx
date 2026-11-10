@@ -7,7 +7,7 @@ const PREVIEW_REQUEST_TIMEOUT_MS = 125000;
 const MIN_ZOOM = .5, MAX_ZOOM = 3, ZOOM_STEP = .25;
 type Draft = { url?: string; kind?: string; visual_enabled?: boolean; browser_steps?: unknown[]; step_budget_ms?: number; capture_timeout_ms?: number | null; monitor_http_error_pages?: boolean; disable_javascript?: boolean; block_ads_trackers?: boolean; cookie_banner_handling?: boolean; wait_before_capture_ms?: 0 | 2000 | 5000 | 10000; mobile_view?: boolean };
 type Selection = { selector: string; label?: string; x: number; y: number; width: number; height: number };
-type Preview = { session_id?: string; expires_at?: number; image: string; width: number; height: number; scroll_y?: number; http_status?: number; selection?: Selection | null; candidates?: Selection[]; timings?: Record<string, number>; warning?: string; reused?: boolean };
+type Preview = { session_id?: string; expires_at?: number; image: string; width: number; height: number; scroll_x?: number; scroll_y?: number; http_status?: number; selection?: Selection | null; candidates?: Selection[]; timings?: Record<string, number>; warning?: string; reused?: boolean };
 const draftSignature = (draft: Draft) => JSON.stringify([draft.url, draft.kind, draft.visual_enabled, draft.browser_steps ?? [], draft.step_budget_ms ?? 20000, draft.capture_timeout_ms, draft.monitor_http_error_pages, draft.disable_javascript, draft.block_ads_trackers, draft.cookie_banner_handling, draft.wait_before_capture_ms, draft.mobile_view]);
 export type VisualBrowserStep = { action: "click" | "wait_visible" | "wait_selector" | "dismiss_cookie" | "scroll_to"; selector: string; selector_type: "css"; timeout_ms: number; continue_on_error: boolean } | { action: "scroll_by"; x: number; y: number; timeout_ms: number; continue_on_error: boolean };
 const progressLabels: Record<string, string> = { target_validation: "Connecting to website", capacity_wait: "Preparing interactive browser — waiting for safe handoff", proxy_initialization: "Preparing secure connection", browser_launch: "Starting secure browser", browser_context: "Preparing isolated page", navigation: "Loading page", dom_ready: "Page content loaded", browser_steps: "Applying browser steps", rendering_preparation: "Preparing preview", screenshot: "Rendering screenshot", serialization: "Transferring preview", ready: "Preview ready" };
@@ -25,13 +25,13 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
   const [compact, setCompact] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches);
   const [open, setOpen] = useState(false), [preview, setPreview] = useState<Preview>(), [loading, setLoading] = useState(false), [error, setError] = useState<ApiError>(), [zoom, setZoom] = useState(1), [progress, setProgress] = useState("target_validation"), [clientTiming, setClientTiming] = useState<{ transfer?: number; decode?: number }>({});
   const [stepAction, setStepAction] = useState<VisualBrowserStep["action"]>("click"), [stepTimeout, setStepTimeout] = useState(5000), [stepOptional, setStepOptional] = useState(false), [workflowChanged, setWorkflowChanged] = useState(false);
-  const [pendingScrollY, setPendingScrollY] = useState(0);
+  const [pendingScroll, setPendingScroll] = useState({ x: 0, y: 0 });
   const canvas = useRef<HTMLDivElement>(null);
   const previewImage = useRef<HTMLImageElement>(null);
   const requestPending = useRef(false);
   const requestController = useRef<AbortController | undefined>(undefined);
   const sessionId = useRef<string | undefined>(undefined);
-  const initialScrollY = useRef(0);
+  const initialScroll = useRef({ x: 0, y: 0 });
   const renderedDraft = useRef<string>("");
   const [stale, setStale] = useState(true);
   useEffect(() => {
@@ -56,7 +56,7 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
     if (id) void api(`/region-preview/${id}`, "DELETE").catch(() => undefined);
   }, []);
   useEffect(() => () => releaseSession(), [releaseSession]);
-  const load = async (point?: { x: number; y: number }, refreshSession = false, scrollDeltaY?: number) => {
+  const load = async (point?: { x: number; y: number }, refreshSession = false, scrollDelta?: { x: number; y: number }) => {
     if (requestPending.current) return;
     const draft = getDraft();
     const signature = draftSignature(draft);
@@ -77,9 +77,10 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
     const progressTimer = point ? undefined : window.setInterval(() => { void api<{ stage: string }>(`/region-preview/status/${previewRequestId}`, "GET", undefined, { signal: controller.signal }).then((value) => { if (!controller.signal.aborted) setProgress(value.stage); }).catch(() => undefined); }, 1000);
     try {
       const result = await api("/region-preview", "POST", {
-        session_id: point || refreshSession || scrollDeltaY ? sessionId.current : undefined,
+        session_id: point || refreshSession || scrollDelta ? sessionId.current : undefined,
         refresh: refreshSession,
-        scroll_delta_y: scrollDeltaY,
+        scroll_delta_x: scrollDelta?.x,
+        scroll_delta_y: scrollDelta?.y,
         preview_request_id: previewRequestId,
         monitor_id: monitorId,
         monitor: { url: draft.url, kind: "browser", visual_enabled: true, browser_steps: draft.browser_steps ?? [], step_budget_ms: draft.step_budget_ms ?? 20_000, capture_timeout_ms: draft.capture_timeout_ms ?? undefined, monitor_http_error_pages: draft.monitor_http_error_pages, disable_javascript: draft.disable_javascript, block_ads_trackers: draft.block_ads_trackers, cookie_banner_handling: draft.cookie_banner_handling, wait_before_capture_ms: draft.wait_before_capture_ms, mobile_view: draft.mobile_view },
@@ -90,8 +91,8 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
         return;
       }
       sessionId.current = result.session_id;
-      if (!scrollDeltaY && !point && !refreshSession) { initialScrollY.current = result.scroll_y ?? 0; setPendingScrollY(0); }
-      if (scrollDeltaY) setPendingScrollY((result.scroll_y ?? initialScrollY.current + pendingScrollY + scrollDeltaY) - initialScrollY.current);
+      if (!scrollDelta && !point && !refreshSession) { initialScroll.current = { x: result.scroll_x ?? 0, y: result.scroll_y ?? 0 }; setPendingScroll({ x: 0, y: 0 }); }
+      if (scrollDelta) setPendingScroll({ x: (result.scroll_x ?? initialScroll.current.x) - initialScroll.current.x, y: (result.scroll_y ?? initialScroll.current.y) - initialScroll.current.y });
       renderedDraft.current = signature;
       setStale(false);
       imageDecodeStarted.current = performance.now(); setPreview(result); setError(undefined); setProgress("ready"); setWorkflowChanged(false); setClientTiming({ transfer: Math.round(performance.now() - requestStarted - Object.values(result.timings ?? {}).reduce((sum, value) => sum + value, 0)) });
@@ -149,10 +150,10 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
       return;
     }
     const backendScroll = !cancelled && gesture.current.moved && !gesture.current.multi && zoom <= 1 && tracked
-      ? Math.round(gesture.current.y - event.clientY)
-      : 0;
+      ? { x: Math.round(gesture.current.x - event.clientX), y: Math.round(gesture.current.y - event.clientY) }
+      : { x: 0, y: 0 };
     gesture.current.primaryId = null;
-    if (Math.abs(backendScroll) >= 8 && !requestPending.current && preview?.session_id) {
+    if ((Math.abs(backendScroll.x) >= 8 || Math.abs(backendScroll.y) >= 8) && !requestPending.current && preview?.session_id) {
       void load(undefined, false, backendScroll);
       return;
     }
@@ -166,10 +167,10 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
   };
   const replay = () => { releaseSession(); window.setTimeout(() => void load(), 0); };
   const commitScroll = () => {
-    if (!pendingScrollY) return;
-    const step: VisualBrowserStep = { action: "scroll_by", x: 0, y: pendingScrollY, timeout_ms: 5000, continue_on_error: false };
+    if (!pendingScroll.x && !pendingScroll.y) return;
+    const step: VisualBrowserStep = { action: "scroll_by", x: pendingScroll.x, y: pendingScroll.y, timeout_ms: 5000, continue_on_error: false };
     (purpose === "step" ? onAddStep : onScrollStep)?.(step);
-    setPendingScrollY(0);
+    setPendingScroll({ x: 0, y: 0 });
   };
   const canApplySelection = () => {
     if (stale || loading || error || renderedDraft.current !== draftSignature(getDraft())) {

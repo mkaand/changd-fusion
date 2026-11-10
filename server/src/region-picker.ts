@@ -254,7 +254,7 @@ export async function selectionAt(page: Page, point: { x: number; y: number }, v
   return { selection, candidates };
 }
 
-export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number; y: number }, policy = new EgressPolicy(), session?: { ownerId: string; id?: string; retain?: boolean; captureLayout?: boolean; refresh?: boolean; scrollDeltaY?: number; progress?: (stage: PreviewStage) => void; signal?: AbortSignal; operations?: PreviewOperations; acquireCapacity?: (onWait: () => void, waitBudgetMs: number) => Promise<ChromiumLease | null> }) {
+export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number; y: number }, policy = new EgressPolicy(), session?: { ownerId: string; id?: string; retain?: boolean; captureLayout?: boolean; refresh?: boolean; scrollDelta?: { x: number; y: number }; progress?: (stage: PreviewStage) => void; signal?: AbortSignal; operations?: PreviewOperations; acquireCapacity?: (onWait: () => void, waitBudgetMs: number) => Promise<ChromiumLease | null> }) {
   const requestDeadline = Date.now() + PREVIEW_REQUEST_BUDGET_MS;
   let stage: CaptureStage = "target_validation";
   const signature = createHash("sha256").update(JSON.stringify({
@@ -280,13 +280,13 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
     const activeRemaining = () => Math.max(1, absoluteDeadline - Date.now());
     try {
       stage = "text_extraction";
-      if (session.scrollDeltaY) {
+      if (session.scrollDelta && (session.scrollDelta.x || session.scrollDelta.y)) {
         await boundedPreviewOperation({
-          operation: () => active.page.evaluate((deltaY) => window.scrollBy({ top: deltaY, behavior: "instant" }), session.scrollDeltaY),
+          operation: () => active.page.evaluate((delta) => window.scrollBy({ left: delta.x, top: delta.y, behavior: "instant" }), session.scrollDelta!),
           remaining: activeRemaining, cancel: () => closeSession(active), stage: "screenshot", signal: session.signal,
         });
       }
-      if (session.refresh || session.scrollDeltaY) {
+      if (session.refresh || (session.scrollDelta && (session.scrollDelta.x || session.scrollDelta.y))) {
         session.progress?.("rendering_preparation");
         await boundedPreviewOperation({ operation: () => (session.operations?.snapshot ?? snapshotLayout)(active.page), remaining: activeRemaining, cancel: () => closeSession(active), stage: "screenshot", signal: session.signal });
         session.progress?.("screenshot");
@@ -295,8 +295,8 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
       }
       const picked = point ? await boundedPreviewOperation({ operation: () => selectionAt(active.page, point, { width: active.width, height: active.height }), remaining: activeRemaining, cancel: () => closeSession(active), stage: "text_extraction", signal: session.signal }) : null;
       if (picked) checkDimensions({ width: Math.ceil(picked.selection.width), height: Math.ceil(picked.selection.height) }, { width: cfg.MAX_CAPTURE_WIDTH, height: cfg.MAX_CAPTURE_HEIGHT, pixels: cfg.MAX_CAPTURE_PIXELS });
-      const scrollY = await active.page.evaluate(() => window.scrollY);
-      return { session_id: active.id, expires_at: active.expiresAt, image: active.image.toString("base64"), width: active.width, height: active.height, scroll_y: scrollY, http_status: active.httpStatus, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings: active.timings, warning: active.warning, reused: true };
+      const scroll = await active.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
+      return { session_id: active.id, expires_at: active.expiresAt, image: active.image.toString("base64"), width: active.width, height: active.height, scroll_x: scroll.x, scroll_y: scroll.y, http_status: active.httpStatus, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings: active.timings, warning: active.warning, reused: true };
     } catch (error) {
       if (session.signal?.aborted || Date.now() >= active.expiresAt) await closeSession(active);
       throw regionPreviewFailure(error, stage);
@@ -411,7 +411,7 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
     const encoded = image.toString("base64");
     timings.serialization = Math.round(performance.now() - stageStarted);
     session?.progress?.("ready");
-    if (!session?.retain) return { image: encoded, width: viewport.width, height: viewport.height, scroll_y: await page.evaluate(() => window.scrollY), http_status: navigationStatus, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings, warning };
+    if (!session?.retain) { const scroll=await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY })); return { image: encoded, width: viewport.width, height: viewport.height, scroll_x: scroll.x, scroll_y: scroll.y, http_status: navigationStatus, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings, warning }; }
     const createdAt = Date.now();
     const active: Session = { id: randomUUID(), ownerId: session.ownerId, createdAt, expiresAt: createdAt + REGION_PREVIEW_MAX_LIFETIME_MS, browser, context, page, proxy, capacity, image, width: viewport.width, height: viewport.height, httpStatus: navigationStatus, signature, timings, warning };
     active.expiryTimer = setTimeout(() => void closeSession(active), REGION_PREVIEW_MAX_LIFETIME_MS);
@@ -425,7 +425,8 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
       throw new HttpError(499, "Preview was cancelled");
     }
     browser = undefined; context = undefined; proxy = undefined; capacity = undefined;
-    return { session_id: active.id, expires_at: active.expiresAt, image: encoded, width: viewport.width, height: viewport.height, scroll_y: await active.page.evaluate(() => window.scrollY), http_status: navigationStatus, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings, warning, reused: false };
+    const scroll=await active.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
+    return { session_id: active.id, expires_at: active.expiresAt, image: encoded, width: viewport.width, height: viewport.height, scroll_x: scroll.x, scroll_y: scroll.y, http_status: navigationStatus, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings, warning, reused: false };
   } catch (error) { throw regionPreviewFailure(capacity?.signal?.aborted ? new CaptureFailure(stage, "coordination_lost") : error, stage); }
   finally {
     session?.signal?.removeEventListener("abort", abortBrowser);

@@ -231,7 +231,7 @@ export function History({ id, refresh }: { id: string; refresh: number }) {
               {e.visual_percent !== null && (
                 <Tag>Visual: {percent(e.visual_percent)}</Tag>
               )}
-              {e.text_changed && <Tag color="blue">Text changed</Tag>}
+              {e.text_changed && <Tag color="blue">{e.source_kind === "file" ? "File metadata changed" : "Text changed"}</Tag>}
               {e.http_status && <Tag color={e.http_status >= 400 ? "red" : "green"}>HTTP {e.http_status}</Tag>}
             </Space>
             {e.http_status_changed && (

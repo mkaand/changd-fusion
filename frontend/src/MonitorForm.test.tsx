@@ -62,6 +62,21 @@ it("HTML/API selection returns to text-only viewport configuration", async () =>
     screen.getByRole("switch", { name: "Visual detection" }),
   ).toBeDisabled();
 });
+it("File Monitor keeps URL, interval and notifications while hiding browser controls", async () => {
+  const user = userEvent.setup();
+  render(<Fixture />);
+  await user.click(screen.getByText("Advanced settings", { exact: true }));
+  await user.click(screen.getByLabelText("Source"));
+  await user.click(screen.getByText("File Monitor — HTTP metadata"));
+  current.setFieldsValue({name:"Firmware",url:"https://example.com/firmware.zip",interval_seconds:600});
+  const payload = await current.validateFields() as any;
+  expect(payload).toMatchObject({kind:"file",text_enabled:true,visual_enabled:false,interval_seconds:600,notification_enabled:true});
+  expect(current.getFieldValue("text_source")).toBe("direct");
+  expect(screen.getByLabelText("Notification channels")).toBeInTheDocument();
+  expect(screen.queryByLabelText("Screenshot capture mode")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", {name:"Add browser step"})).not.toBeInTheDocument();
+  expect(screen.queryByText("Browser rendering", {exact:true})).not.toBeInTheDocument();
+});
 it("keeps Selected area distinct from element capture and validates its applied rectangle", async () => {
   const user = userEvent.setup();
   render(<Fixture />);

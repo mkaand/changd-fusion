@@ -6,10 +6,13 @@ import {mkdtempSync,readFileSync,rmSync} from "node:fs";
 import {tmpdir} from "node:os";
 import path from "node:path";
 import {randomUUID} from "node:crypto";
-import {PNG} from "pngjs";
+import http from "node:http";
+import {createRequire} from "node:module";
 import {BrowserQueue} from "./browser-queue.mjs";
 import {previewRegion,releaseRegionPreviewSession} from "../server/dist/region-picker.js";
 import {EgressPolicy} from "../server/dist/egress.js";
+import {capture} from "../server/dist/capture.js";
+const {PNG}=createRequire(new URL("../server/dist/capture.js",import.meta.url))("pngjs");
 
 const page="https://example.com/";
 const monitor={
@@ -99,4 +102,32 @@ test("real mobile Preview uses the mobile viewport and releases its slot", {time
     });
     assert.equal(next.reused,true,"Mobile scroll should use the retained interactive session");
   }finally{if(active)await releaseRegionPreviewSession(ownerId,active);queue.close();}
+});
+
+test("real Chromium Preview scrolls both axes and replays x/y Browser Step during capture",{timeout:90000},async()=>{
+  const fixture=http.createServer((_req,res)=>{
+    res.writeHead(200,{"Content-Type":"text/html"});
+    res.end('<!doctype html><html><body style="margin:0"><div style="width:2600px;height:2000px;background:white"></div><div id="target" style="position:absolute;left:620px;top:520px;width:300px;height:300px;background:rgb(0,0,255)">Target</div></body></html>');
+  });
+  await new Promise(resolve=>fixture.listen(0,"127.0.0.1",resolve));
+  const port=fixture.address().port,url=`http://127.0.0.1:${port}/page`;
+  // Only this isolated fixture permits loopback; production EgressPolicy is unchanged.
+  const policy=new EgressPolicy(undefined,()=>true,new Set([port]));
+  const queue=new BrowserQueue(),ownerId=randomUUID();let sessionId;
+  try {
+    const m={...monitor,url,disable_javascript:false};
+    const initial=await previewRegion(m,limits,undefined,policy,{ownerId,retain:true,acquireCapacity:async(_wait,waitMs)=>queue.acquirePreview({waitMs})});
+    sessionId=initial.session_id;
+    const moved=await previewRegion(m,limits,undefined,policy,{ownerId,id:sessionId,retain:true,scrollDelta:{x:600,y:500}});
+    assert.ok(moved.scroll_x>=590&&moved.scroll_y>=490,"both axes must move in server Chromium");
+    await releaseRegionPreviewSession(ownerId,sessionId);sessionId=undefined;
+    const result=await capture({...m,capture_mode:"selected_area",capture_area:{x:25,y:25,width:80,height:80},
+      browser_steps:[{action:"scroll_by",x:600,y:500,timeout_ms:5000,continue_on_error:false}]},limits,policy);
+    const frame=PNG.sync.read(result.screenshot);
+    const pixel=(40*frame.width+40)*4;
+    assert.ok(frame.data[pixel+2]>180&&frame.data[pixel]<100,"saved x/y step must reveal the target in capture");
+  }finally{
+    if(sessionId)await releaseRegionPreviewSession(ownerId,sessionId);
+    queue.close();fixture.closeAllConnections();await new Promise(resolve=>fixture.close(resolve));
+  }
 });

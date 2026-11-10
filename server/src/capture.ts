@@ -1,5 +1,6 @@
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright";
 import { EgressPolicy, browserProxy, safeFetch, type SafeFetchOptions } from "./egress.js";
+import { fetchFileMetadata, parseFileMetadata, serializeFileMetadata } from "./file-monitor.js";
 import { normalizeText } from "./comparison.js";
 import { locate, runSteps, StepFailure, warningCode, type BrowserStep } from "./browser-steps.js";
 import { AttentionFailure, detectAttention } from "./attention.js";
@@ -24,10 +25,12 @@ export type Monitor = {
   user_id: string;
   name: string;
   url: string;
-  kind: "browser" | "html" | "api";
+  kind: "browser" | "html" | "api" | "file";
+  file_baseline?: string | null;
   text_enabled: boolean;
   text_direction?: "added" | "removed" | "both";
-  text_source?: "direct" | "jina";
+  text_source?: "direct" | "jina" | "markdown_new";
+  markdown_render?: "auto" | "browser";
   extraction_mode?: "full_text" | "selected_text" | "keyword_presence";
   keyword?: string | null;
   extraction_rule?: SelectedTextRule | null;
@@ -129,6 +132,27 @@ export function jinaReaderFetchOptions(m: Pick<Monitor, "text_source" | "extract
 
 function fetchJinaReader(m: Pick<Monitor, "url" | "text_source" | "extraction_mode">, policy: EgressPolicy, timeout: number) {
   return safeFetch(`https://r.jina.ai/${m.url}`, policy, timeout, 2_000_000, jinaReaderFetchOptions(m));
+}
+export function parseMarkdownNewResponse(body: Buffer, contentType: string) {
+  const raw=body.toString("utf8");
+  let text: unknown=raw;
+  if (/json/i.test(contentType)) {
+    let value: unknown;
+    try { value=JSON.parse(raw); } catch { throw new HttpError(422,"markdown.new returned invalid JSON. Keep the existing baseline and retry."); }
+    text=typeof value === "string" ? value : value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string,unknown>).markdown ?? (value as Record<string,unknown>).text ?? (value as Record<string,unknown>).content : undefined;
+  }
+  if (typeof text !== "string") throw new HttpError(422,"markdown.new returned invalid content. Keep the existing baseline and retry.");
+  return validateJinaReaderContent(Buffer.from(text));
+}
+export async function fetchMarkdownNew(m: Pick<Monitor, "url" | "markdown_render">, policy: EgressPolicy, timeout: number) {
+  await policy.target(m.url);
+  const body=JSON.stringify({url:m.url,method:m.markdown_render??"auto"});
+  const response=await safeFetch("https://markdown.new/",policy,timeout,2_000_000,{markdownNewBody:body});
+  if (response.status === 402) throw new HttpError(422,"markdown.new free allowance may be exhausted or paid access may be required.");
+  if (response.status === 429) throw new HttpError(422,"markdown.new may be rate limited or its quota exceeded.");
+  if (response.status >= 500) throw new HttpError(422,"markdown.new may be temporarily unavailable.");
+  if (response.status < 200 || response.status >= 300) throw new HttpError(422,`markdown.new returned HTTP ${response.status}.`);
+  return parseMarkdownNewResponse(response.body,response.contentType);
 }
 
 async function cdpScreenshot(context: BrowserContext, page: Page, clip?: { x: number; y: number; width: number; height: number }) {
@@ -361,6 +385,12 @@ export async function capture(
   let deadlineElapsed = false;
   try {
     await policy.target(m.url);
+    if (m.kind === "file") {
+      enterStage("navigation");
+      const found = await fetchFileMetadata(m.url, policy, parseFileMetadata(m.file_baseline), captureTimeoutMs);
+      finishTimings();
+      return { text: serializeFileMetadata(found), screenshot: null, http_status: found.status, timings };
+    }
     if (m.kind !== "browser") {
       enterStage("navigation");
       const response = m.text_source === "jina"
@@ -385,11 +415,10 @@ export async function capture(
         422,
         "Private workflows require HTTPS and text-only capture",
       );
-    if (m.text_source === "jina" && m.text_enabled && !m.visual_enabled) {
+    if ((m.text_source === "jina" || m.text_source === "markdown_new") && m.text_enabled && !m.visual_enabled) {
       enterStage("navigation");
-      const response = await fetchJinaReader(m, policy, captureTimeoutMs);
+      const readerText = m.text_source === "jina" ? validateJinaReaderContent((await fetchJinaReader(m, policy, captureTimeoutMs)).body) : await fetchMarkdownNew(m, policy, captureTimeoutMs);
       enterStage("text_extraction");
-      const readerText = validateJinaReaderContent(response.body);
       const text = m.extraction_mode === "selected_text"
           ? normalizeText(applySelectedTextRule(readableJinaLines(readerText).join("\n"), m.extraction_rule!), { ...m, ignore_text: [], ignore_case: false, normalize_whitespace: true })
           : normalizeText(readerText, m);

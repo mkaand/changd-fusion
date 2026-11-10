@@ -21,10 +21,11 @@ export const monitorInput = z
   .object({
     name: z.string().trim().min(1).max(120),
     url: z.string().url().max(2048),
-    kind: z.enum(["browser", "html", "api"]).default("browser"),
+    kind: z.enum(["browser", "html", "api", "file"]).default("browser"),
     text_enabled: z.boolean().default(true),
     text_direction: z.enum(["added", "removed", "both"]).default("both"),
-    text_source: z.enum(["direct", "jina"]).default("direct"),
+    text_source: z.enum(["direct", "jina", "markdown_new"]).default("direct"),
+    markdown_render: z.enum(["auto", "browser"]).default("auto"),
     extraction_mode: z.enum(["full_text", "selected_text", "keyword_presence"]).default("full_text"),
     keyword: z.string().trim().min(1).max(200).nullable().default(null),
     extraction_rule: z.union([
@@ -101,7 +102,7 @@ export const monitorInput = z
   })
   .refine(
     (m) =>
-      m.text_source === "jina" || !m.browser_steps.some((s) => s.action === "fill_private") ||
+      m.text_source !== "direct" || !m.browser_steps.some((s) => s.action === "fill_private") ||
       (!m.visual_enabled && new URL(m.url).protocol === "https:"),
     { message: "Private steps require HTTPS text-only capture" },
   )
@@ -109,7 +110,7 @@ export const monitorInput = z
     message: "Enable at least one detection method",
   })
   .refine((m) => m.text_source === "direct" || (m.kind === "browser" && m.text_enabled && !m.visual_enabled), {
-    message: "Jina Reader is available only for text-only Browser monitors",
+    message: "Third-party readers are available only for text-only Browser monitors",
   })
   .refine((m) => m.extraction_mode !== "selected_text" || m.text_source === "jina", {
     message: "Selected Text extraction requires Jina Reader",
@@ -125,7 +126,7 @@ export const monitorInput = z
   })
   .refine(
     (m) => m.kind === "browser" || (m.text_enabled && !m.visual_enabled),
-    { message: "HTML/API monitors require text-only detection" },
+    { message: "HTML/API/File monitors require text-only detection" },
   )
   .transform((m) => ({
     ...m,

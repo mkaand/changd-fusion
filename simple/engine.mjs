@@ -16,7 +16,8 @@ export function normalizeText(value,monitor) {
   });
 }
 export function compareCaptures(before,after,monitor,root) {
-  const prior=normalizeText(before?.text_content,monitor),next=normalizeText(after.text,monitor);
+  const prior=monitor.kind==="file"?String(before?.text_content??""):normalizeText(before?.text_content,monitor);
+  const next=monitor.kind==="file"?String(after.text??""):normalizeText(after.text,monitor);
   const text=before&&monitor.text_enabled!==false
     ? monitor.extraction_mode==="keyword_presence"&&monitor.keyword
       ? compareKeywordPresence(prior,next,monitor.keyword)
@@ -160,7 +161,9 @@ export class FusionEngine {
       this.db.prepare("UPDATE monitors SET next_run=? WHERE id=?").run(Date.now()+5000,m.id);
       return;
     }
-    const result=await this.browser.capture(m,this.dataDir,{CAPTURE_TIMEOUT_MS:30000});
+    const fileBefore=m.kind==="file"&&m.baseline_id?this.db.prepare("SELECT text_content FROM captures WHERE id=?").get(m.baseline_id):null;
+    const captureMonitor=m.kind==="file"?{...m,file_baseline:fileBefore?.text_content??null}:m;
+    const result=await this.browser.capture(captureMonitor,this.dataDir,{CAPTURE_TIMEOUT_MS:30000});
     if(result.skipped){
       if(item){item.status="cancelled";item.updated_at=new Date().toISOString();}
       this.db.prepare("UPDATE monitors SET next_run=? WHERE id=?").run(Date.now()+5000,m.id);
@@ -177,7 +180,7 @@ export class FusionEngine {
     let diffName=null;
     if(comparison.diffImage)diffName=await this.storage.save(comparison.diffImage);
     const status=first?"baseline":comparison.textChanged||comparison.visualChanged||comparison.httpStatusChanged?"changed":"unchanged";
-    const event={id:eventId,monitor_id:m.id,status,
+    const event={id:eventId,monitor_id:m.id,status,source_kind:m.kind,
       text_changed:comparison.textChanged,visual_changed:comparison.visualChanged,http_status_changed:comparison.httpStatusChanged,
       visual_percent:comparison.visualPercent,dimension_changed:comparison.dimensionChanged,before_dimensions:comparison.beforeDimensions,after_dimensions:comparison.afterDimensions,
       text_diff:comparison.textDiff,diff_screenshot:diffName,http_status:result.http_status,before_http_status:before?.http_status??null,
@@ -193,6 +196,9 @@ export class FusionEngine {
       const payload=JSON.parse(oldState.payload);
       payload.baseline_id=afterId;payload.latest_capture_id=afterId;payload.last_percent=comparison.visualPercent;
       payload.last_error=null;payload.last_http_status=result.http_status??null;payload.execution_ms=event.execution_ms;
+      if(m.kind==="file"){
+        try{payload.file_metadata=JSON.parse(actual.text);}catch{payload.file_metadata=null;}
+      }
       payload.warning_code=result.warning??null;
       if(status==="changed")payload.last_change_at=event.created_at;
       this.db.prepare("UPDATE monitors SET payload=?,last_run=?,last_success=?,next_run=?,last_status=?,failure_count=0 WHERE id=?")
@@ -251,12 +257,13 @@ export class FusionEngine {
         }
         const before=e.before_id?this.db.prepare("SELECT screenshot FROM captures WHERE id=?").get(e.before_id):null;
         const after=e.after_id?this.db.prepare("SELECT screenshot FROM captures WHERE id=?").get(e.after_id):null;
-        const images=[before?.screenshot,after?.screenshot,e.diff_screenshot].filter(Boolean);
+        const visualSet=[["before",before?.screenshot],["after",after?.screenshot],["diff",e.diff_screenshot]].filter(([,name])=>Boolean(name));
+        const images=visualSet.map(([,name])=>name);
         const details={id:e.id,name:m.name,monitorId:m.id,textChanged:e.text_changed,visualChanged:e.visual_changed,
           dimensionChanged:e.dimension_changed,beforeDimensions:e.before_dimensions,afterDimensions:e.after_dimensions,
           httpStatus:e.http_status,previousHttpStatus:e.before_id?this.db.prepare("SELECT http_status FROM captures WHERE id=?").get(e.before_id)?.http_status:null,httpStatusChanged:e.http_status_changed,
           percent:e.visual_percent,textSummary:safeTextSummary(e.text_diff??[]),
-          link:new URL("/jobs/"+m.id,this.publicUrl).href,images,
+          link:new URL("/jobs/"+m.id,this.publicUrl).href,images,imageLabels:visualSet.map(([label])=>label),
           checkedAt:e.created_at,eventType:e.status,attentionMessage:e.error??null,
           digestCount:e.metadata?.digest_count,digestStart:e.metadata?.period_start,digestEnd:e.metadata?.period_end};
         try{
