@@ -16,7 +16,7 @@ import {
 const PREVIEW_REQUEST_TIMEOUT_MS = 125000;
 const MIN_ZOOM = .5, MAX_ZOOM = 3, ZOOM_STEP = .25;
 type Draft = { url?: string; kind?: string; visual_enabled?: boolean; browser_steps?: unknown[]; step_budget_ms?: number; capture_timeout_ms?: number | null; monitor_http_error_pages?: boolean; disable_javascript?: boolean; block_ads_trackers?: boolean; cookie_banner_handling?: boolean; wait_before_capture_ms?: 0 | 2000 | 5000 | 10000; mobile_view?: boolean; capture_area?: unknown };
-type Preview = { session_id?: string; expires_at?: number; image: string; width: number; height: number; scroll_y?: number; http_status?: number; timings?: Record<string, number>; warning?: string };
+type Preview = { session_id?: string; expires_at?: number; image: string; width: number; height: number; scroll_x?: number; scroll_y?: number; http_status?: number; timings?: Record<string, number>; warning?: string };
 type Tool = "draw" | "pan";
 type Action = "draw" | "pan" | "move" | "n" | "ne" | "e" | "se" | "s" | "sw" | "w" | "nw" | "pinch";
 type Interaction = { action: Action; start: { x: number; y: number }; original?: CaptureArea; left: number; top: number; zoom: number; distance?: number };
@@ -35,8 +35,8 @@ export function SelectedAreaPicker({ monitorId, getDraft, onApply, onScrollStep,
 }) {
   const [compact, setCompact] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches);
   const [open, setOpen] = useState(false), [preview, setPreview] = useState<Preview | undefined>(undefined), [loading, setLoading] = useState(false), [error, setError] = useState<ApiError | undefined>(undefined), [refreshFailed, setRefreshFailed] = useState(false), [zoom, setZoom] = useState(1), [tool, setTool] = useState<Tool>("draw"), [area, setArea] = useState<CaptureArea>(), [progress, setProgress] = useState("target_validation");
-  const canvas = useRef<HTMLDivElement>(null), image = useRef<HTMLImageElement>(null), controller = useRef<AbortController | undefined>(undefined), requestVersion = useRef(0), previewRef = useRef<Preview | undefined>(undefined), sessionId = useRef<string | undefined>(undefined), initialScrollY = useRef(0), draftRef = useRef(getDraft), mounted = useRef(true), pointers = useRef(new Map<number, { x: number; y: number }>()), interaction = useRef<Interaction | undefined>(undefined);
-  const [pendingScrollY, setPendingScrollY] = useState(0);
+  const canvas = useRef<HTMLDivElement>(null), image = useRef<HTMLImageElement>(null), controller = useRef<AbortController | undefined>(undefined), requestVersion = useRef(0), previewRef = useRef<Preview | undefined>(undefined), sessionId = useRef<string | undefined>(undefined), initialScroll = useRef({ x: 0, y: 0 }), draftRef = useRef(getDraft), mounted = useRef(true), pointers = useRef(new Map<number, { x: number; y: number }>()), interaction = useRef<Interaction | undefined>(undefined);
+  const [pendingScroll, setPendingScroll] = useState({ x: 0, y: 0 });
   draftRef.current = getDraft;
 
   useEffect(() => { const media = window.matchMedia("(max-width: 767px)"); const update = () => setCompact(media.matches); update(); media.addEventListener("change", update); return () => media.removeEventListener("change", update); }, []);
@@ -54,7 +54,7 @@ export function SelectedAreaPicker({ monitorId, getDraft, onApply, onScrollStep,
     };
   }, [abortRequest]);
 
-  const load = useCallback(async (reason: "initialize" | "refresh" | "retry" | "scroll" = "initialize", scrollDeltaY?: number) => {
+  const load = useCallback(async (reason: "initialize" | "refresh" | "retry" | "scroll" = "initialize", scrollDelta?: { x: number; y: number }) => {
     if (controller.current) return;
     const draft = draftRef.current();
     if (!draft.url || draft.kind !== "browser" || !draft.visual_enabled) { setError(new ApiError("Enter a valid Browser URL and enable Visual detection before selecting an area.")); return; }
@@ -71,11 +71,12 @@ export function SelectedAreaPicker({ monitorId, getDraft, onApply, onScrollStep,
         mode: "area", preview_request_id: previewRequestId, monitor_id: monitorId,
         ...(reason !== "initialize" && sessionId.current ? { session_id: sessionId.current } : {}),
         refresh: reason === "refresh",
-        scroll_delta_y: reason === "scroll" ? scrollDeltaY : undefined,
+        scroll_delta_x: reason === "scroll" ? scrollDelta?.x : undefined,
+        scroll_delta_y: reason === "scroll" ? scrollDelta?.y : undefined,
         monitor: { url: draft.url, kind: "browser", visual_enabled: true, browser_steps: draft.browser_steps ?? [], step_budget_ms: draft.step_budget_ms ?? 20_000, capture_timeout_ms: draft.capture_timeout_ms ?? undefined, monitor_http_error_pages: draft.monitor_http_error_pages, disable_javascript: draft.disable_javascript, block_ads_trackers: draft.block_ads_trackers, cookie_banner_handling: draft.cookie_banner_handling, wait_before_capture_ms: draft.wait_before_capture_ms, mobile_view: draft.mobile_view },
       }, { timeoutMs: PREVIEW_REQUEST_TIMEOUT_MS, signal: pending.signal });
       if (result.width !== CAPTURE_VIEWPORT_WIDTH || result.height !== CAPTURE_VIEWPORT_HEIGHT) throw new Error("Preview dimensions do not match the 1280x900 capture viewport.");
-      if (isCurrent()) { sessionId.current = result.session_id; setCurrentPreview(result); if (reason === "initialize" || (reason === "retry" && !reusedSession)) { initialScrollY.current = result.scroll_y ?? 0; setPendingScrollY(0); } if (reason === "scroll") setPendingScrollY((result.scroll_y ?? initialScrollY.current) - initialScrollY.current); setProgress("ready"); }
+      if (isCurrent()) { sessionId.current = result.session_id; setCurrentPreview(result); if (reason === "initialize" || (reason === "retry" && !reusedSession)) { initialScroll.current = { x: result.scroll_x ?? 0, y: result.scroll_y ?? 0 }; setPendingScroll({ x: 0, y: 0 }); } if (reason === "scroll") setPendingScroll({ x: (result.scroll_x ?? initialScroll.current.x) - initialScroll.current.x, y: (result.scroll_y ?? initialScroll.current.y) - initialScroll.current.y }); setProgress("ready"); }
     } catch (cause) {
       if (!pending.signal.aborted && isCurrent()) {
         setError(cause instanceof ApiError ? cause : new ApiError("Website preview failed. Retry preview."));
@@ -142,9 +143,10 @@ export function SelectedAreaPicker({ monitorId, getDraft, onApply, onScrollStep,
     pointers.current.delete(event.pointerId);
     try { if (event.currentTarget.hasPointerCapture?.(event.pointerId)) event.currentTarget.releasePointerCapture?.(event.pointerId); } catch {}
     if (pointers.current.size) return;
-    if (active?.action === "pan" && zoom <= 1 && Math.abs(active.start.y - end.y) >= 8) {
+    const scroll = active?.action === "pan" && zoom <= 1 ? { x: Math.round(active.start.x - end.x), y: Math.round(active.start.y - end.y) } : undefined;
+    if (scroll && (Math.abs(scroll.x) >= 8 || Math.abs(scroll.y) >= 8)) {
       interaction.current = undefined;
-      void load("scroll", Math.round(active.start.y - end.y));
+      void load("scroll", scroll);
       return;
     }
     if (area && !isValidCaptureArea(area)) { setArea(interaction.current?.original); setError(new ApiError(`Selected area must be at least ${MIN_CAPTURE_AREA_SIZE} × ${MIN_CAPTURE_AREA_SIZE} px.`)); }
@@ -154,7 +156,7 @@ export function SelectedAreaPicker({ monitorId, getDraft, onApply, onScrollStep,
   const resetView = () => { setZoom(1); if (canvas.current) { canvas.current.scrollLeft = 0; canvas.current.scrollTop = 0; } };
   const updateNumber = (key: keyof CaptureArea, value: number | null) => { if (value === null || !Number.isFinite(value)) return; setArea((current) => clampCaptureArea({ ...(current ?? { x: 0, y: 0, width: 320, height: 180 }), [key]: Math.round(value) })); };
   const cancel = () => { const saved = getDraft().capture_area; release(); setArea(isValidCaptureArea(saved) ? saved : undefined); setOpen(false); };
-  const apply = () => { if (!isValidCaptureArea(area)) { setError(new ApiError(`Select an area of at least ${MIN_CAPTURE_AREA_SIZE} × ${MIN_CAPTURE_AREA_SIZE} px.`)); return; } if (pendingScrollY) onScrollStep?.({ action: "scroll_by", x: 0, y: pendingScrollY, timeout_ms: 5000, continue_on_error: false }); onApply(area); setPendingScrollY(0); release(); setOpen(false); };
+  const apply = () => { if (!isValidCaptureArea(area)) { setError(new ApiError(`Select an area of at least ${MIN_CAPTURE_AREA_SIZE} × ${MIN_CAPTURE_AREA_SIZE} px.`)); return; } if (pendingScroll.x || pendingScroll.y) onScrollStep?.({ action: "scroll_by", x: pendingScroll.x, y: pendingScroll.y, timeout_ms: 5000, continue_on_error: false }); onApply(area); setPendingScroll({ x: 0, y: 0 }); release(); setOpen(false); };
 
   const body = <div className="selected-area-picker">
     {error?.status && <Typography.Paragraph>HTTP {error.status}</Typography.Paragraph>}
