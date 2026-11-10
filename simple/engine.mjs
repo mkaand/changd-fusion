@@ -257,12 +257,13 @@ export class FusionEngine {
         }
         const before=e.before_id?this.db.prepare("SELECT screenshot FROM captures WHERE id=?").get(e.before_id):null;
         const after=e.after_id?this.db.prepare("SELECT screenshot FROM captures WHERE id=?").get(e.after_id):null;
-        const images=[before?.screenshot,after?.screenshot,e.diff_screenshot].filter(Boolean);
+        const visualSet=[["before",before?.screenshot],["after",after?.screenshot],["diff",e.diff_screenshot]].filter(([,name])=>Boolean(name));
+        const images=visualSet.map(([,name])=>name);
         const details={id:e.id,name:m.name,monitorId:m.id,textChanged:e.text_changed,visualChanged:e.visual_changed,
           dimensionChanged:e.dimension_changed,beforeDimensions:e.before_dimensions,afterDimensions:e.after_dimensions,
           httpStatus:e.http_status,previousHttpStatus:e.before_id?this.db.prepare("SELECT http_status FROM captures WHERE id=?").get(e.before_id)?.http_status:null,httpStatusChanged:e.http_status_changed,
           percent:e.visual_percent,textSummary:safeTextSummary(e.text_diff??[]),
-          link:new URL("/jobs/"+m.id,this.publicUrl).href,images,
+          link:new URL("/jobs/"+m.id,this.publicUrl).href,images,imageLabels:visualSet.map(([label])=>label),
           checkedAt:e.created_at,eventType:e.status,attentionMessage:e.error??null,
           digestCount:e.metadata?.digest_count,digestStart:e.metadata?.period_start,digestEnd:e.metadata?.period_end};
         try{

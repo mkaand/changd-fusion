@@ -5,6 +5,7 @@ import { z } from "zod";
 import { EgressPolicy } from "./egress.js";
 import { Storage } from "./storage.js";
 import { pngDimensions } from "./image.js";
+import { encodeVisualVideo } from "./visual-video.js";
 import { Decimal } from "decimal.js";
 export const smtpSchema = z
   .object({
@@ -355,6 +356,7 @@ export async function deliver(
   deps: {
     smtp?: typeof nodemailer.createTransport;
     telegram?: TelegramSend;
+    videoEncoder?: typeof encodeVisualVideo;
     policy?: EgressPolicy;
   } = {},
 ) {
@@ -417,18 +419,30 @@ export async function deliver(
   } else if (provider === "telegram") {
     const c = telegramSchema.parse(config),
       send = deps.telegram ?? telegramSend;
-    await send(
-      c.token,
-      "sendMessage",
-      Buffer.from(
-        JSON.stringify({
-          chat_id: c.chat_id,
-          text: telegramSummary(event, c.timezone),
-          link_preview_options: { is_disabled: true },
-        }),
-      ),
-      "application/json",
-    );
+    const fullCaption = telegramSummary(event, c.timezone);
+    if (event.eventType === "changed" && event.visualChanged && files.length === 3 &&
+        files.every((file, index) => file.filename === ["before.png", "after.png", "diff.png"][index])) {
+      // Encode and validate before the first Telegram request. An encoder failure
+      // leaves the existing outbox entry eligible for its normal retry.
+      const video = await (deps.videoEncoder ?? encodeVisualVideo)(files.map((file) => file.content));
+      const overflow = fullCaption.length > 1024;
+      const caption = overflow ? truncateText([
+        `Changd Fusion | ${event.name}`, visualSummary(event),
+        event.checkedAt ? `Checked: ${new Date(event.checkedAt).toISOString()}` : "",
+        event.link,
+      ].filter(Boolean).join("\n"), 1024) : fullCaption;
+      const boundary = "fusion-" + randomUUID();
+      const body = Buffer.concat([
+        Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n${c.chat_id}\r\n--${boundary}\r\nContent-Disposition: form-data; name="caption"\r\n\r\n${caption}\r\n--${boundary}\r\nContent-Disposition: form-data; name="supports_streaming"\r\n\r\ntrue\r\n--${boundary}\r\nContent-Disposition: form-data; name="video"; filename="visual-change.mp4"\r\nContent-Type: video/mp4\r\n\r\n`),
+        video,
+        Buffer.from(`\r\n--${boundary}--\r\n`),
+      ]);
+      await send(c.token, "sendVideo", body, `multipart/form-data; boundary=${boundary}`);
+      if (overflow) await send(c.token, "sendMessage", Buffer.from(JSON.stringify({
+        chat_id: c.chat_id, text: fullCaption, link_preview_options: { is_disabled: true },
+      })), "application/json");
+      return;
+    }
     // Telegram photo limits also constrain dimensions/aspect ratio, even for small compressed PNGs.
     const photos = files.filter((f) => {
       const { width, height } = pngDimensions(f.content);
@@ -438,6 +452,18 @@ export async function deliver(
       );
     });
     const documents = files.filter((f) => !photos.includes(f));
+    await send(
+      c.token,
+      "sendMessage",
+      Buffer.from(
+        JSON.stringify({
+          chat_id: c.chat_id,
+          text: fullCaption,
+          link_preview_options: { is_disabled: true },
+        }),
+      ),
+      "application/json",
+    );
     const sendFile = async (f: (typeof files)[number], asDocument = false) => {
       const boundary = "fusion-" + randomUUID();
       const body = Buffer.concat([
