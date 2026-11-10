@@ -21,7 +21,7 @@ export const monitorInput = z
   .object({
     name: z.string().trim().min(1).max(120),
     url: z.string().url().max(2048),
-    kind: z.enum(["browser", "html", "api"]).default("browser"),
+    kind: z.enum(["browser", "html", "api", "file"]).default("browser"),
     text_enabled: z.boolean().default(true),
     text_direction: z.enum(["added", "removed", "both"]).default("both"),
     text_source: z.enum(["direct", "jina", "markdown_new"]).default("direct"),
@@ -126,7 +126,7 @@ export const monitorInput = z
   })
   .refine(
     (m) => m.kind === "browser" || (m.text_enabled && !m.visual_enabled),
-    { message: "HTML/API monitors require text-only detection" },
+    { message: "HTML/API/File monitors require text-only detection" },
   )
   .transform((m) => ({
     ...m,

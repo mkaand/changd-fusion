@@ -36,6 +36,8 @@ export const captureFailureCodes = [
   "http_403",
   "http_429",
   "http_5xx",
+  "file_http_error",
+  "file_metadata_unavailable",
   "dns_failure",
   "connection_failure",
   "tls_failure",
@@ -130,6 +132,10 @@ export function captureFailure(
       const status = Number(message.match(/HTTP (5\d\d)/)?.[1]) || null;
       return new CaptureFailure(stage, "http_5xx", message, status);
     }
+    if (/^File metadata unavailable/.test(message))
+      return new CaptureFailure(stage, "file_metadata_unavailable", message);
+    if (/^File (?:HEAD|Range request) returned HTTP/.test(message))
+      return new CaptureFailure(stage, "file_http_error", message);
     if (/selector|region/i.test(message))
       return new CaptureFailure(stage, "selector_failed", message);
     if (/DNS resolution/i.test(message))

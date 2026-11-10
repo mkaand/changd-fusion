@@ -113,6 +113,16 @@ it("distinguishes a successful capture from an unhealthy HTTP status transition"
   );
 });
 
+it("labels changed file metadata fields in history", async () => {
+  vi.mocked(api).mockResolvedValue({items:[{
+    id:"file-change",status:"changed",source_kind:"file",created_at:"2026-01-01",visual_percent:null,text_changed:true,
+    text_diff:[{value:'  "etag": "old",\n',removed:true},{value:'  "etag": "new",\n',added:true}],
+  }],total:1});
+  render(<History id="fixture" refresh={0} />);
+  expect(await screen.findByText("File metadata changed")).toBeInTheDocument();
+  expect(screen.getByText(/etag.*new/)).toBeInTheDocument();
+});
+
 it("groups monitoring history content for consistent mobile spacing", async () => {
   vi.mocked(api).mockResolvedValue({ items: [], total: 0 } as never);
   render(<History id="fixture" refresh={0} />);

@@ -80,6 +80,49 @@ export type SafeFetchOptions = {
   markdownNewBody?: string;
 };
 export type SafeFetchResult = { body: Buffer; contentType: string; status: number };
+export type FileHeaders = { status: number; headers: http.IncomingHttpHeaders };
+// Read headers only. In particular, a server that ignores Range must never
+// make the monitor download the file body.
+export async function safeFileHeaders(
+  input: string, policy: EgressPolicy, method: "HEAD" | "GET",
+  conditional: { etag?: string; lastModified?: string } = {}, timeout = 30000,
+): Promise<FileHeaders> {
+  const deadline = Date.now() + timeout;
+  for (let hop = 0; hop < 6; hop++) {
+    const target = await policy.target(input);
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw Error("Capture timed out");
+    const response = await new Promise<FileHeaders>((resolve, reject) => {
+      const client = target.url.protocol === "https:" ? https : http;
+      const req = client.request(target.url, {
+        lookup: (_h, opts, cb: any) => opts.all
+          ? cb(null, [{ address: target.address, family: target.family }])
+          : cb(null, target.address, target.family),
+        method, agent: false,
+        headers: {
+          "User-Agent": "Changd-Fusion/0.2",
+          ...(method === "GET" ? { Range: "bytes=0-0" } : {}),
+          ...(conditional.etag ? { "If-None-Match": conditional.etag } : {}),
+          ...(conditional.lastModified ? { "If-Modified-Since": conditional.lastModified } : {}),
+        },
+      }, (res) => {
+        resolve({ status: res.statusCode ?? 500, headers: res.headers });
+        // Destroy immediately after headers, including for 200 Range responses.
+        res.destroy();
+      });
+      const timer = setTimeout(() => req.destroy(Error("Capture timed out")), remaining);
+      req.on("close", () => clearTimeout(timer));
+      req.on("error", reject);
+      req.end();
+    });
+    if ([301, 302, 303, 307, 308].includes(response.status) && response.headers.location) {
+      input = new URL(response.headers.location, target.url).href;
+      continue;
+    }
+    return response;
+  }
+  throw new HttpError(400, "Too many redirects");
+}
 export async function safeFetch(
   input: string,
   policy: EgressPolicy,

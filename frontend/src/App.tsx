@@ -551,8 +551,14 @@ export default function FusionApp() {
                     <span>Configured interval: {current.interval_seconds}s</span>
                   </Space>
                   <div className="monitor-detail-url-row"><Typography.Paragraph className="monitor-url">{current.url}</Typography.Paragraph><MonitorUrlActions url={current.url} message={message} /></div>
+                  {current.kind === "file" && current.file_metadata && <div className="file-metadata" aria-label="File metadata">
+                    <div>ETag: {current.file_metadata.etag ?? "Unavailable"}</div>
+                    <div>Last-Modified: {current.file_metadata.last_modified ?? "Unavailable"}</div>
+                    <div>File Size: {current.file_metadata.size == null ? "Unavailable" : `${current.file_metadata.size.toLocaleString()} bytes`}</div>
+                    <div>HTTP status: {current.file_metadata.status}</div>
+                  </div>}
                   {isMonitorFailure(current) && current.last_error && (
-                    <Alert className="monitor-detail-failure" title={current.last_error} type="error" description={`Failed captures preserve the baseline. Failure backoff may delay retries beyond the configured interval. Next attempt: ${current.enabled && !current.paused && current.next_run ? new Date(current.next_run).toLocaleString() : "Not scheduled"}.`} />
+                    <Alert className="monitor-detail-failure" title={current.last_error === "file_metadata_unavailable" ? "File metadata unavailable: no ETag, Last-Modified or reliable size" : current.last_error === "file_http_error" ? "File server returned an unsuccessful HTTP status" : current.last_error} type="error" description={`Failed captures preserve the baseline. Failure backoff may delay retries beyond the configured interval. Next attempt: ${current.enabled && !current.paused && current.next_run ? new Date(current.next_run).toLocaleString() : "Not scheduled"}.`} />
                   )}
                   <Typography.Paragraph className="monitor-baseline-help" type="secondary">
                     Each successful capture becomes the baseline for the next comparison.

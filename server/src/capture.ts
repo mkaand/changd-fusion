@@ -1,5 +1,6 @@
 import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright";
 import { EgressPolicy, browserProxy, safeFetch, type SafeFetchOptions } from "./egress.js";
+import { fetchFileMetadata, parseFileMetadata, serializeFileMetadata } from "./file-monitor.js";
 import { normalizeText } from "./comparison.js";
 import { locate, runSteps, StepFailure, warningCode, type BrowserStep } from "./browser-steps.js";
 import { AttentionFailure, detectAttention } from "./attention.js";
@@ -24,7 +25,8 @@ export type Monitor = {
   user_id: string;
   name: string;
   url: string;
-  kind: "browser" | "html" | "api";
+  kind: "browser" | "html" | "api" | "file";
+  file_baseline?: string | null;
   text_enabled: boolean;
   text_direction?: "added" | "removed" | "both";
   text_source?: "direct" | "jina" | "markdown_new";
@@ -383,6 +385,12 @@ export async function capture(
   let deadlineElapsed = false;
   try {
     await policy.target(m.url);
+    if (m.kind === "file") {
+      enterStage("navigation");
+      const found = await fetchFileMetadata(m.url, policy, parseFileMetadata(m.file_baseline), captureTimeoutMs);
+      finishTimings();
+      return { text: serializeFileMetadata(found), screenshot: null, http_status: found.status, timings };
+    }
     if (m.kind !== "browser") {
       enterStage("navigation");
       const response = m.text_source === "jina"
