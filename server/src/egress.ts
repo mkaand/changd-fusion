@@ -77,6 +77,7 @@ export type SafeFetchOptions = {
   // caller-supplied header map. It cannot be used to forward credentials or
   // arbitrary headers to monitor targets.
   jinaNoCache?: boolean;
+  markdownNewBody?: string;
 };
 export async function safeFetch(
   input: string,
@@ -105,10 +106,12 @@ export async function safeFetch(
             opts.all
               ? cb(null, [{ address: target.address, family: target.family }])
               : cb(null, target.address, target.family),
+          method: options.markdownNewBody ? "POST" : "GET",
           headers: {
             "User-Agent": "Changd-Fusion/0.2",
             Accept: "application/json,text/html",
             ...(options.jinaNoCache && target.url.hostname === "r.jina.ai" ? { "X-No-Cache": "true" } : {}),
+            ...(options.markdownNewBody && target.url.hostname === "markdown.new" ? { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(options.markdownNewBody).toString() } : {}),
           },
           agent: false,
         },
@@ -140,7 +143,7 @@ export async function safeFetch(
       );
       req.on("close", () => clearTimeout(timer));
       req.on("error", reject);
-      req.end();
+      req.end(options.markdownNewBody);
     });
     if ([301, 302, 303, 307, 308].includes(result.status) && result.location) {
       input = new URL(result.location, target.url).href;

@@ -133,12 +133,11 @@ function fetchJinaReader(m: Pick<Monitor, "url" | "text_source" | "extraction_mo
 }
 async function fetchMarkdownNew(m: Pick<Monitor, "url" | "markdown_render">, policy: EgressPolicy, timeout: number) {
   await policy.target(m.url);
-  const response = await fetch("https://markdown.new/", { method:"POST", headers:{"content-type":"application/json","accept":"application/json,text/markdown"}, body:JSON.stringify({url:m.url,method:m.markdown_render??"auto"}), signal:AbortSignal.timeout(timeout) });
-  if (response.status === 402) throw new HttpError(422,"markdown.new may require paid access or have no free allowance remaining.");
-  if (response.status === 429) throw new HttpError(422,"markdown.new may be rate limited. Keep the existing baseline and retry later.");
-  if (!response.ok) throw new HttpError(422,`markdown.new returned HTTP ${response.status}. Keep the existing baseline and retry.`);
-  const value=await response.json().catch(async()=>({markdown:await response.text()}));
-  const text=typeof value === "string" ? value : value.markdown ?? value.text ?? value.content ?? "";
+  const body=JSON.stringify({url:m.url,method:m.markdown_render??"auto"});
+  const response=await safeFetch("https://markdown.new/",policy,timeout,2_000_000,{markdownNewBody:body});
+  const raw=response.body.toString("utf8");
+  let text=raw;
+  if (/json/i.test(response.contentType)) { try { const value=JSON.parse(raw); text=typeof value === "string" ? value : value.markdown ?? value.text ?? value.content ?? ""; } catch { throw new HttpError(422,"markdown.new returned invalid JSON. Keep the existing baseline and retry."); } }
   return validateJinaReaderContent(Buffer.from(String(text)));
 }
 
