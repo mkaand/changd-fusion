@@ -290,6 +290,15 @@ it("accepts V2 anchored rules and rejects malformed V2 rule payloads", () => {
   expect(isValidSelectedTextRule({ ...v2, unexpected: true })).toBe(false);
 });
 
+it("accepts bounded V3 context and rejects malformed cohort evidence", () => {
+  const v3 = { version: 3, kind: "contextual_segments", anchors: [{ shape: "Kredi kartınızdan # ₺ çekilecek.", offset: 1 }], prefix: "", suffix: "", max_length: 64, cohort: { shape: "# ₺", count: 2 } };
+  expect(isValidSelectedTextRule(v3)).toBe(true);
+  expect(isValidSelectedTextRule({ ...v3, cohort: null })).toBe(false);
+  expect(isValidSelectedTextRule({ ...v3, cohort: { shape: "# ₺", count: 0 } })).toBe(false);
+  expect(isValidSelectedTextRule({ ...v3, anchors: [{ shape: "context", offset: 0 }] })).toBe(false);
+  expect(isValidSelectedTextRule({ ...v3, extra: true })).toBe(false);
+});
+
 it("keeps a V1 monitor editable and carries an applied V2 rule into the save payload", async () => {
   const user = userEvent.setup();
   render(<Fixture />);

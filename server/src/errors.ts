@@ -123,7 +123,7 @@ export function captureFailure(
     const message = error.message;
     if (/Selected text is ambiguous/.test(message))
       return new CaptureFailure(stage, "selected_text_ambiguous", message);
-    if (/Selected text could not be found/.test(message))
+    if (/Selected text could not be found|Selected text context (?:changed|is missing)/.test(message))
       return new CaptureFailure(stage, "selected_text_missing", message);
     if (/^Browser step \d+ \([a-z_]+\) failed: /.test(message)) {
       const code = /selector_missing/.test(message) ? "selector_missing"

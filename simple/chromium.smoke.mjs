@@ -12,6 +12,7 @@ import {BrowserQueue} from "./browser-queue.mjs";
 import {previewRegion,releaseRegionPreviewSession} from "../server/dist/region-picker.js";
 import {EgressPolicy} from "../server/dist/egress.js";
 import {capture} from "../server/dist/capture.js";
+import {segmentSelectedText,generateSelectedTextRule} from "../server/dist/selected-text.js";
 const {PNG}=createRequire(new URL("../server/dist/capture.js",import.meta.url))("pngjs");
 
 const page="https://example.com/";
@@ -227,5 +228,31 @@ test("real Chromium Text Picker extraction matches selected hybrid capture and B
     price="13";
     const second=await capture(selected,limits,policy);
     assert.equal(second.text,"13");assert.ok(second.screenshot?.length);
+  }finally{fixture.closeAllConnections();await new Promise(resolve=>fixture.close(resolve));}
+});
+
+test("long Direct Browser blocks and repeated values select the clicked hybrid target",{timeout:90000},async()=>{
+  const value="34.819,01 ₺";
+  let second=value;
+  const fixture=http.createServer((_req,res)=>{
+    res.writeHead(200,{"Content-Type":"text/html; charset=utf-8"});
+    res.end(`<html><head><meta charset="utf-8"></head><body><main id="product"><h1>Product</h1><p>${value}</p><p>${second}</p><p>Kredi kartınızdan ${value} çekilecek.</p><p>${"A long description. ".repeat(90)}</p></main></body></html>`);
+  });
+  await new Promise(resolve=>fixture.listen(0,"127.0.0.1",resolve));
+  const port=fixture.address().port,url=`http://127.0.0.1:${port}/product`,policy=new EgressPolicy(undefined,()=>true,new Set([port]));
+  const m={...monitor,url,selector:"#product",visual_enabled:false,extraction_mode:"full_text",browser_steps:[{action:"wait_selector",selector:"#product",selector_type:"css",timeout_ms:10000,continue_on_error:false}]};
+  try{
+    const preview=await capture(m,limits,policy,undefined,true);
+    const lines=segmentSelectedText(preview.text).map(item=>item.text);
+    assert.ok(lines.length>5,"long browser paragraph is segmented");
+    const duplicates=lines.map((text,index)=>text===value?index:-1).filter(index=>index>=0);
+    assert.equal(duplicates.length,2);
+    const rule=generateSelectedTextRule(lines,duplicates[1],value).rule;
+    const selected={...m,visual_enabled:true,extraction_mode:"selected_text",extraction_rule:rule};
+    const first=await capture(selected,limits,policy);
+    assert.equal(first.text,value);assert.ok(first.screenshot?.length);
+    second="35.000,00 ₺";
+    const changed=await capture(selected,limits,policy);
+    assert.equal(changed.text,second);assert.ok(changed.screenshot?.length);
   }finally{fixture.closeAllConnections();await new Promise(resolve=>fixture.close(resolve));}
 });

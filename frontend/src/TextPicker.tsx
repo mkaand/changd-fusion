@@ -42,15 +42,16 @@ export function TextPicker({ monitorId, getDraft, onApply, mobilePage = false, o
   const cancel = () => { controller.current?.abort(); searchRequest.current++; setLoading(false); };
   useEffect(() => () => { controller.current?.abort(); searchRequest.current++; }, []);
   useEffect(() => { const media = matchMedia("(max-width: 767px)"); const update = () => setCompact(media.matches); update(); media.addEventListener("change", update); return () => media.removeEventListener("change", update); }, []);
-  const load = async () => {
+  const load = async (keepSearch = false) => {
     searchRequest.current++;
     controller.current?.abort();
     const pending = new AbortController(); controller.current = pending;
     const draft = getDraft();
     if (!draft.url || !["direct", "jina", "markdown_new"].includes(draft.text_source ?? "")) { setError("Choose a text source and enter a valid URL before opening text preview."); return; }
-    setLoading(true); setError(""); setLineIndex(undefined); setValue(""); setQuery("");
+    const nextQuery = keepSearch ? query : "";
+    setLoading(true); setError(""); setLineIndex(undefined); setValue(""); setQuery(nextQuery);
     setPreview(undefined);
-    try { const result = await api<Preview>("/text-preview", "POST", { monitor_id: monitorId, url: draft.url, text_source: draft.text_source, markdown_render: draft.markdown_render, monitor: draft }, { timeoutMs: 90000, signal: pending.signal }); if (!pending.signal.aborted) setPreview(result); }
+    try { const result = await api<Preview>("/text-preview", "POST", { monitor_id: monitorId, url: draft.url, text_source: draft.text_source, markdown_render: draft.markdown_render, monitor: draft, ...(nextQuery ? { query: nextQuery } : {}) }, { timeoutMs: 90000, signal: pending.signal }); if (!pending.signal.aborted) setPreview(result); }
     catch (cause) { if (!pending.signal.aborted) setError(safeError(cause, "Text preview failed. Retry.")); }
     finally { if (!pending.signal.aborted) setLoading(false); }
   };
@@ -62,7 +63,10 @@ export function TextPicker({ monitorId, getDraft, onApply, mobilePage = false, o
       const result = await api<Preview>("/text-preview", "POST", { session_id: preview.session_id, query: nextQuery, offset, limit: 100 }, { signal: controller.current?.signal });
       if (request !== searchRequest.current) return;
       setPreview((current) => current ? { ...current, ...result, items: append ? [...(current.items ?? []), ...(result.items ?? [])] : result.items, rule: undefined, extracted: undefined, description: undefined } : result);
-    } catch (cause) { if (request === searchRequest.current) setError(safeError(cause, "Text search failed. Retry.")); }
+    } catch (cause) { if (request === searchRequest.current) {
+      if (cause instanceof ApiError && cause.status === 410) { setPreview(undefined); setLineIndex(undefined); setValue(""); setError("Text preview expired. Refresh to search the latest content; the previous selection was cleared."); }
+      else setError(safeError(cause, "Text search failed. Retry."));
+    } }
     finally { if (request === searchRequest.current) setLoading(false); }
   };
   const generate = async () => {
@@ -78,15 +82,18 @@ export function TextPicker({ monitorId, getDraft, onApply, mobilePage = false, o
       }
       setPreview((current) => ({ ...current!, ...generated }));
     }
-    catch (cause) { if (!pending?.signal.aborted) setError(safeError(cause, "A stable extraction rule could not be generated.")); }
+    catch (cause) { if (!pending?.signal.aborted) {
+      if (cause instanceof ApiError && cause.status === 410) { setPreview(undefined); setLineIndex(undefined); setValue(""); setError("Text preview expired. Refresh to select from the latest content; the previous selection was cleared."); }
+      else setError(safeError(cause, "A stable extraction rule could not be generated."));
+    } }
     finally { if (!pending?.signal.aborted) setLoading(false); }
   };
   const body = <div className="text-picker-body">
     {preview && (loading || error) && <Typography.Paragraph>Previously fetched text. Refresh successfully before generating a new selection.</Typography.Paragraph>}
     <Alert type="info" showIcon title="Select the content you want to monitor" description="This is the text used by the selected capture source. Remote Markdown is displayed as plain text and is never executed." />
-    {error && <Alert type="error" showIcon title={error} action={<Button onClick={() => void load()}>Refresh preview</Button>} />}
+    {error && <Alert type="error" showIcon title={error} action={<Button onClick={() => void load(true)}>Refresh preview</Button>} />}
     {loading && !preview && <div className="region-preview-loading"><Spin /><strong>Loading {sourceLabel} output</strong></div>}
-    {preview?.items && <><div className="text-picker-search"><Input.Search aria-label={`Search ${sourceLabel} output`} placeholder={`Search available ${sourceLabel} output`} value={query} onChange={(event) => { const next = event.target.value; setQuery(next); setLineIndex(undefined); setValue(""); void search(next); }} allowClear />{query && <Button onClick={() => { setQuery(""); setLineIndex(undefined); setValue(""); void search(""); }}>Clear search</Button>}</div><Typography.Text className="text-picker-search-status" aria-live="polite">{preview.matching_line_count ?? 0} matching {(preview.matching_line_count ?? 0) === 1 ? "line" : "lines"} in {preview.total_line_count ?? 0} available {sourceLabel} lines{preview.has_more ? ` · showing ${preview.items.length}` : ""}</Typography.Text>{preview.items.length ? <><div className="text-preview-lines" role="list" aria-label={`${sourceLabel} text preview`}>{preview.items.map(({ text, index }) => <button type="button" role="listitem" className={lineIndex === index ? "selected" : ""} key={`${index}-${text.slice(0, 30)}`} onClick={() => { setLineIndex(index); setValue(text); setPreview((current) => current ? { ...current, rule: undefined, extracted: undefined, description: undefined } : current); }}><Highlight text={text} query={query} /></button>)}</div>{preview.has_more && <Button loading={loading} onClick={() => void search(query, preview.items!.length, true)}>Load more matches</Button>}</> : <div className="text-picker-empty" role="status">No matches in the available {sourceLabel} output.</div>}</>}
+    {preview?.items && <><div className="text-picker-search"><Input.Search aria-label={`Search ${sourceLabel} output`} placeholder={`Search available ${sourceLabel} output`} value={query} onChange={(event) => { const next = event.target.value; setQuery(next); setLineIndex(undefined); setValue(""); void search(next); }} allowClear />{query && <Button onClick={() => { setQuery(""); setLineIndex(undefined); setValue(""); void search(""); }}>Clear search</Button>}</div><Typography.Text className="text-picker-search-status" aria-live="polite">{preview.matching_line_count ?? 0} matching {(preview.matching_line_count ?? 0) === 1 ? "line" : "lines"} in {preview.total_line_count ?? 0} available {sourceLabel} segments{preview.has_more ? ` · showing ${preview.items.length}` : ""}</Typography.Text>{preview.items.length ? <><div className="text-preview-lines" role="list" aria-label={`${sourceLabel} text preview`}>{preview.items.map(({ text, index }) => <button type="button" role="listitem" className={lineIndex === index ? "selected" : ""} key={`${index}-${text.slice(0, 30)}`} onClick={() => { setLineIndex(index); setValue(text); setPreview((current) => current ? { ...current, rule: undefined, extracted: undefined, description: undefined } : current); }}><Highlight text={text} query={query} /></button>)}</div>{preview.has_more && <Button loading={loading} onClick={() => void search(query, preview.items!.length, true)}>Load more matches</Button>}</> : <div className="text-picker-empty" role="status">No matches in the available {sourceLabel} output.</div>}</>}
     {lineIndex !== undefined && <div className="text-picker-selection"><Typography.Text strong>Selected text or changing value</Typography.Text><Input.TextArea value={value} onChange={(event) => { setValue(event.target.value); setPreview((current) => current ? { ...current, rule: undefined, extracted: undefined, description: undefined } : current); }} maxLength={500} autoSize={{ minRows: 2, maxRows: 5 }} /><Button loading={loading} onClick={() => void generate()}>Generate extraction rule</Button></div>}
     {preview?.rule && <div className="text-picker-result" role="status"><strong>Extracted preview</strong><p>{preview.extracted}</p><Typography.Text type="secondary">{preview.description}</Typography.Text><Button type="primary" onClick={() => { if (!isValidSelectedTextRule(preview.rule)) { setError("The extraction rule is no longer valid. Generate it again."); return; } onApply(preview.rule); setOpen(false); }}>Apply selection to editor</Button><Typography.Text type="secondary">The monitor is not saved until you return to the editor and choose Save monitor.</Typography.Text></div>}
   </div>;
