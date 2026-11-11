@@ -1,5 +1,15 @@
 import { it, expect, vi } from "vitest";
-import { ApiError, api } from "./api";
+import { ApiError, api, hasVisualPercent, percent } from "./api";
+it("formats only finite Visual percentages from zero through 100", () => {
+  for (const value of [null, undefined, NaN, "NaN", Infinity, "Infinity", "", "  ", "12px", "1.2.3", -0.01, "-1", 100.01, "101"]) {
+    expect(hasVisualPercent(value)).toBe(false);
+    expect(percent(value)).toBe("—");
+  }
+  for (const [value, formatted] of [[0, "0.00%"], ["0", "0.00%"], [12.345, "12.35%"], ["12.345", "12.35%"], [100, "100.00%"], ["100", "100.00%"]] as const) {
+    expect(hasVisualPercent(value)).toBe(true);
+    expect(percent(value)).toBe(formatted);
+  }
+});
 it("distinguishes upstream timeout HTML from safe server diagnostics", async () => {
   vi.stubGlobal("fetch", vi.fn().mockResolvedValue(new Response("<html>sensitive upstream content</html>", { status: 504, headers: { "x-request-id": "safe-proxy-id" } })));
   await expect(api("/region-preview", "POST", {})).rejects.toMatchObject({ status: 504, requestId: "safe-proxy-id", failureCode: "upstream_timeout", previewStage: "transport", message: expect.not.stringContaining("sensitive") });

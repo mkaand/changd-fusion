@@ -88,6 +88,26 @@ it("history explains dimension changes without displaying a fabricated percentag
   expect(screen.queryByText("Visual: 100%")).not.toBeInTheDocument();
 });
 
+it("omits missing and malformed Visual values while retaining measured zero and images", async () => {
+  vi.mocked(api).mockResolvedValue({ items: [
+    { id: "failed-missing", status: "failed", created_at: "2026-01-01", failure_code: "capture_failed" },
+    { id: "failed-legacy", status: "failed", created_at: "2026-01-02", visual_percent: "NaN" },
+    { id: "failed-stale", status: "failed", created_at: "2026-01-02", visual_percent: "42" },
+    { id: "unchanged", status: "unchanged", created_at: "2026-01-03", visual_percent: "0", before_image: "before.png", after_image: "after.png" },
+    { id: "changed", status: "changed", created_at: "2026-01-04", visual_percent: "12.345" },
+    { id: "dimensions", status: "changed", created_at: "2026-01-05", dimension_changed: true, visual_percent: "Infinity", before_dimensions: { width: 1280, height: 900 }, after_dimensions: { width: 900, height: 900 } },
+  ], total: 6 });
+  render(<History id="fixture" refresh={0} />);
+  expect(await screen.findByText("Visual: 0.00%")).toBeInTheDocument();
+  expect(screen.getByText("Visual: 12.35%")).toBeInTheDocument();
+  expect(screen.getAllByText("failed")).toHaveLength(3);
+  expect(screen.getByText("Screenshot dimensions changed")).toBeInTheDocument();
+  expect(screen.getByAltText("Before capture")).toBeInTheDocument();
+  expect(screen.getByAltText("After capture")).toBeInTheDocument();
+  expect(screen.queryByText(/Visual: (NaN|Infinity|—)/)).not.toBeInTheDocument();
+  expect(screen.queryByText("Visual: 42.00%")).not.toBeInTheDocument();
+});
+
 it("distinguishes a successful capture from an unhealthy HTTP status transition", async () => {
   vi.mocked(api).mockResolvedValue({
     items: [

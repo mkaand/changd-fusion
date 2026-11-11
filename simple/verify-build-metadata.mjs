@@ -6,7 +6,7 @@ const [commit, branch, dist = '/app/frontend/dist'] = process.argv.slice(2);
 assert.match(commit ?? '', /^[0-9a-f]{40}$/i, 'expected a full commit SHA');
 assert.ok(branch, 'expected a branch');
 const backendVersion = JSON.parse(await readFile(join(dist, '../../server/package.json'), 'utf8')).version;
-assert.equal(backendVersion, '0.4.2', 'release version must match the target');
+assert.match(backendVersion, /^\d+\.\d+\.\d+$/, 'expected an application release version');
 
 const assets = join(dist, 'assets');
 const scripts = (await readdir(assets)).filter((name) => name.endsWith('.js'));

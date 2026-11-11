@@ -19,7 +19,7 @@ const preview = (selector = "#new-price") => ({
   selection: { selector, x: 10, y: 10, width: 120, height: 30 },
 });
 
-function setupApi(detail?: typeof existing, previewFailure = false) {
+function setupApi(detail?: typeof existing & { last_percent?: string }, previewFailure = false) {
   mockedApi.mockImplementation(async (path: string, method = "GET", body?: unknown) => {
     if (path === "/users/me") return { id: "user", email: "fixture@example.com" } as never;
     if (path === "/jobs" && method === "GET") return (detail ? [detail] : []) as never;
@@ -53,6 +53,35 @@ beforeEach(() => {
   setupApi();
 });
 afterEach(() => { window.history.replaceState({}, "", "/"); cleanup(); vi.clearAllMocks(); });
+
+it("shows unavailable Visual values safely in monitor cards and detail", async () => {
+  setupApi({ ...existing, last_percent: "NaN" });
+  render(<AntApp><FusionApp /></AntApp>);
+  const visualChange = await screen.findByText("Visual change");
+  expect(visualChange.nextElementSibling).toHaveTextContent("—");
+  expect(screen.queryByText(/NaN%|Infinity%/)).not.toBeInTheDocument();
+  await userEvent.setup().click(screen.getByRole("button", { name: "Details" }));
+  expect(await screen.findByText("Visual: —")).toBeInTheDocument();
+});
+
+it("keeps a measured zero Visual percentage in monitor cards and detail", async () => {
+  setupApi({ ...existing, last_percent: "0" });
+  render(<AntApp><FusionApp /></AntApp>);
+  const visualChange = await screen.findByText("Visual change");
+  expect(visualChange.nextElementSibling).toHaveTextContent("0.00%");
+  await userEvent.setup().click(screen.getByRole("button", { name: "Details" }));
+  expect(await screen.findByText("Visual: 0.00%")).toBeInTheDocument();
+});
+
+it("shows unavailable Visual values safely in the desktop monitor table", async () => {
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 1200 });
+  vi.mocked(window.matchMedia).mockImplementation((query) => ({ matches: false, media: query, onchange: null, addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn() }));
+  setupApi({ ...existing, last_percent: "Infinity" });
+  render(<AntApp><FusionApp /></AntApp>);
+  expect(await screen.findByText("Existing visual monitor")).toBeInTheDocument();
+  expect(screen.getByRole("columnheader", { name: "Visual change" })).toBeInTheDocument();
+  expect(screen.queryByText(/NaN%|Infinity%/)).not.toBeInTheDocument();
+});
 
 it("uses the real mobile RegionPicker, preserves unsaved fields, and sends its selected CSS region in an existing-monitor PUT", async () => {
   setupApi(existing);

@@ -11,7 +11,7 @@ import {
   Pagination,
   Button,
 } from "antd";
-import { api, percent } from "./api";
+import { api, hasVisualPercent, percent } from "./api";
 export function ImageComparison({
   before,
   after,
@@ -228,7 +228,7 @@ export function History({ id, refresh }: { id: string; refresh: number }) {
                   : e.status}
               </Tag>
               <span>{new Date(e.created_at).toLocaleString()}</span>
-              {e.visual_percent !== null && (
+              {(e.status === "changed" || e.status === "unchanged") && !e.dimension_changed && hasVisualPercent(e.visual_percent) && (
                 <Tag>Visual: {percent(e.visual_percent)}</Tag>
               )}
               {e.text_changed && <Tag color="blue">{e.source_kind === "file" ? "File metadata changed" : "Text changed"}</Tag>}

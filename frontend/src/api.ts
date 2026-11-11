@@ -85,7 +85,14 @@ export async function api<T = any>(
 }
 export const loginUser = (values: { email: string; password: string }) =>
   api("/login", "POST", values);
-export const percent = (value: string | null) =>
-  value === null
-    ? "—"
-    : Number(value).toFixed(2) + "%";
+export function visualPercentValue(value: unknown): number | null {
+  if (typeof value !== "number" && typeof value !== "string") return null;
+  if (typeof value === "string" && !/^\+?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value.trim())) return null;
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 && numeric <= 100 ? numeric : null;
+}
+export const hasVisualPercent = (value: unknown) => visualPercentValue(value) !== null;
+export const percent = (value: unknown) => {
+  const numeric = visualPercentValue(value);
+  return numeric === null ? "—" : numeric.toFixed(2) + "%";
+};

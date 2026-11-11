@@ -3,7 +3,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { Timeline } from "./Timeline";
 import { Analytics } from "./Analytics";
 import { api } from "./api";
-vi.mock("./api", () => ({ api: vi.fn(), percent: (value: string | null) => value === null ? "—" : value + "%" }));
+vi.mock("./api", async () => ({ ...(await vi.importActual<typeof import("./api")>("./api")), api: vi.fn() }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 const monitor = { id: "1c2e3478-661d-4f87-a5e2-4d79b9e6a742", name: "Release tracker" };
 it("renders a filtered owner timeline from the timeline API", async () => {
@@ -13,6 +13,18 @@ it("renders a filtered owner timeline from the timeline API", async () => {
   expect(screen.getByText("Text changed")).toBeInTheDocument();
   expect(vi.mocked(api).mock.calls[0][0]).toContain("/timeline?");
   expect(vi.mocked(api).mock.calls[0][0]).toContain("page_size=25");
+});
+it("labels Visual changes without fabricating missing or dimension percentages", async () => {
+  vi.mocked(api).mockResolvedValue({ items: [
+    { id: "measured", monitor_name: "Release tracker", status: "changed", created_at: "2026-10-11T12:00:00.000Z", visual_changed: true, visual_percent: "2.5" },
+    { id: "missing", monitor_name: "Release tracker", status: "changed", created_at: "2026-10-11T12:00:00.000Z", visual_changed: true, visual_percent: "NaN" },
+    { id: "dimensions", monitor_name: "Release tracker", status: "changed", created_at: "2026-10-11T12:00:00.000Z", visual_changed: true, dimension_changed: true, visual_percent: null },
+  ], total: 3, page: 1 });
+  render(<Timeline monitors={[monitor]} />);
+  expect(await screen.findByText("Visual 2.50%")).toBeInTheDocument();
+  expect(screen.getByText("Visual changed")).toBeInTheDocument();
+  expect(screen.getByText("Dimensions changed")).toBeInTheDocument();
+  expect(screen.queryByText(/NaN%|Infinity%/)).not.toBeInTheDocument();
 });
 it("renders analytics totals, trend, and event distribution from one owner-scoped endpoint", async () => {
   vi.mocked(api).mockResolvedValue({ summary: { total: "6", changed: "2", successful: "5", failed: "1" }, distribution: [{ status: "changed", count: 2 }], trend: [{ day: "2026-10-10", total: 3, changed: 1, failed: 0, successful: 3 }, { day: "2026-10-11", total: 3, changed: 1, failed: 1, successful: 2 }] });
