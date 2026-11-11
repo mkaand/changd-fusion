@@ -3,6 +3,7 @@ import { Alert, Button, InputNumber, Radio, Spin, Typography } from "antd";
 import { ApiError, api } from "./api";
 import { InteractivePreviewSurface } from "./InteractivePreviewSurface";
 import { describePreviewWarning } from "./preview-warning";
+import { PreviewScrollCoordinator, scrollSteps } from "./preview-scroll-coordinator";
 import {
   CAPTURE_VIEWPORT_HEIGHT,
   CAPTURE_VIEWPORT_WIDTH,
@@ -36,17 +37,26 @@ export function SelectedAreaPicker({ monitorId, getDraft, onApply, onScrollStep,
   const [compact, setCompact] = useState(() => typeof window !== "undefined" && window.matchMedia("(max-width: 767px)").matches);
   const [open, setOpen] = useState(false), [preview, setPreview] = useState<Preview | undefined>(undefined), [loading, setLoading] = useState(false), [error, setError] = useState<ApiError | undefined>(undefined), [refreshFailed, setRefreshFailed] = useState(false), [zoom, setZoom] = useState(1), [tool, setTool] = useState<Tool>("draw"), [area, setArea] = useState<CaptureArea>(), [progress, setProgress] = useState("target_validation");
   const canvas = useRef<HTMLDivElement>(null), image = useRef<HTMLImageElement>(null), controller = useRef<AbortController | undefined>(undefined), requestVersion = useRef(0), previewRef = useRef<Preview | undefined>(undefined), sessionId = useRef<string | undefined>(undefined), initialScroll = useRef({ x: 0, y: 0 }), draftRef = useRef(getDraft), mounted = useRef(true), pointers = useRef(new Map<number, { x: number; y: number }>()), interaction = useRef<Interaction | undefined>(undefined);
+  const loadRef = useRef<(reason: "initialize" | "refresh" | "retry" | "scroll", delta?: { x: number; y: number }) => Promise<void>>(undefined);
+  const scrollCoordinator = useRef<PreviewScrollCoordinator>(undefined);
+  if (!scrollCoordinator.current) scrollCoordinator.current = new PreviewScrollCoordinator(
+    (delta) => loadRef.current!("scroll", delta),
+    () => !controller.current && Boolean(sessionId.current),
+    () => { setLoading(true); setRefreshFailed(true); },
+    () => setLoading(false),
+  );
   const [pendingScroll, setPendingScroll] = useState({ x: 0, y: 0 });
   draftRef.current = getDraft;
 
   useEffect(() => { const media = window.matchMedia("(max-width: 767px)"); const update = () => setCompact(media.matches); update(); media.addEventListener("change", update); return () => media.removeEventListener("change", update); }, []);
   const setCurrentPreview = useCallback((value: Preview | undefined) => { previewRef.current = value; setPreview(value); }, []);
   const abortRequest = useCallback(() => { requestVersion.current++; controller.current?.abort(); controller.current = undefined; }, []);
-  const release = useCallback(() => { abortRequest(); pointers.current.clear(); interaction.current = undefined; const id = sessionId.current; sessionId.current = undefined; if (id) void api(`/region-preview/${id}`, "DELETE").catch(() => undefined); setCurrentPreview(undefined); setLoading(false); setRefreshFailed(false); }, [abortRequest, setCurrentPreview]);
+  const release = useCallback(() => { scrollCoordinator.current?.clear(); abortRequest(); pointers.current.clear(); interaction.current = undefined; const id = sessionId.current; sessionId.current = undefined; if (id) void api(`/region-preview/${id}`, "DELETE").catch(() => undefined); setCurrentPreview(undefined); setLoading(false); setRefreshFailed(false); }, [abortRequest, setCurrentPreview]);
   useEffect(() => {
     mounted.current = true;
     return () => {
       mounted.current = false;
+      scrollCoordinator.current?.clear();
       abortRequest();
       const id = sessionId.current;
       sessionId.current = undefined;
@@ -76,17 +86,31 @@ export function SelectedAreaPicker({ monitorId, getDraft, onApply, onScrollStep,
         monitor: { url: draft.url, kind: "browser", visual_enabled: true, browser_steps: draft.browser_steps ?? [], step_budget_ms: draft.step_budget_ms ?? 20_000, capture_timeout_ms: draft.capture_timeout_ms ?? undefined, monitor_http_error_pages: draft.monitor_http_error_pages, disable_javascript: draft.disable_javascript, block_ads_trackers: draft.block_ads_trackers, cookie_banner_handling: draft.cookie_banner_handling, wait_before_capture_ms: draft.wait_before_capture_ms, mobile_view: draft.mobile_view },
       }, { timeoutMs: PREVIEW_REQUEST_TIMEOUT_MS, signal: pending.signal });
       if (result.width !== CAPTURE_VIEWPORT_WIDTH || result.height !== CAPTURE_VIEWPORT_HEIGHT) throw new Error("Preview dimensions do not match the 1280x900 capture viewport.");
-      if (isCurrent()) { sessionId.current = result.session_id; setCurrentPreview(result); if (reason === "initialize" || (reason === "retry" && !reusedSession)) { initialScroll.current = { x: result.scroll_x ?? 0, y: result.scroll_y ?? 0 }; setPendingScroll({ x: 0, y: 0 }); } if (reason === "scroll") setPendingScroll({ x: (result.scroll_x ?? initialScroll.current.x) - initialScroll.current.x, y: (result.scroll_y ?? initialScroll.current.y) - initialScroll.current.y }); setProgress("ready"); }
+      if (isCurrent()) { sessionId.current = result.session_id; if (reason === "initialize" || (reason === "retry" && !reusedSession)) { initialScroll.current = { x: result.scroll_x ?? 0, y: result.scroll_y ?? 0 }; setPendingScroll({ x: 0, y: 0 }); } if (reason === "scroll") setPendingScroll({ x: (result.scroll_x ?? initialScroll.current.x) - initialScroll.current.x, y: (result.scroll_y ?? initialScroll.current.y) - initialScroll.current.y }); if (!scrollCoordinator.current?.hasPending) { setCurrentPreview(result); setProgress("ready"); setRefreshFailed(false); } }
     } catch (cause) {
       if (!pending.signal.aborted && isCurrent()) {
+        if (cause instanceof ApiError && cause.status === 410) { sessionId.current = undefined; scrollCoordinator.current?.clear(); }
+        if (reason === "scroll") { sessionId.current = undefined; scrollCoordinator.current?.clear(); }
         setError(cause instanceof ApiError ? cause : new ApiError("Website preview failed. Retry preview."));
         setRefreshFailed(Boolean(previewRef.current));
       }
     } finally {
       window.clearInterval(timer);
-      if (isCurrent()) { controller.current = undefined; setLoading(false); }
+      if (isCurrent()) { controller.current = undefined; setLoading(Boolean(scrollCoordinator.current?.hasPending)); scrollCoordinator.current?.resume(); }
     }
   }, [monitorId, setCurrentPreview]);
+  loadRef.current = load;
+
+  useEffect(() => {
+    if (!preview?.session_id || !preview.expires_at) return;
+    const timer = window.setTimeout(() => {
+      if (controller.current || scrollCoordinator.current?.hasPending) return;
+      sessionId.current = undefined;
+      setRefreshFailed(true);
+      setError(new ApiError("Preview session expired. Start a fresh Preview before applying the area.", { status: 410, failure_code: "session_expired" }));
+    }, Math.max(0, preview.expires_at - Date.now()));
+    return () => window.clearTimeout(timer);
+  }, [preview?.session_id, preview?.expires_at]);
 
   useEffect(() => { if (mobilePage) void load("initialize"); }, [mobilePage, load]);
   const point = (clientX: number, clientY: number) => image.current ? capturePoint(clientX, clientY, image.current.getBoundingClientRect()) : { x: 0, y: 0 };
@@ -112,6 +136,7 @@ export function SelectedAreaPicker({ monitorId, getDraft, onApply, onScrollStep,
 
   const pointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (!preview || (event.pointerType === "mouse" && event.button !== 0)) return;
+    if (tool !== "pan" && (loading || refreshFailed || error)) return;
     event.currentTarget.setPointerCapture?.(event.pointerId);
     pointers.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
     const values = [...pointers.current.values()];
@@ -146,7 +171,7 @@ export function SelectedAreaPicker({ monitorId, getDraft, onApply, onScrollStep,
     const scroll = active?.action === "pan" && zoom <= 1 ? { x: Math.round(active.start.x - end.x), y: Math.round(active.start.y - end.y) } : undefined;
     if (scroll && (Math.abs(scroll.x) >= 8 || Math.abs(scroll.y) >= 8)) {
       interaction.current = undefined;
-      void load("scroll", scroll);
+      if (sessionId.current) scrollCoordinator.current?.add(scroll);
       return;
     }
     if (area && !isValidCaptureArea(area)) { setArea(interaction.current?.original); setError(new ApiError(`Selected area must be at least ${MIN_CAPTURE_AREA_SIZE} × ${MIN_CAPTURE_AREA_SIZE} px.`)); }
@@ -156,7 +181,7 @@ export function SelectedAreaPicker({ monitorId, getDraft, onApply, onScrollStep,
   const resetView = () => { setZoom(1); if (canvas.current) { canvas.current.scrollLeft = 0; canvas.current.scrollTop = 0; } };
   const updateNumber = (key: keyof CaptureArea, value: number | null) => { if (value === null || !Number.isFinite(value)) return; setArea((current) => clampCaptureArea({ ...(current ?? { x: 0, y: 0, width: 320, height: 180 }), [key]: Math.round(value) })); };
   const cancel = () => { const saved = getDraft().capture_area; release(); setArea(isValidCaptureArea(saved) ? saved : undefined); setOpen(false); };
-  const apply = () => { if (!isValidCaptureArea(area)) { setError(new ApiError(`Select an area of at least ${MIN_CAPTURE_AREA_SIZE} × ${MIN_CAPTURE_AREA_SIZE} px.`)); return; } if (pendingScroll.x || pendingScroll.y) onScrollStep?.({ action: "scroll_by", x: pendingScroll.x, y: pendingScroll.y, timeout_ms: 5000, continue_on_error: false }); onApply(area); setPendingScroll({ x: 0, y: 0 }); release(); setOpen(false); };
+  const apply = () => { if (!isValidCaptureArea(area)) { setError(new ApiError(`Select an area of at least ${MIN_CAPTURE_AREA_SIZE} × ${MIN_CAPTURE_AREA_SIZE} px.`)); return; } const steps=scrollSteps(pendingScroll,20-(getDraft().browser_steps?.length??0)); if (!steps) { setError(new ApiError("This scroll exceeds the remaining Browser Steps. Replay Preview with a shorter scroll.")); return; } for(const delta of steps) onScrollStep?.({ action: "scroll_by", ...delta, timeout_ms: 5000, continue_on_error: false }); onApply(area); setPendingScroll({ x: 0, y: 0 }); release(); setOpen(false); };
 
   const body = <div className="selected-area-picker">
     {error?.status && <Typography.Paragraph>HTTP {error.status}</Typography.Paragraph>}

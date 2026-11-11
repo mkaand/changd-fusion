@@ -168,3 +168,43 @@ it("moves and resizes an existing area while Pan mode leaves it unchanged", asyn
   expect(screen.getByLabelText("Selected area x")).toHaveValue("60");
   expect(screen.getByLabelText("Selected area width")).toHaveValue("240");
 });
+
+it("queues Pan swipes received during refresh and preserves fixed area coordinates", async () => {
+  const session = "00000000-0000-4000-8000-000000000099";
+  let finishFirst!: (value: unknown) => void;
+  let finishSecond!: (value: unknown) => void;
+  const onApply = vi.fn(), onScrollStep = vi.fn();
+  vi.mocked(api).mockImplementation((path: string, _method?: string, data?: unknown) => {
+    const body = data as { scroll_delta_x?: number } | undefined;
+    if (path.startsWith("/region-preview/status/")) return Promise.resolve({ stage: "screenshot" });
+    if (path !== "/region-preview") return Promise.resolve({});
+    if (body?.scroll_delta_x === undefined) return Promise.resolve({ ...preview, session_id: session, scroll_x: 0, scroll_y: 0 });
+    if (body.scroll_delta_x === 100) return new Promise(resolve => { finishFirst = resolve; });
+    return new Promise(resolve => { finishSecond = resolve; });
+  });
+  render(<SelectedAreaPicker mobilePage getDraft={() => draft} onApply={onApply} onScrollStep={onScrollStep} onBackMobile={vi.fn()} />);
+  const image = await screen.findByAltText("Secure selected area preview");
+  Object.defineProperty(image, "getBoundingClientRect", { value: () => ({ left: 0, top: 0, width: 1280, height: 900 }) });
+  const stage = image.closest(".selected-area-stage")!;
+  await userEvent.setup().click(screen.getByText("Pan", { exact: true }));
+  const swipe = (id: number, startX: number, startY: number, endX: number, endY: number) => {
+    fireEvent.pointerDown(stage, { pointerId: id, pointerType: "touch", clientX: startX, clientY: startY });
+    fireEvent.pointerMove(stage, { pointerId: id, pointerType: "touch", clientX: endX, clientY: endY });
+    fireEvent.pointerUp(stage, { pointerId: id, pointerType: "touch", clientX: endX, clientY: endY });
+  };
+  swipe(91, 400, 400, 300, 300);
+  await waitFor(() => expect(vi.mocked(api).mock.calls.filter(([path]) => path === "/region-preview")).toHaveLength(2));
+  swipe(92, 500, 500, 450, 400);
+  finishFirst({ ...preview, session_id: session, scroll_x: 100, scroll_y: 100 });
+  await waitFor(() => expect(vi.mocked(api).mock.calls.filter(([path]) => path === "/region-preview")).toHaveLength(3));
+  expect(vi.mocked(api).mock.calls.filter(([path]) => path === "/region-preview")[2][2]).toEqual(expect.objectContaining({ scroll_delta_x: 50, scroll_delta_y: 100 }));
+  finishSecond({ ...preview, session_id: session, scroll_x: 150, scroll_y: 200 });
+  await waitFor(() => expect(screen.getByRole("button", { name: "Apply selected area" })).toBeDisabled());
+  await userEvent.setup().click(screen.getByText("Draw", { exact: true }));
+  fireEvent.pointerDown(stage, { pointerId: 93, pointerType: "mouse", button: 0, clientX: 20, clientY: 30 });
+  fireEvent.pointerMove(stage, { pointerId: 93, pointerType: "mouse", clientX: 120, clientY: 130 });
+  fireEvent.pointerUp(stage, { pointerId: 93, pointerType: "mouse", clientX: 120, clientY: 130 });
+  await userEvent.setup().click(screen.getByRole("button", { name: "Apply selected area" }));
+  expect(onScrollStep).toHaveBeenCalledWith({ action: "scroll_by", x: 150, y: 200, timeout_ms: 5000, continue_on_error: false });
+  expect(onApply).toHaveBeenCalledWith({ x: 20, y: 30, width: 100, height: 100 });
+});

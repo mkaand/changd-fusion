@@ -16,12 +16,14 @@ export type RegionPreviewFailure = { stage: CaptureStage; failure_code: RegionPr
 type Selection = { selector: string; label: string; visible: boolean; x: number; y: number; width: number; height: number };
 export type PreviewStage = "target_validation" | "capacity_wait" | "proxy_initialization" | "browser_launch" | "browser_context" | "navigation" | "dom_ready" | "browser_steps" | "rendering_preparation" | "screenshot" | "serialization" | "ready";
 type PreviewTimings = Partial<Record<PreviewStage, number>>;
-type Session = { id: string; ownerId: string; createdAt: number; expiresAt: number; expiryTimer?: NodeJS.Timeout; closing?: Promise<void>; browser: Browser; context: BrowserContext; page: Page; proxy: Awaited<ReturnType<typeof browserProxy>>; capacity?: ChromiumLease; image: Buffer; width: number; height: number; httpStatus?: number; signature: string; timings: PreviewTimings; warning?: string };
+type Session = { id: string; ownerId: string; createdAt: number; expiresAt: number; expiryTimer?: NodeJS.Timeout; closing?: Promise<void>; busy?: boolean; browser: Browser; context: BrowserContext; page: Page; proxy: Awaited<ReturnType<typeof browserProxy>>; capacity?: ChromiumLease; image: Buffer; width: number; height: number; httpStatus?: number; signature: string; timings: PreviewTimings; warning?: string };
 type PreviewOperations = {
   snapshot?: (page: Page) => Promise<void>;
   screenshot?: (context: BrowserContext, page: Page) => Promise<Buffer>;
 };
 export const REGION_PREVIEW_MAX_LIFETIME_MS = 45_000;
+export const REGION_PREVIEW_SCROLL_EXTENSION_MS = 20_000;
+export const REGION_PREVIEW_ABSOLUTE_LIFETIME_MS = 180_000;
 // Keep admission plus browser work below the Nginx 120-second endpoint timeout
 // and the frontend 125-second request timeout. A 90-second monitor execution
 // therefore receives no more than 10 seconds of admission, reserving cleanup.
@@ -68,6 +70,21 @@ async function closeSession(session: Session) {
   })();
   return session.closing;
 }
+export function nextPreviewExpiry(createdAt: number, expiresAt: number, now: number, moved: boolean) {
+  if (!moved || now >= expiresAt || now >= createdAt + REGION_PREVIEW_ABSOLUTE_LIFETIME_MS) return expiresAt;
+  return Math.min(createdAt + REGION_PREVIEW_ABSOLUTE_LIFETIME_MS, expiresAt + REGION_PREVIEW_SCROLL_EXTENSION_MS);
+}
+function scheduleExpiry(session: Session) {
+  if (session.expiryTimer) clearTimeout(session.expiryTimer);
+  session.expiryTimer = setTimeout(() => {
+    // An old callback may already be queued when a successful scroll extends
+    // the deadline. It must never close the renewed or replaced session.
+    if (sessions.get(session.id) !== session || session.closing) return;
+    if (Date.now() < session.expiresAt) { scheduleExpiry(session); return; }
+    void closeSession(session);
+  }, Math.max(0, session.expiresAt - Date.now()));
+  session.expiryTimer.unref();
+}
 async function purgeExpired(now = Date.now()) {
   await Promise.all([...sessions.values()].filter((session) => session.expiresAt <= now).map(closeSession));
 }
@@ -89,7 +106,7 @@ export async function expireRegionPreviewSessions(now: number) { await purgeExpi
 
 function previewMessage(stage: CaptureStage, code: RegionPreviewCode) {
   if (code === "cancelled") return "Preview was cancelled. Start a new Preview when ready.";
-  if (code === "session_expired") return "Preview expired. Refresh the preview and try again.";
+  if (code === "session_expired") return "Preview expired. Start a fresh Preview or replay your browser steps.";
   if (code === "stale_preview") return "The page changed after the screenshot. Refresh the preview before selecting.";
   if (code === "stale_configuration") return "Preview settings changed. Replay the preview before selecting.";
   if (code === "ambiguous_selection") return "The selected point does not identify one stable visible element. Try a nearby point.";
@@ -160,6 +177,7 @@ async function boundedPreviewOperation<T>(input: {
   cancel: () => Promise<void>;
   stage: CaptureStage;
   signal?: AbortSignal;
+  expired?: () => boolean;
 }) {
   if (input.signal?.aborted) throw new HttpError(499, "Preview request was cancelled");
   const budget = input.remaining();
@@ -171,7 +189,7 @@ async function boundedPreviewOperation<T>(input: {
     cancelling = input.cancel();
   };
   const abort = () => interrupt(new HttpError(499, "Preview request was cancelled"));
-  const timer = setTimeout(() => interrupt(new CaptureFailure(input.stage, "timeout")), budget);
+  const timer = setTimeout(() => interrupt(input.expired?.() ? new HttpError(410, "Preview expired. Create a new preview and try again.") : new CaptureFailure(input.stage, "timeout")), budget);
   input.signal?.addEventListener("abort", abort, { once: true });
   try {
     const result = await input.operation();
@@ -271,35 +289,64 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
   await purgeExpired();
   if (session?.id) {
     const active = sessions.get(session.id);
-    if (!active || active.ownerId !== session.ownerId) throw regionPreviewFailure(new HttpError(410, "Preview expired. Create a new preview and try again."), "text_extraction");
+    if (!active || active.ownerId !== session.ownerId || active.closing || Date.now() >= active.expiresAt) {
+      if (active && active.ownerId === session.ownerId) await closeSession(active);
+      throw regionPreviewFailure(new HttpError(410, "Preview expired. Create a new preview and try again."), "text_extraction");
+    }
     if (active.signature !== signature) {
       await closeSession(active);
       throw regionPreviewFailure(new HttpError(409, "Preview settings changed. Create a new preview."), "text_extraction");
     }
-    const absoluteDeadline = Math.min(Date.now() + previewExecutionTimeout(m, cfg), active.expiresAt);
-    const activeRemaining = () => Math.max(1, absoluteDeadline - Date.now());
+    if (active.busy) throw regionPreviewFailure(new CaptureFailure("screenshot", "capacity_busy", "Preview is already updating."), "screenshot");
+    active.busy = true;
+    const operationDeadline = Math.min(Date.now() + previewExecutionTimeout(m, cfg), requestDeadline - 2 * CAPTURE_CLEANUP_TIMEOUT_MS);
+    const activeExpired = () => Date.now() >= active.expiresAt || Boolean(active.closing);
+    const activeRemaining = () => {
+      if (activeExpired()) throw new HttpError(410, "Preview expired. Create a new preview and try again.");
+      const remaining = Math.min(operationDeadline, active.expiresAt) - Date.now();
+      if (remaining <= 0) throw new CaptureFailure("screenshot", "timeout");
+      return remaining;
+    };
+    let mutated = false;
     try {
       stage = "text_extraction";
       if (session.scrollDelta && (session.scrollDelta.x || session.scrollDelta.y)) {
-        await boundedPreviewOperation({
-          operation: () => active.page.evaluate((delta) => window.scrollBy({ left: delta.x, top: delta.y, behavior: "instant" }), session.scrollDelta!),
-          remaining: activeRemaining, cancel: () => closeSession(active), stage: "screenshot", signal: session.signal,
+        const movement = await boundedPreviewOperation({
+          operation: () => active.page.evaluate((delta) => {
+            const before = { x: window.scrollX, y: window.scrollY };
+            window.scrollBy({ left: delta.x, top: delta.y, behavior: "instant" });
+            return { before, after: { x: window.scrollX, y: window.scrollY } };
+          }, session.scrollDelta!),
+          remaining: activeRemaining, cancel: () => closeSession(active), stage: "screenshot", signal: session.signal, expired: activeExpired,
         });
+        mutated = movement.before.x !== movement.after.x || movement.before.y !== movement.after.y;
+        if (mutated) {
+          if (activeExpired()) throw new HttpError(410, "Preview expired. Create a new preview and try again.");
+          const next = nextPreviewExpiry(active.createdAt, active.expiresAt, Date.now(), true);
+          if (next !== active.expiresAt) { active.expiresAt = next; scheduleExpiry(active); }
+        }
       }
-      if (session.refresh || (session.scrollDelta && (session.scrollDelta.x || session.scrollDelta.y))) {
+      if (session.refresh || mutated) {
         session.progress?.("rendering_preparation");
-        await boundedPreviewOperation({ operation: () => (session.operations?.snapshot ?? snapshotLayout)(active.page), remaining: activeRemaining, cancel: () => closeSession(active), stage: "screenshot", signal: session.signal });
+        mutated = true;
+        await boundedPreviewOperation({ operation: () => active.page.evaluate(() => new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())))), remaining: activeRemaining, cancel: () => closeSession(active), stage: "screenshot", signal: session.signal, expired: activeExpired });
+        if (session.captureLayout !== false)
+          await boundedPreviewOperation({ operation: () => (session.operations?.snapshot ?? snapshotLayout)(active.page), remaining: activeRemaining, cancel: () => closeSession(active), stage: "screenshot", signal: session.signal, expired: activeExpired });
         session.progress?.("screenshot");
-        active.image = await boundedPreviewOperation({ operation: () => (session.operations?.screenshot ?? capturePreviewScreenshot)(active.context, active.page), remaining: activeRemaining, cancel: () => closeSession(active), stage: "screenshot", signal: session.signal });
-        pngDimensions(active.image, { width: cfg.MAX_CAPTURE_WIDTH, height: cfg.MAX_CAPTURE_HEIGHT, pixels: cfg.MAX_CAPTURE_PIXELS });
+        const image = await boundedPreviewOperation({ operation: () => (session.operations?.screenshot ?? capturePreviewScreenshot)(active.context, active.page), remaining: activeRemaining, cancel: () => closeSession(active), stage: "screenshot", signal: session.signal, expired: activeExpired });
+        pngDimensions(image, { width: cfg.MAX_CAPTURE_WIDTH, height: cfg.MAX_CAPTURE_HEIGHT, pixels: cfg.MAX_CAPTURE_PIXELS });
+        active.image = image;
       }
-      const picked = point ? await boundedPreviewOperation({ operation: () => selectionAt(active.page, point, { width: active.width, height: active.height }), remaining: activeRemaining, cancel: () => closeSession(active), stage: "text_extraction", signal: session.signal }) : null;
+      const picked = point ? await boundedPreviewOperation({ operation: () => selectionAt(active.page, point, { width: active.width, height: active.height }), remaining: activeRemaining, cancel: () => closeSession(active), stage: "text_extraction", signal: session.signal, expired: activeExpired }) : null;
       if (picked) checkDimensions({ width: Math.ceil(picked.selection.width), height: Math.ceil(picked.selection.height) }, { width: cfg.MAX_CAPTURE_WIDTH, height: cfg.MAX_CAPTURE_HEIGHT, pixels: cfg.MAX_CAPTURE_PIXELS });
-      const scroll = await active.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY }));
+      activeRemaining();
+      const scroll = await boundedPreviewOperation({ operation: () => active.page.evaluate(() => ({ x: window.scrollX, y: window.scrollY })), remaining: activeRemaining, cancel: () => closeSession(active), stage: "screenshot", signal: session.signal, expired: activeExpired });
       return { session_id: active.id, expires_at: active.expiresAt, image: active.image.toString("base64"), width: active.width, height: active.height, scroll_x: scroll.x, scroll_y: scroll.y, http_status: active.httpStatus, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings: active.timings, warning: active.warning, reused: true };
     } catch (error) {
-      if (session.signal?.aborted || Date.now() >= active.expiresAt) await closeSession(active);
+      if (mutated || session.signal?.aborted || activeExpired()) await closeSession(active);
       throw regionPreviewFailure(error, stage);
+    } finally {
+      active.busy = false;
     }
   }
   if (m.kind !== "browser" || !m.visual_enabled) throw new HttpError(422, "Visual browser capture is required");
@@ -414,9 +461,8 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
     if (!session?.retain) { const scroll=await page.evaluate(() => ({ x: window.scrollX, y: window.scrollY })); return { image: encoded, width: viewport.width, height: viewport.height, scroll_x: scroll.x, scroll_y: scroll.y, http_status: navigationStatus, selection: picked?.selection ?? null, candidates: picked?.candidates ?? [], timings, warning }; }
     const createdAt = Date.now();
     const active: Session = { id: randomUUID(), ownerId: session.ownerId, createdAt, expiresAt: createdAt + REGION_PREVIEW_MAX_LIFETIME_MS, browser, context, page, proxy, capacity, image, width: viewport.width, height: viewport.height, httpStatus: navigationStatus, signature, timings, warning };
-    active.expiryTimer = setTimeout(() => void closeSession(active), REGION_PREVIEW_MAX_LIFETIME_MS);
-    active.expiryTimer.unref();
     sessions.set(active.id, active);
+    scheduleExpiry(active);
     const lost = () => void closeSession(active);
     active.capacity?.signal?.addEventListener("abort", lost, { once: true });
     active.browser.once("disconnected", () => { active.capacity?.signal?.removeEventListener("abort", lost); void closeSession(active); });
