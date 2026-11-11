@@ -12,9 +12,9 @@ const longPrefix = "A".repeat(205) + "unique-prefix-";
 const longSuffix = "-unique-suffix" + "B".repeat(205);
 const longLine = longPrefix + selectedValue + longSuffix;
 const generatedRule = {
-  version: 2 as const,
-  kind: "anchored_lines" as const,
-  anchors: [{ text: "Product", offset: -2 as const }, { text: "Current price", offset: -1 as const }, { text: "Seller", offset: 1 as const }, { text: "Delivery", offset: 2 as const }],
+  version: 3 as const,
+  kind: "contextual_segments" as const,
+  anchors: [{ shape: "Seller", offset: 1 }],
   prefix: longPrefix.slice(-160),
   suffix: longSuffix.slice(0, 160),
   max_length: 64,
@@ -63,7 +63,7 @@ it("uses the real mobile TextPicker and preserves the draft through apply, remou
   expect(mockedApi.mock.calls.some(([path]) => String(path).endsWith("/reset"))).toBe(false);
 }, 20_000);
 
-it("replaces an existing V1 rule with the real generated V2 rule and persists it after reopening", async () => {
+it("replaces an existing V1 rule with the generated V3 rule and persists it after reopening", async () => {
   const oldV1 = { version: 1 as const, kind: "bounded_context" as const, before: "Price\n", after: "\nSeller", max_length: 64 };
   const existing = {
     id: "11111111-1111-4111-8111-111111111111", name: "Existing Reader monitor",

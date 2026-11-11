@@ -15,7 +15,17 @@ export type SelectedTextRuleV2 = {
   max_length: number;
 };
 
-export type SelectedTextRule = SelectedTextRuleV1 | SelectedTextRuleV2;
+export type SelectedTextRuleV3 = {
+  version: 3;
+  kind: "contextual_segments";
+  anchors: { shape: string; offset: number }[];
+  prefix: string;
+  suffix: string;
+  max_length: number;
+  cohort?: { shape: string; count: number };
+};
+
+export type SelectedTextRule = SelectedTextRuleV1 | SelectedTextRuleV2 | SelectedTextRuleV3;
 
 export function isValidSelectedTextRule(value: unknown): value is SelectedTextRule {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
@@ -26,6 +36,17 @@ export function isValidSelectedTextRule(value: unknown): value is SelectedTextRu
       typeof rule.after === "string" && rule.after.length <= 160 &&
       Number.isInteger(rule.max_length) && (rule.max_length as number) >= 1 &&
       (rule.max_length as number) <= 500 && !!(rule.before || rule.after);
+  if (rule.version === 3 && rule.kind === "contextual_segments" && (Object.keys(rule).length === 6 || Object.keys(rule).length === 7) &&
+    ["version", "kind", "anchors", "prefix", "suffix", "max_length"].every(key => key in rule) &&
+    Object.keys(rule).every(key => ["version", "kind", "anchors", "prefix", "suffix", "max_length", "cohort"].includes(key)) &&
+    (rule.cohort === undefined || (rule.cohort !== null && typeof rule.cohort === "object" && !Array.isArray(rule.cohort) && Object.keys(rule.cohort as object).length === 2 &&
+      typeof (rule.cohort as Record<string, unknown>).shape === "string" && !!(rule.cohort as Record<string, unknown>).shape && ((rule.cohort as Record<string, unknown>).shape as string).length <= 160 &&
+      Number.isInteger((rule.cohort as Record<string, unknown>).count) && (rule.cohort as Record<string, number>).count >= 1 && (rule.cohort as Record<string, number>).count <= 4096)))
+    return Array.isArray(rule.anchors) && rule.anchors.length <= 3 && rule.anchors.every((anchor) => !!anchor && typeof anchor === "object" && !Array.isArray(anchor) && Object.keys(anchor).length === 2 &&
+      typeof (anchor as Record<string, unknown>).shape === "string" && !!(anchor as Record<string, unknown>).shape && ((anchor as Record<string, unknown>).shape as string).length <= 160 &&
+      Number.isInteger((anchor as Record<string, unknown>).offset) && Math.abs((anchor as Record<string, number>).offset) <= 12 && (anchor as Record<string, number>).offset !== 0) &&
+      typeof rule.prefix === "string" && rule.prefix.length <= 160 && typeof rule.suffix === "string" && rule.suffix.length <= 160 &&
+      Number.isInteger(rule.max_length) && (rule.max_length as number) >= 1 && (rule.max_length as number) <= 500;
   if (rule.version !== 2 || rule.kind !== "anchored_lines" || Object.keys(rule).length !== 6 || !["version", "kind", "anchors", "prefix", "suffix", "max_length"].every((key) => key in rule)) return false;
   return Array.isArray(rule.anchors) && rule.anchors.length >= 2 && rule.anchors.length <= 4 &&
     rule.anchors.every((anchor) => !!anchor && typeof anchor === "object" && !Array.isArray(anchor) && Object.keys(anchor).length === 2 &&

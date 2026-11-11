@@ -40,6 +40,13 @@ export const monitorInput = z
         prefix: z.string().max(160), suffix: z.string().max(160),
         max_length: z.number().int().min(1).max(500),
       }).strict(),
+      z.object({
+        version: z.literal(3), kind: z.literal("contextual_segments"),
+        anchors: z.array(z.object({ shape: z.string().min(1).max(160), offset: z.number().int().min(-12).max(12).refine(offset => offset !== 0) }).strict()).max(3),
+        prefix: z.string().max(160), suffix: z.string().max(160),
+        max_length: z.number().int().min(1).max(500),
+        cohort: z.object({ shape: z.string().min(1).max(160), count: z.number().int().min(1).max(4096) }).strict().optional(),
+      }).strict(),
     ]).nullable().default(null),
     visual_enabled: z.boolean().default(false),
     selector: z.string().max(1000).default(""),

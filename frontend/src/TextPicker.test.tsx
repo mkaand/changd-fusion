@@ -1,11 +1,49 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, it, vi } from "vitest";
-import { api } from "./api";
+import { ApiError, api } from "./api";
 import { TextPicker } from "./TextPicker";
 
 vi.mock("./api", async () => ({ ...(await vi.importActual<typeof import("./api")>("./api")), api: vi.fn() }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
+
+it("recovers from HTTP 410 with the search query while discarding stale selections", async () => {
+  let fresh = false;
+  vi.mocked(api).mockImplementation(async (_path, _method, body: any) => {
+    if (body?.session_id && body?.query !== undefined) throw new ApiError("expired", { status: 410 });
+    if (body?.session_id && body?.line_index !== undefined) throw new ApiError("expired", { status: 410 });
+    if (body?.query === "f") { fresh = true; return { session_id: "fresh", items: [{ index: 1, text: "Fresh price" }], matching_line_count: 1, total_line_count: 3 }; }
+    return { session_id: "old", items: [{ index: 1, text: "Old price" }], matching_line_count: 1, total_line_count: 3 };
+  });
+  const apply = vi.fn();
+  render(<TextPicker getDraft={() => ({ url: "https://example.com", text_source: "direct" })} onApply={apply} />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Select text from preview" }));
+  await user.click(await screen.findByText("Old price"));
+  await user.type(screen.getByRole("searchbox", { name: "Search extracted output" }), "f");
+  expect(await screen.findByText(/Text preview expired\. Refresh to search/)).toBeInTheDocument();
+  expect(screen.queryByText("Old price")).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Apply selection to editor" })).not.toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Refresh preview" }));
+  await waitFor(() => expect(screen.getByRole("listitem")).toHaveTextContent("Fresh price"));
+  expect(fresh).toBe(true);
+  expect(screen.getByRole("searchbox", { name: "Search extracted output" })).toHaveValue("f");
+  expect(apply).not.toHaveBeenCalled();
+});
+
+it("shows actionable HTTP 422 ambiguity without applying a rule", async () => {
+  vi.mocked(api).mockResolvedValueOnce({ session_id: "session", items: [{ index: 0, text: "34.819,01 ₺" }], matching_line_count: 1, total_line_count: 1 })
+    .mockRejectedValueOnce(new ApiError("The selected occurrence cannot be distinguished safely. Select a value with unique nearby context.", { status: 422 }));
+  const apply = vi.fn();
+  render(<TextPicker getDraft={() => ({ url: "https://example.com", text_source: "markdown_new" })} onApply={apply} />);
+  const user = userEvent.setup();
+  await user.click(screen.getByRole("button", { name: "Select text from preview" }));
+  await user.click(await screen.findByText("34.819,01 ₺"));
+  await user.click(screen.getByRole("button", { name: "Generate extraction rule" }));
+  expect(await screen.findByText(/cannot be distinguished safely/)).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "Apply selection to editor" })).not.toBeInTheDocument();
+  expect(apply).not.toHaveBeenCalled();
+});
 
 it.each([
   ["direct", undefined],
@@ -58,7 +96,7 @@ it("searches Turkish Reader text immediately while preserving original line inde
   await user.click(screen.getByRole("button", { name: "Select text from preview" }));
   const search = await screen.findByRole("searchbox", { name: "Search Reader output" });
   await user.type(search, "istanbul");
-  expect(await screen.findByText("1 matching line in 2101 available Reader lines")).toBeInTheDocument();
+  expect(await screen.findByText("1 matching line in 2101 available Reader segments")).toBeInTheDocument();
   expect(screen.getByRole("listitem")).toHaveTextContent("İstanbul teslimat");
   await user.click(screen.getByRole("listitem"));
   await user.click(screen.getByRole("button", { name: "Generate extraction rule" }));

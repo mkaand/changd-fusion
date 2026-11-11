@@ -421,7 +421,7 @@ export async function capture(
       const readerText = m.text_source === "jina" ? validateJinaReaderContent((await fetchJinaReader(m, policy, captureTimeoutMs)).body) : await fetchMarkdownNew(m, policy, captureTimeoutMs);
       enterStage("text_extraction");
       const text = m.extraction_mode === "selected_text"
-          ? normalizeText(applySelectedTextRule(readableJinaLines(readerText).join("\n"), m.extraction_rule!), { ...m, ignore_text: [], ignore_case: false, normalize_whitespace: true })
+          ? normalizeText(applySelectedTextRule(m.extraction_rule?.version === 3 ? readerText : readableJinaLines(readerText).join("\n"), m.extraction_rule!), { ...m, ignore_text: [], ignore_case: false, normalize_whitespace: true })
           : normalizeText(readerText, m);
       finishTimings();
       return { text, screenshot: null, timings };
@@ -546,8 +546,8 @@ export async function capture(
       : "";
     for (const value of Object.values(privateValues))
       extracted = extracted.split(value).join("[private]");
-    const text = m.text_enabled && previewText ? readableJinaLines(extracted).join("\n") : m.text_enabled ? (m.extraction_mode === "selected_text"
-      ? normalizeText(applySelectedTextRule(readableJinaLines(extracted).join("\n"), m.extraction_rule!), { ...m, ignore_text: [], ignore_case: false, normalize_whitespace: true })
+    const text = m.text_enabled && previewText ? extracted : m.text_enabled ? (m.extraction_mode === "selected_text"
+      ? normalizeText(applySelectedTextRule(m.extraction_rule?.version === 3 ? extracted : readableJinaLines(extracted).join("\n"), m.extraction_rule!), { ...m, ignore_text: [], ignore_case: false, normalize_whitespace: true })
       : normalizeText(extracted, m)) : null;
     if (m.text_enabled && !errorPageFallback && m.selector && (await locator.count()) === 0)
       throw new HttpError(422, "Extraction selector matched no elements");
