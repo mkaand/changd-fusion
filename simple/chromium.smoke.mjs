@@ -207,3 +207,25 @@ test("long-page Preview remains selectable beyond its original 45-second expiry 
     queue.close();fixture.closeAllConnections();await new Promise(resolve=>fixture.close(resolve));
   }
 });
+
+test("real Chromium Text Picker extraction matches selected hybrid capture and Browser Steps replay",{timeout:90000},async()=>{
+  let price="12";
+  const fixture=http.createServer((_req,res)=>{
+    res.writeHead(200,{"Content-Type":"text/html"});
+    res.end(`<html><body><main id="product"><p>Product</p><p>Price: ${price} USD</p><p>Seller</p><p>Delivery</p></main></body></html>`);
+  });
+  await new Promise(resolve=>fixture.listen(0,"127.0.0.1",resolve));
+  const port=fixture.address().port,url=`http://127.0.0.1:${port}/product`,policy=new EgressPolicy(undefined,()=>true,new Set([port]));
+  const rule={version:1,kind:"bounded_context",before:"Price: ",after:" USD",max_length:64};
+  const m={...monitor,url,selector:"#product",visual_enabled:false,extraction_mode:"full_text",browser_steps:[{action:"wait_selector",selector:"#product",selector_type:"css",timeout_ms:10000,continue_on_error:false}]};
+  try{
+    const preview=await capture(m,limits,policy,undefined,true);
+    assert.match(preview.text,/Price: 12 USD/);
+    const selected={...m,visual_enabled:true,extraction_mode:"selected_text",extraction_rule:rule};
+    const first=await capture(selected,limits,policy);
+    assert.equal(first.text,"12");assert.ok(first.screenshot?.length);
+    price="13";
+    const second=await capture(selected,limits,policy);
+    assert.equal(second.text,"13");assert.ok(second.screenshot?.length);
+  }finally{fixture.closeAllConnections();await new Promise(resolve=>fixture.close(resolve));}
+});

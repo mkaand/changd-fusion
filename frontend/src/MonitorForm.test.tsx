@@ -11,6 +11,25 @@ function Fixture() {
 }
 afterEach(cleanup);
 
+it.each([
+  ["direct", /Direct browser content/],
+  ["jina", /Jina Reader/],
+  ["markdown_new", /markdown.new —/],
+])("offers all three text modes and the shared picker for %s", async (source, label) => {
+  const user = userEvent.setup();
+  render(<Fixture />);
+  await user.click(screen.getByText("Advanced settings", { exact: true }));
+  if (source !== "direct") {
+    await user.click(screen.getByLabelText("Text content source"));
+    await user.click(screen.getByText(label));
+  }
+  for (const name of ["Full Text Changes", "Selected Text / Value", "Keyword Presence"])
+    expect(screen.getByText(name, { exact: true })).toBeInTheDocument();
+  await user.click(screen.getByText("Selected Text / Value", { exact: true }));
+  expect(current.getFieldValue("extraction_mode")).toBe("selected_text");
+  expect(screen.getByRole("button", { name: "Select text from preview" })).toBeInTheDocument();
+});
+
 it("uses the 60-second Browser capture timeout default and allows bounded overrides", async () => {
   const user = userEvent.setup();
   render(<Fixture />);
@@ -201,10 +220,10 @@ it.each([
   await user.click(screen.getByText(/Direct browser content/));
   expect(current.getFieldValue("text_source")).toBe("direct");
   expect(current.getFieldValue("extraction_mode")).toBe("full_text");
-  if (mode === "selected_text") expect(current.getFieldValue("extraction_rule")).toMatchObject({ before: "Before" });
+  if (mode === "selected_text") expect(current.getFieldValue("extraction_rule")).toBeNull();
 });
 
-it("restores unsaved Jina extraction settings when switching back before save", async () => {
+it("clears incompatible selected text rules when switching sources and back", async () => {
   const user = userEvent.setup();
   render(<Fixture />);
   await user.click(screen.getByText("Advanced settings", { exact: true }));
@@ -218,8 +237,8 @@ it("restores unsaved Jina extraction settings when switching back before save", 
   await user.click(screen.getByText(/Direct browser content/));
   await user.click(screen.getByLabelText("Text content source"));
   await user.click(screen.getByText(/Jina Reader —/));
-  expect(current.getFieldValue("extraction_mode")).toBe("selected_text");
-  expect(current.getFieldValue("extraction_rule")).toEqual(rule);
+  expect(current.getFieldValue("extraction_mode")).toBe("full_text");
+  expect(current.getFieldValue("extraction_rule")).toBeNull();
 });
 
 it("includes the applied Selected Text rule in the JSON payload used to save a new monitor", async () => {

@@ -359,6 +359,7 @@ export async function capture(
   cfg: Config,
   policy = new EgressPolicy(),
   signal?: AbortSignal,
+  previewText = false,
 ): Promise<Capture> {
   if (signal?.aborted) throw (signal.reason ?? new ChromiumCoordinationLost());
   const captureTimeoutMs = effectiveCaptureTimeout(m, cfg);
@@ -545,7 +546,9 @@ export async function capture(
       : "";
     for (const value of Object.values(privateValues))
       extracted = extracted.split(value).join("[private]");
-    const text = m.text_enabled ? normalizeText(extracted, m) : null;
+    const text = m.text_enabled && previewText ? readableJinaLines(extracted).join("\n") : m.text_enabled ? (m.extraction_mode === "selected_text"
+      ? normalizeText(applySelectedTextRule(readableJinaLines(extracted).join("\n"), m.extraction_rule!), { ...m, ignore_text: [], ignore_case: false, normalize_whitespace: true })
+      : normalizeText(extracted, m)) : null;
     if (m.text_enabled && !errorPageFallback && m.selector && (await locator.count()) === 0)
       throw new HttpError(422, "Extraction selector matched no elements");
     // Freeze animations and use the same page for DOM and all screenshot modes.

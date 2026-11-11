@@ -112,8 +112,8 @@ export const monitorInput = z
   .refine((m) => m.text_source === "direct" || (m.kind === "browser" && m.text_enabled && !m.visual_enabled), {
     message: "Third-party readers are available only for text-only Browser monitors",
   })
-  .refine((m) => m.extraction_mode !== "selected_text" || m.text_source === "jina", {
-    message: "Selected Text extraction requires Jina Reader",
+  .refine((m) => m.extraction_mode !== "selected_text" || (m.kind === "browser" && m.text_enabled), {
+    message: "Selected Text extraction requires Browser text detection",
   })
   .refine((m) => m.extraction_mode !== "selected_text" || !!m.extraction_rule, {
     message: "Selected Text extraction requires a validated rule",

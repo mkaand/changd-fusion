@@ -81,8 +81,8 @@ function applyV1(text: string, rule: SelectedTextRuleV1) {
     if (value) matches.push(value);
   }
   if (matches.length === 1) return matches[0];
-  if (matches.length > 1) throw new HttpError(422, "Selected text is ambiguous in the current Reader output.");
-  throw new HttpError(422, "Selected text could not be found in the current Reader output.");
+  if (matches.length > 1) throw new HttpError(422, "Selected text is ambiguous in the current text.");
+  throw new HttpError(422, "Selected text could not be found in the current text.");
 }
 
 function selectedValueFromLine(line: string, rule: SelectedTextRuleV2) {
@@ -118,7 +118,7 @@ function applyV2(text: string, rule: SelectedTextRuleV2) {
   }
   const candidates = [...evidence].filter(([, proof]) => proof >= 2).map(([index]) => selectedValueFromLine(lines[index], rule)).filter((value): value is string => !!value);
   if (!ambiguousAnchor && candidates.length === 1) return candidates[0];
-  throw new HttpError(422, candidates.length || ambiguousAnchor ? "Selected text is ambiguous in the current Reader output." : "Selected text could not be found in the current Reader output.");
+  throw new HttpError(422, candidates.length || ambiguousAnchor ? "Selected text is ambiguous in the current text." : "Selected text could not be found in the current text.");
 }
 
 export function applySelectedTextRule(text: string, rule: SelectedTextRule) {

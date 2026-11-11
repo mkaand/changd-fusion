@@ -12,6 +12,8 @@ import { FusionEngine } from "./engine.mjs";
 import { EgressPolicy } from "../server/dist/egress.js";
 import { previewRegion, releaseRegionPreviewSession, closeRegionPreviewSessions } from "../server/dist/region-picker.js";
 import { previewJinaText } from "../server/dist/text-picker.js";
+import { capture } from "../server/dist/capture.js";
+import { HttpError, WorkerFatalError } from "../server/dist/errors.js";
 import { monitorInput as strictMonitorSchema } from "../server/dist/monitor-schema.js";
 import { z,ZodError } from "zod";
 import { telegramSchema,smtpSchema,telegramSummary,telegramValidate,deliver } from "../server/dist/notifications.js";
@@ -460,7 +462,31 @@ app.delete(api+"/interactive-presence/:id",(_req,res)=>res.status(204).end());
 app.post(api+"/text-preview",safe(async(req,res)=>{
   const b=req.body??{};
   if(b.monitor_id)owner(req,b.monitor_id);
-  res.json(await previewJinaText({ownerId:req.user.user_id,url:b.url,sessionId:b.session_id,lineIndex:b.line_index,selectedValue:b.selected_value,query:b.query,offset:b.offset,limit:b.limit},cfg,policy));
+  const source=b.text_source??"jina";
+  if(!["direct","jina","markdown_new"].includes(source))throw replyError(422,"Invalid text source");
+  const directPreview=source==="direct"&&!b.session_id?async()=>{
+    const draft=b.monitor??{};
+    if(draft.text_source!=="direct"||draft.url!==b.url)throw new HttpError(422,"Preview configuration does not match the selected source.");
+    const previewFields=["selector","selector_type","ignore_selectors","browser_steps","step_budget_ms","capture_timeout_ms","monitor_http_error_pages","disable_javascript","block_ads_trackers","cookie_banner_handling","wait_before_capture_ms","mobile_view"];
+    const fields=Object.fromEntries(previewFields.filter(key=>Object.hasOwn(draft,key)).map(key=>[key,draft[key]]));
+    const monitor=monitorInput({...monitorDefaults,...fields,name:"Text preview",url:b.url,kind:"browser",text_source:"direct",text_enabled:true,visual_enabled:false,capture_mode:"viewport",capture_area:null,extraction_mode:"full_text",extraction_rule:null,channel_ids:[]});
+    if(monitor.browser_steps.some(step=>step.action==="fill_private"))throw new HttpError(422,"Private browser steps cannot be previewed in Text Picker.");
+    const cancellation=new AbortController();
+    const onClose=()=>cancellation.abort();
+    req.once("aborted",onClose);res.once("close",onClose);
+    const lease=await engine.browser.acquirePreview({signal:cancellation.signal});
+    if(!lease)throw new HttpError(429,"Browser preview capacity is busy. Retry shortly.");
+    let cleanupConfirmed=true;
+    try{
+      const result=await capture(monitor,cfg,policy,cancellation.signal,true);
+      if(typeof result.text!=="string")throw new HttpError(422,"Browser returned no selectable text.");
+      return result.text;
+    }catch(error){
+      if(error instanceof WorkerFatalError){cleanupConfirmed=false;console.error(JSON.stringify({code:"text_preview_cleanup_failed"}));process.exitCode=1;}
+      throw error;
+    }finally{if(cleanupConfirmed)await lease.release();req.off("aborted",onClose);res.off("close",onClose);}
+  }:undefined;
+  res.json(await previewJinaText({ownerId:req.user.user_id,url:b.url,source,markdownRender:b.markdown_render,directPreview,sessionId:b.session_id,lineIndex:b.line_index,selectedValue:b.selected_value,query:b.query,offset:b.offset,limit:b.limit},cfg,policy));
 }));
 app.get(api+"/system/diagnostics",requireAccountSession,(req,res)=>{
   const count=db.prepare("SELECT count(*) total,sum(CASE WHEN enabled=1 AND paused=0 AND last_status NOT IN ('persistent_failure','authentication_required','challenge_detected') THEN 1 ELSE 0 END) active,sum(CASE WHEN last_status IN ('persistent_failure','authentication_required','challenge_detected') THEN 1 ELSE 0 END) attention FROM monitors WHERE user_id=?").get(req.user.user_id);
@@ -566,7 +592,7 @@ app.get("/{*path}",(req,res)=>{
 app.use((error,req,res,_next)=>{
   const status=error instanceof ZodError?422:Number.isInteger(error.status)?error.status:500;
   if(status>=500)console.error(JSON.stringify({code:"simple_api_error",route:req.path,status}));
-  res.status(status).json({error:status>=500?"Internal server error":status===422?"Invalid request":error.message??"Request rejected"});
+  res.status(status).json({error:status>=500?"Internal server error":status===422&&!(req.path===api+"/text-preview"&&error instanceof HttpError)?"Invalid request":error.message??"Request rejected"});
 });
 const server=app.listen(PORT,"0.0.0.0",()=>{
   console.log(JSON.stringify({status:"ready",port:PORT,database:"sqlite",users:userCount(db),mode:"single-container"}));
