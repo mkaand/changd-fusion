@@ -311,7 +311,6 @@ export default function FusionApp() {
       if (b.capture_mode === "selected_area" && (!b.visual_enabled || !isValidCaptureArea(b.capture_area)))
         throw Error("Enable Visual detection, then select and apply a valid screenshot area before saving.");
       if (
-        b.text_source === "jina" &&
         b.extraction_mode === "selected_text" &&
         !isValidSelectedTextRule(b.extraction_rule)
       )

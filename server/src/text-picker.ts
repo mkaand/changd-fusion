@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Config } from "./config.js";
 import { EgressPolicy, safeFetch } from "./egress.js";
 import { HttpError } from "./errors.js";
-import { validateJinaReaderContent } from "./capture.js";
+import { fetchMarkdownNew, validateJinaReaderContent } from "./capture.js";
 import { generateSelectedTextRule, readableJinaPreview, searchJinaLines } from "./selected-text.js";
 
 export const jinaTextPreviewFetchOptions = Object.freeze({ jinaNoCache: true });
@@ -23,6 +23,9 @@ cleanup.unref();
 export async function previewJinaText(input: {
   ownerId: string;
   url?: string;
+  source?: "direct" | "jina" | "markdown_new";
+  markdownRender?: "auto" | "browser";
+  directPreview?: () => Promise<string>;
   sessionId?: string;
   lineIndex?: number;
   selectedValue?: string;
@@ -45,10 +48,14 @@ export async function previewJinaText(input: {
   if (sessions.size + initializing >= MAX_SESSIONS) throw new HttpError(429, "Text preview capacity is busy. Retry shortly.");
   initializing++;
   try {
-    const response = await safeFetch(`https://r.jina.ai/${input.url}`, policy, cfg.CAPTURE_TIMEOUT_MS, 2_000_000, jinaTextPreviewFetchOptions);
-    const readable = readableJinaPreview(validateJinaReaderContent(response.body));
+    const content = input.source === "markdown_new"
+      ? await fetchMarkdownNew({ url: input.url, markdown_render: input.markdownRender ?? "auto" }, policy, cfg.CAPTURE_TIMEOUT_MS)
+      : input.source === "direct"
+        ? await input.directPreview?.() ?? (() => { throw new HttpError(422, "Direct Browser preview is unavailable."); })()
+        : validateJinaReaderContent((await safeFetch(`https://r.jina.ai/${input.url}`, policy, cfg.CAPTURE_TIMEOUT_MS, 2_000_000, jinaTextPreviewFetchOptions)).body);
+    const readable = readableJinaPreview(content);
     const lines = readable.lines;
-    if (!lines.length) throw new HttpError(422, "Reader returned no selectable text.");
+    if (!lines.length) throw new HttpError(422, "The selected source returned no selectable text.");
     const session: TextSession = { id: randomUUID(), ownerId: input.ownerId, expiresAt: Date.now() + TTL_MS, lines };
     sessions.set(session.id, session);
     return { session_id: session.id, ...searchJinaLines(lines) };

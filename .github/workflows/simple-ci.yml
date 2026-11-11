@@ -14,13 +14,19 @@ jobs:
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: '24'
+      - name: Verify release versions and README
+        run: node simple/verify-release-version.mjs
       - name: Build backend and run frontend regression suite
+        env:
+          APP_COMMIT: ${{ github.event.pull_request.head.sha || github.sha }}
+          APP_BRANCH: ${{ github.head_ref || github.ref_name }}
         run: |
           npm --prefix server ci --ignore-scripts --no-audit --no-fund
           npm --prefix server run build
           npm --prefix frontend ci --ignore-scripts --no-audit --no-fund
           npm --prefix frontend test
           npm --prefix frontend run build
+          node simple/verify-build-metadata.mjs "$APP_COMMIT" "$APP_BRANCH" "$PWD/frontend/dist"
       - name: Check ESM runtime syntax
         run: |
           set -euo pipefail

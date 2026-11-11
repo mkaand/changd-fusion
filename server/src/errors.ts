@@ -48,6 +48,8 @@ export const captureFailureCodes = [
   "selector_failed",
   "selector_missing",
   "selector_ambiguous",
+  "selected_text_missing",
+  "selected_text_ambiguous",
   "element_not_visible",
   "element_unstable",
   "screenshot_timeout",
@@ -119,6 +121,10 @@ export function captureFailure(
   if (error instanceof CaptureFailure) return error;
   if (error instanceof HttpError) {
     const message = error.message;
+    if (/Selected text is ambiguous/.test(message))
+      return new CaptureFailure(stage, "selected_text_ambiguous", message);
+    if (/Selected text could not be found/.test(message))
+      return new CaptureFailure(stage, "selected_text_missing", message);
     if (/^Browser step \d+ \([a-z_]+\) failed: /.test(message)) {
       const code = /selector_missing/.test(message) ? "selector_missing"
         : /deadline|step_timeout/.test(message) ? "timeout"

@@ -7,6 +7,19 @@ import { TextPicker } from "./TextPicker";
 vi.mock("./api", async () => ({ ...(await vi.importActual<typeof import("./api")>("./api")), api: vi.fn() }));
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
+it.each([
+  ["direct", undefined],
+  ["jina", undefined],
+  ["markdown_new", "auto"],
+  ["markdown_new", "browser"],
+])("previews the configured %s source and rendering %s", async (text_source, markdown_render) => {
+  vi.mocked(api).mockResolvedValue({ session_id: "session", items: [{ index: 0, text: "Product" }], matching_line_count: 1, total_line_count: 1 });
+  const draft = { url: "https://example.com", text_source, markdown_render, browser_steps: [] };
+  render(<TextPicker getDraft={() => draft} onApply={vi.fn()} />);
+  await userEvent.setup().click(screen.getByRole("button", { name: "Select text from preview" }));
+  await waitFor(() => expect(api).toHaveBeenCalledWith("/text-preview", "POST", expect.objectContaining({ text_source, markdown_render, monitor: draft }), expect.anything()));
+});
+
 it("shows safe Reader text and applies a server-validated contextual rule", async () => {
   const rule = { version: 2 as const, kind: "anchored_lines" as const, anchors: [{ text: "Product", offset: -1 as const }, { text: "Seller", offset: 1 as const }], prefix: "", suffix: "", max_length: 64 };
   vi.mocked(api).mockResolvedValueOnce({ session_id: "session", items: [{ index: 0, text: "Product" }, { index: 1, text: "32.999,00 TL" }, { index: 2, text: "Seller" }], matching_line_count: 3, total_line_count: 3 }).mockResolvedValueOnce({ session_id: "session", rule, extracted: "32.999,00 TL", description: "Text between context" });
