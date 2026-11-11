@@ -3,6 +3,7 @@ import { Alert, Button, InputNumber, Select, Space, Spin, Switch, Typography } f
 import { ApiError, api } from "./api";
 import { InteractivePreviewSurface } from "./InteractivePreviewSurface";
 import { describePreviewWarning } from "./preview-warning";
+import { PreviewScrollCoordinator, scrollSteps } from "./preview-scroll-coordinator";
 const PREVIEW_REQUEST_TIMEOUT_MS = 125000;
 const MIN_ZOOM = .5, MAX_ZOOM = 3, ZOOM_STEP = .25;
 type Draft = { url?: string; kind?: string; visual_enabled?: boolean; browser_steps?: unknown[]; step_budget_ms?: number; capture_timeout_ms?: number | null; monitor_http_error_pages?: boolean; disable_javascript?: boolean; block_ads_trackers?: boolean; cookie_banner_handling?: boolean; wait_before_capture_ms?: 0 | 2000 | 5000 | 10000; mobile_view?: boolean };
@@ -29,22 +30,31 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
   const canvas = useRef<HTMLDivElement>(null);
   const previewImage = useRef<HTMLImageElement>(null);
   const requestPending = useRef(false);
+  const loadRef = useRef<(point?: { x: number; y: number }, refreshSession?: boolean, scrollDelta?: { x: number; y: number }) => Promise<void>>(undefined);
   const requestController = useRef<AbortController | undefined>(undefined);
   const sessionId = useRef<string | undefined>(undefined);
   const initialScroll = useRef({ x: 0, y: 0 });
   const renderedDraft = useRef<string>("");
   const [stale, setStale] = useState(true);
+  const scrollCoordinator = useRef<PreviewScrollCoordinator>(undefined);
+  if (!scrollCoordinator.current) scrollCoordinator.current = new PreviewScrollCoordinator(
+    (delta) => loadRef.current!(undefined, false, delta),
+    () => !requestPending.current && Boolean(sessionId.current),
+    () => { setStale(true); setLoading(true); },
+    () => setLoading(false),
+  );
   useEffect(() => {
     if (!preview?.session_id || stale) return;
-    const timer = window.setTimeout(() => { setStale(true); sessionId.current = undefined; }, Math.max(0, (preview.expires_at ?? Date.now() + 45000) - Date.now()));
+    const timer = window.setTimeout(() => { setStale(true); if (!requestPending.current && !scrollCoordinator.current?.hasPending) sessionId.current = undefined; }, Math.max(0, (preview.expires_at ?? Date.now() + 45000) - Date.now()));
     return () => window.clearTimeout(timer);
-  }, [preview?.session_id, stale]);
+  }, [preview?.session_id, preview?.expires_at, stale]);
   const lastPoint = useRef<{ x: number; y: number } | undefined>(undefined);
   const imageDecodeStarted = useRef(0);
   const pointers = useRef(new Map<number, { x: number; y: number }>());
   const gesture = useRef<{ primaryId: number | null; x: number; y: number; left: number; top: number; distance?: number; zoom: number; moved: boolean; multi: boolean }>({ primaryId: null, x: 0, y: 0, left: 0, top: 0, zoom: 1, moved: false, multi: false });
   useEffect(() => { const media = window.matchMedia("(max-width: 767px)"); const update = () => setCompact(media.matches); update(); media.addEventListener("change", update); return () => media.removeEventListener("change", update); }, []);
   const releaseSession = useCallback(() => {
+    scrollCoordinator.current?.clear();
     requestController.current?.abort();
     requestController.current = undefined;
     requestPending.current = false;
@@ -94,15 +104,19 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
       if (!scrollDelta && !point && !refreshSession) { initialScroll.current = { x: result.scroll_x ?? 0, y: result.scroll_y ?? 0 }; setPendingScroll({ x: 0, y: 0 }); }
       if (scrollDelta) setPendingScroll({ x: (result.scroll_x ?? initialScroll.current.x) - initialScroll.current.x, y: (result.scroll_y ?? initialScroll.current.y) - initialScroll.current.y });
       renderedDraft.current = signature;
-      setStale(false);
-      imageDecodeStarted.current = performance.now(); setPreview(result); setError(undefined); setProgress("ready"); setWorkflowChanged(false); setClientTiming({ transfer: Math.round(performance.now() - requestStarted - Object.values(result.timings ?? {}).reduce((sum, value) => sum + value, 0)) });
+      if (!scrollCoordinator.current?.hasPending) {
+        setStale(false);
+        imageDecodeStarted.current = performance.now(); setPreview(result); setError(undefined); setProgress("ready"); setWorkflowChanged(false); setClientTiming({ transfer: Math.round(performance.now() - requestStarted - Object.values(result.timings ?? {}).reduce((sum, value) => sum + value, 0)) });
+      }
     } catch (cause) {
       if (controller.signal.aborted) return;
-      if (cause instanceof ApiError && cause.status === 410) sessionId.current = undefined;
-      if (cause instanceof ApiError && cause.failureCode === "stale_configuration") { sessionId.current = undefined; setPreview(undefined); }
+      if (cause instanceof ApiError && cause.status === 410) { sessionId.current = undefined; scrollCoordinator.current?.clear(); }
+      if (cause instanceof ApiError && cause.failureCode === "stale_configuration") { sessionId.current = undefined; setPreview(undefined); scrollCoordinator.current?.clear(); }
+      if (scrollDelta) { sessionId.current = undefined; scrollCoordinator.current?.clear(); }
       setError(cause instanceof ApiError ? cause : new ApiError("Website preview failed. Retry, or use viewport capture instead."));
-    } finally { if (progressTimer) window.clearInterval(progressTimer); if (requestController.current === controller) { requestController.current = undefined; requestPending.current = false; setLoading(false); } }
+    } finally { if (progressTimer) window.clearInterval(progressTimer); if (requestController.current === controller) { requestController.current = undefined; requestPending.current = false; setLoading(Boolean(scrollCoordinator.current?.hasPending)); scrollCoordinator.current?.resume(); } }
   };
+  loadRef.current = load;
   const changeZoom = (next: number) => setZoom(clampZoom(next));
   const pointerDown = (event: React.PointerEvent) => {
     const node = canvas.current; if (!node) return;
@@ -153,8 +167,8 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
       ? { x: Math.round(gesture.current.x - event.clientX), y: Math.round(gesture.current.y - event.clientY) }
       : { x: 0, y: 0 };
     gesture.current.primaryId = null;
-    if ((Math.abs(backendScroll.x) >= 8 || Math.abs(backendScroll.y) >= 8) && !requestPending.current && preview?.session_id) {
-      void load(undefined, false, backendScroll);
+    if ((Math.abs(backendScroll.x) >= 8 || Math.abs(backendScroll.y) >= 8) && sessionId.current) {
+      scrollCoordinator.current?.add(backendScroll);
       return;
     }
     if (!shouldSelect || requestPending.current) return;
@@ -168,11 +182,15 @@ export function RegionPicker({ monitorId, getDraft, onSelect, onUseViewport, mob
   const replay = () => { releaseSession(); window.setTimeout(() => void load(), 0); };
   const commitScroll = () => {
     if (!pendingScroll.x && !pendingScroll.y) return;
-    const step: VisualBrowserStep = { action: "scroll_by", x: pendingScroll.x, y: pendingScroll.y, timeout_ms: 5000, continue_on_error: false };
-    (purpose === "step" ? onAddStep : onScrollStep)?.(step);
+    for (const delta of scrollSteps(pendingScroll, 20 - (getDraft().browser_steps?.length ?? 0) - (purpose === "step" ? 1 : 0)) ?? [])
+      (purpose === "step" ? onAddStep : onScrollStep)?.({ action: "scroll_by", ...delta, timeout_ms: 5000, continue_on_error: false });
     setPendingScroll({ x: 0, y: 0 });
   };
   const canApplySelection = () => {
+    if (!scrollSteps(pendingScroll, 20 - (getDraft().browser_steps?.length ?? 0) - (purpose === "step" ? 1 : 0))) {
+      setError(new ApiError("This scroll exceeds the remaining Browser Steps. Replay Preview with a shorter scroll."));
+      return false;
+    }
     if (stale || loading || error || renderedDraft.current !== draftSignature(getDraft())) {
       releaseSession();
       setError(new ApiError("Preview settings changed. Refresh or replay Preview before applying a selection.", { preview_stage: "browser_steps", failure_code: "stale_configuration" }));

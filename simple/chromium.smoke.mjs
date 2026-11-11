@@ -131,3 +131,37 @@ test("real Chromium Preview scrolls both axes and replays x/y Browser Step durin
     queue.close();fixture.closeAllConnections();await new Promise(resolve=>fixture.close(resolve));
   }
 });
+
+test("long-page Preview remains selectable beyond its original 45-second expiry after real scrolling",{timeout:90000},async()=>{
+  const fixture=http.createServer((_req,res)=>{
+    res.writeHead(200,{"Content-Type":"text/html"});
+    res.end('<!doctype html><html><body style="margin:0"><div style="width:2600px;height:2000px"></div><button id="target" style="position:absolute;left:620px;top:520px;width:160px;height:80px">Select target</button></body></html>');
+  });
+  await new Promise(resolve=>fixture.listen(0,"127.0.0.1",resolve));
+  const port=fixture.address().port,url=`http://127.0.0.1:${port}/page`,policy=new EgressPolicy(undefined,()=>true,new Set([port]));
+  const queue=new BrowserQueue(),ownerId=randomUUID(),m={...monitor,url,disable_javascript:false};
+  let sessionId,originalNow=Date.now;
+  try {
+    const initial=await previewRegion(m,limits,undefined,policy,{ownerId,retain:true,acquireCapacity:async(_wait,waitMs)=>queue.acquirePreview({waitMs})});
+    sessionId=initial.session_id;
+    assert.ok(initial.expires_at-Date.now()<=45000&&initial.expires_at-Date.now()>42000);
+    const ineffective=await previewRegion(m,limits,undefined,policy,{ownerId,id:sessionId,retain:true,scrollDelta:{x:-100,y:-100}});
+    assert.equal(ineffective.expires_at,initial.expires_at,"scrolling against the viewport edge does not renew the session");
+    await new Promise(resolve=>setTimeout(resolve,Math.max(0,initial.expires_at-Date.now()-3000)));
+    const moved=await previewRegion(m,limits,undefined,policy,{ownerId,id:sessionId,retain:true,scrollDelta:{x:600,y:500}});
+    assert.ok(moved.expires_at>=initial.expires_at+19000&&moved.expires_at<=initial.expires_at+20000);
+    await new Promise(resolve=>setTimeout(resolve,Math.max(0,initial.expires_at-Date.now()+1000)));
+    const selected=await previewRegion(m,limits,{x:50,y:50},policy,{ownerId,id:sessionId,retain:true});
+    assert.equal(selected.selection?.selector,"#target");
+    assert.equal(selected.expires_at,moved.expires_at,"selection alone does not renew the session");
+    Date.now=()=>moved.expires_at+1;
+    await assert.rejects(previewRegion(m,limits,undefined,policy,{ownerId,id:sessionId,retain:true}),error=>error.status===410&&error.failure_code==="session_expired");
+    Date.now=originalNow;
+    sessionId=undefined;
+    assert.equal(queue.status.preview,false,"expired session releases the confirmed Chromium lease");
+  }finally{
+    Date.now=originalNow;
+    if(sessionId)await releaseRegionPreviewSession(ownerId,sessionId);
+    queue.close();fixture.closeAllConnections();await new Promise(resolve=>fixture.close(resolve));
+  }
+});

@@ -113,6 +113,41 @@ it("sends a horizontal Fit gesture to the retained browser session", async () =>
   await waitFor(() => expect(api).toHaveBeenLastCalledWith("/region-preview", "POST", expect.objectContaining({ session_id: session, scroll_delta_x: 180, scroll_delta_y: 0 }), expect.anything()));
 });
 
+it("retains a second swipe during screenshot work and displays only the final viewport", async () => {
+  const session = "00000000-0000-4000-8000-000000000099";
+  let finishFirst!: (value: unknown) => void;
+  let finishSecond!: (value: unknown) => void;
+  const onAddStep = vi.fn();
+  vi.mocked(api)
+    .mockResolvedValueOnce({ session_id: session, image: "aW5pdGlhbA==", width: 390, height: 844, scroll_x: 0, scroll_y: 0, selection: null })
+    .mockImplementationOnce(() => new Promise(resolve => { finishFirst = resolve; }))
+    .mockImplementationOnce(() => new Promise(resolve => { finishSecond = resolve; }))
+    .mockResolvedValueOnce({ session_id: session, image: "ZmluYWw=", width: 390, height: 844, scroll_x: 100, scroll_y: 300, selection: { selector: "#target", x: 20, y: 30, width: 100, height: 40 } });
+  render(<RegionPicker purpose="step" mobilePage getDraft={() => ({ ...draft, mobile_view: true })} onSelect={vi.fn()} onUseViewport={vi.fn()} onAddStep={onAddStep} />);
+  const image = await screen.findByAltText("Secure monitor preview");
+  Object.defineProperty(image, "getBoundingClientRect", { value: () => ({ left: 0, top: 0, width: 390, height: 844 }) });
+  const canvas = image.closest(".region-preview-canvas")!;
+  const swipe = (id: number, startX: number, startY: number, endX: number, endY: number) => {
+    fireEvent.pointerDown(image, { pointerId: id, pointerType: "touch", clientX: startX, clientY: startY });
+    fireEvent.pointerMove(canvas, { pointerId: id, pointerType: "touch", clientX: endX, clientY: endY });
+    fireEvent.pointerUp(canvas, { pointerId: id, pointerType: "touch", clientX: endX, clientY: endY });
+  };
+  swipe(81, 200, 700, 200, 500);
+  await waitFor(() => expect(vi.mocked(api).mock.calls.filter(([path]) => path === "/region-preview")).toHaveLength(2));
+  swipe(82, 250, 600, 150, 500);
+  finishFirst({ session_id: session, image: "aW50ZXJtZWRpYXRl", width: 390, height: 844, scroll_x: 0, scroll_y: 200, selection: null });
+  await waitFor(() => expect(vi.mocked(api).mock.calls.filter(([path]) => path === "/region-preview")).toHaveLength(3));
+  expect(image).toHaveAttribute("src", "data:image/png;base64,aW5pdGlhbA==");
+  expect(vi.mocked(api).mock.calls[2][2]).toEqual(expect.objectContaining({ scroll_delta_x: 100, scroll_delta_y: 100 }));
+  finishSecond({ session_id: session, image: "ZmluYWw=", width: 390, height: 844, scroll_x: 100, scroll_y: 300, selection: null });
+  await waitFor(() => expect(image).toHaveAttribute("src", "data:image/png;base64,ZmluYWw="));
+  fireEvent.pointerDown(image, { pointerId: 83, pointerType: "touch", clientX: 40, clientY: 40 });
+  fireEvent.pointerUp(canvas, { pointerId: 83, pointerType: "touch", clientX: 40, clientY: 40 });
+  await screen.findByText("Selected visible element");
+  await userEvent.setup().click(screen.getByRole("button", { name: "Add step to draft" }));
+  expect(onAddStep).toHaveBeenNthCalledWith(1, { action: "scroll_by", x: 100, y: 300, timeout_ms: 5000, continue_on_error: false });
+});
+
 it("builds a CSS browser step from Preview without enabling visual detection", async () => {
   const onAddStep = vi.fn();
   vi.mocked(api).mockResolvedValue({ session_id: "00000000-0000-4000-8000-000000000099", image: "aGVsbG8=", width: 1280, height: 900, http_status: 403, selection: { selector: "#reject-cookies", label: "Exact: button", x: 20, y: 20, width: 120, height: 44 } });
