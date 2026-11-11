@@ -57,6 +57,7 @@ export const captureFailureCodes = [
   "coordination_lost",
   "scheduled_recovery",
   "resource_limit",
+  "adblock_unavailable",
   "capture_failed",
   "cleanup_timeout",
   "internal_error",

@@ -132,6 +132,48 @@ test("real Chromium Preview scrolls both axes and replays x/y Browser Step durin
   }
 });
 
+test("Ghostery blocks real Chromium ad requests in capture and Preview while OFF stays unblocked",{timeout:90000},async()=>{
+  const hits={ad:0,ordinary:0};
+  const fixture=http.createServer((req,res)=>{
+    if(req.url==="/analytics.js"){hits.ad++;res.writeHead(200,{"Content-Type":"application/javascript"});res.end('document.body.insertAdjacentHTML("beforeend","<p>ad loaded</p>")');return;}
+    if(req.url==="/ordinary.js"){hits.ordinary++;res.writeHead(200,{"Content-Type":"application/javascript"});res.end('document.body.insertAdjacentHTML("beforeend","<p id=ordinary>ordinary loaded</p>")');return;}
+    res.writeHead(200,{"Content-Type":"text/html"});
+    res.end(`<!doctype html><html><body><h1>Fixture</h1><script src="http://adnxs.com:${fixture.address().port}/analytics.js"></script><script src="http://cdn.example.com:${fixture.address().port}/ordinary.js"></script></body></html>`);
+  });
+  await new Promise(resolve=>fixture.listen(0,"127.0.0.1",resolve));
+  const port=fixture.address().port,url=`http://site.example.com:${port}/page`;
+  // Isolated fixture only: every test hostname resolves to this local server.
+  const policy=new EgressPolicy(async()=>[{address:"127.0.0.1",family:4}],()=>true,new Set([port]));
+  const configured={...monitor,url,visual_enabled:false,disable_javascript:false,block_ads_trackers:true};
+  let owner=randomUUID(),sessionId;
+  try{
+    const beforeRss=process.memoryUsage().rss,started=performance.now();
+    const blocked=await capture(configured,limits,policy);
+    const enabledMs=Math.round(performance.now()-started),engineRssMiB=Math.round((process.memoryUsage().rss-beforeRss)/1048576);
+    assert.match(blocked.text,/ordinary loaded/);
+    assert.doesNotMatch(blocked.text,/ad loaded/);
+    assert.deepEqual(hits,{ad:0,ordinary:1});
+    const replayStarted=performance.now();
+    const replay=await capture({...configured,browser_steps:[{action:"wait_selector",selector:"#ordinary",selector_type:"css",timeout_ms:5000,continue_on_error:false}]},limits,policy);
+    const warmEnabledMs=Math.round(performance.now()-replayStarted);
+    assert.match(replay.text,/ordinary loaded/);
+    const preview=await previewRegion({...configured,visual_enabled:true},limits,undefined,policy,{ownerId:owner,retain:true,captureLayout:false});
+    sessionId=preview.session_id;
+    assert.ok(preview.image.length>100);
+    assert.equal(hits.ad,0,"Preview shares Ghostery blocking with capture and Browser Steps");
+    await releaseRegionPreviewSession(owner,sessionId);sessionId=undefined;
+    const offStarted=performance.now();
+    const unblocked=await capture({...configured,block_ads_trackers:false},limits,policy);
+    const disabledMs=Math.round(performance.now()-offStarted);
+    assert.equal(hits.ad,1,JSON.stringify(hits));
+    assert.match(unblocked.text,/ad loaded/);
+    console.log(JSON.stringify({code:"ghostery_fixture_performance",cold_enabled_capture_ms:enabledMs,warm_enabled_with_step_ms:warmEnabledMs,disabled_capture_ms:disabledMs,shared_engine_rss_delta_mib:engineRssMiB}));
+  }finally{
+    if(sessionId)await releaseRegionPreviewSession(owner,sessionId);
+    fixture.closeAllConnections();await new Promise(resolve=>fixture.close(resolve));
+  }
+});
+
 test("long-page Preview remains selectable beyond its original 45-second expiry after real scrolling",{timeout:90000},async()=>{
   const fixture=http.createServer((_req,res)=>{
     res.writeHead(200,{"Content-Type":"text/html"});

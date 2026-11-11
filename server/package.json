@@ -1,6 +1,6 @@
 {
   "name": "changd-fusion-server",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "private": true,
   "type": "module",
   "engines": {
@@ -10,6 +10,7 @@
     "build": "tsc"
   },
   "dependencies": {
+    "@ghostery/adblocker": "2.20.3",
     "bcryptjs": "3.0.3",
     "decimal.js": "10.6.0",
     "diff": "9.0.0",

@@ -126,6 +126,8 @@ html, body, #root {
 .event {
   margin: 16px 0;
 }
+.event-status-chips { display:flex; flex-wrap:wrap; gap:8px; padding-inline:8px; margin-top:8px; min-width:0; }
+.event-status-chips .ant-tag { margin-inline-end:0; white-space:normal; overflow-wrap:anywhere; }
 .monitor-history { margin-top: 16px; }
 .history-header { margin-top: 0; }
 .monitor-history > .ant-alert,

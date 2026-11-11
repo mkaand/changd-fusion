@@ -1,5 +1,6 @@
 import type { BrowserContext, Page, Response } from "playwright";
 import type { BrowserStep } from "./browser-steps.js";
+import { adblockEngine, shouldBlockRequest } from "./adblock.js";
 
 export type BrowserViewport = { width: number; height: number };
 
@@ -7,39 +8,39 @@ export function browserViewport(mobile: boolean): BrowserViewport {
   return mobile ? { width: 390, height: 844 } : { width: 1280, height: 900 };
 }
 
-const TRACKER_HOSTS = [
-  "doubleclick.net",
-  "google-analytics.com",
-  "googletagmanager.com",
-  "facebook.net",
-  "hotjar.com",
-  "segment.io",
-  "mixpanel.com",
-  "amazon-adsystem.com",
-  "googlesyndication.com",
-];
-
-export function isTrackerHostname(hostname: string): boolean {
-  const host = hostname.toLowerCase().replace(/\.$/, "");
-  return TRACKER_HOSTS.some((domain) => host === domain || host.endsWith(`.${domain}`));
-}
-
 export async function installBrowserRouting(
   context: BrowserContext,
   targetUrl: string,
   options: { privateWorkflow: boolean; blockTrackers: boolean },
 ) {
+  // Load one verified, local snapshot before navigation. A missing/corrupt
+  // snapshot fails the capture instead of silently running without blocking.
+  const engine = options.blockTrackers ? await adblockEngine() : undefined;
   if (options.privateWorkflow || options.blockTrackers) {
     const targetOrigin = new URL(targetUrl).origin;
     await context.route("**/*", async (route) => {
       try {
         const requested = new URL(route.request().url());
-        if (
-          (options.privateWorkflow && requested.origin !== targetOrigin) ||
-          (options.blockTrackers && isTrackerHostname(requested.hostname))
-        ) {
+        // Private workflow isolation has priority over filter exceptions.
+        if (options.privateWorkflow && requested.origin !== targetOrigin) {
           await route.abort("blockedbyclient");
           return;
+        }
+        if (engine) {
+          const request = route.request();
+          let sourceUrl = targetUrl;
+          let type = request.resourceType();
+          try {
+            const frame = request.frame();
+            const sourceFrame = request.isNavigationRequest() ? frame.parentFrame() : frame;
+            const candidate = sourceFrame?.url();
+            if (candidate?.startsWith("http://") || candidate?.startsWith("https://")) sourceUrl = candidate;
+            if (request.isNavigationRequest()) type = frame.parentFrame() ? "sub_frame" : "main_frame";
+          } catch { /* Service workers are blocked by the browser context. */ }
+          if (shouldBlockRequest(engine, requested.href, sourceUrl, type)) {
+            await route.abort("blockedbyclient");
+            return;
+          }
         }
         await route.continue();
       } catch {
