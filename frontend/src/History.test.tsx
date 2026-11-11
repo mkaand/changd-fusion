@@ -148,6 +148,14 @@ it("groups monitoring history content for consistent mobile spacing", async () =
   render(<History id="fixture" refresh={0} />);
   expect(screen.getByRole("region", { name: "Monitoring history" })).toHaveClass("monitor-history");
 });
+it("keeps HTTP failure and attention chips in a local wrapping row", async () => {
+  vi.mocked(api).mockResolvedValue({ items: [{ id: "403", status: "failed", created_at: "2026-01-01", failure_code: "http_403", failure_stage: "navigation", attention_state: "access_blocked", warning_code: "http_403" }], total: 1 });
+  render(<History id="fixture" refresh={0} />);
+  expect(await screen.findByText("navigation · http_403")).toBeInTheDocument();
+  const chips = document.querySelector(".event-status-chips");
+  expect(chips).toContainElement(screen.getByText("access blocked (http_403)"));
+  expect(chips).toContainElement(screen.getByText("navigation · http_403"));
+});
 it("history reports API errors and has an accessible loading state", async () => {
   vi.mocked(api).mockRejectedValue(Error("History unavailable"));
   render(<History id="fixture" refresh={0} />);

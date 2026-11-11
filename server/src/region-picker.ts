@@ -118,6 +118,7 @@ function previewMessage(stage: CaptureStage, code: RegionPreviewCode) {
   if (code === "scheduled_recovery") return "Scheduled monitoring is completing a bounded recovery turn. Retry Preview shortly; manual editing and saving remain available.";
   if (code === "capacity_queue_full") return "Preview capacity is busy. Retry shortly.";
   if (code === "egress_denied") return "Preview destination is not permitted.";
+  if (code === "adblock_unavailable") return "Ad/tracker filters are unavailable. Rebuild the image with verified filters before retrying Preview.";
   if (code === "selector_failed") return "The selected region is not a unique visible element.";
   if (stage === "browser_steps") return "A required browser step failed. Check its action and timeout.";
   if (stage === "navigation") return "Website preview could not be loaded. Check the URL and try again.";

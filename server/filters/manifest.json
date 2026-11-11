@@ -1,0 +1,19 @@
+{
+  "engine": "@ghostery/adblocker@2.20.3",
+  "upstreamCommit": "6f0610bf5eec1f31c4975ce0e707cdf47023e5b5",
+  "sources": [
+    {
+      "name": "EasyList",
+      "url": "https://raw.githubusercontent.com/ghostery/adblocker/6f0610bf5eec1f31c4975ce0e707cdf47023e5b5/packages/adblocker/assets/easylist/easylist.txt",
+      "sha256": "318f849794a94697a04d470f6162523befd43ce58d2477d4e321f727cbbb0ccd"
+    },
+    {
+      "name": "EasyPrivacy",
+      "url": "https://raw.githubusercontent.com/ghostery/adblocker/6f0610bf5eec1f31c4975ce0e707cdf47023e5b5/packages/adblocker/assets/easylist/easyprivacy.txt",
+      "sha256": "d0b04edb90a4e9ef6f3a371d08a9afd90057a22abe843586409fe08edfa89262"
+    }
+  ],
+  "license": "https://easylist.to/pages/licence.html",
+  "snapshotSha256": "3bb57fc9449f9ea03ab72519990b038948844c16a270cdc2a59c2e64ff93850b",
+  "bytes": 4118205
+}

@@ -262,17 +262,11 @@ export function History({ id, refresh }: { id: string; refresh: number }) {
             {e.status === "skipped" && (
               <Alert type="info" title="Scheduled check deferred for an interactive request" description="The browser yielded safely to Preview or Check now. Monitor health, baseline and notifications are unchanged. Scheduled monitoring resumes automatically." />
             )}
-            {e.attention_state && (
-              <Tag color="red">
-                {e.attention_state.replaceAll("_", " ")}{" "}
-                {e.warning_code ? "(" + e.warning_code + ")" : ""}
-              </Tag>
-            )}
-            {e.status === "failed" && e.failure_code && (
-              <Tag color="volcano">
-                {e.failure_stage ? `${e.failure_stage} · ` : ""}
-                {e.failure_code}
-              </Tag>
+            {(e.attention_state || (e.status === "failed" && e.failure_code)) && (
+              <div className="event-status-chips">
+                {e.attention_state && <Tag color="red">{e.attention_state.replaceAll("_", " ")} {e.warning_code ? "(" + e.warning_code + ")" : ""}</Tag>}
+                {e.status === "failed" && e.failure_code && <Tag color="volcano">{e.failure_stage ? `${e.failure_stage} · ` : ""}{e.failure_code}</Tag>}
+              </div>
             )}
             {e.error && <Alert title={e.error} type="error" />}
             {e.text_diff?.length > 0 && (
