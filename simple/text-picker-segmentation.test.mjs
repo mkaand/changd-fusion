@@ -33,7 +33,7 @@ test('clicked repeated Turkish price uses stable position and never chooses the 
   assert.notDeepEqual(first.rule.anchors, second.rule.anchors);
   assert.equal(applySelectedTextRule(content.replace(price, '35.000,00 ₺'), first.rule), '35.000,00 ₺');
   assert.equal(applySelectedTextRule(content.replace(price, '35.000,00 ₺'), second.rule), price);
-  assert.throws(() => applySelectedTextRule(`${price}\n${content}`, second.rule), /context changed/);
+  assert.throws(() => applySelectedTextRule(`${price}\n${content}`, second.rule), /ambiguous/);
   assert.equal(applySelectedTextRule(content.replaceAll(price, '36.123,45 ₺'), sentence.rule), '36.123,45 ₺');
   assert.ok(JSON.stringify(second.rule).includes('Kredi kartınızdan'));
   assert.ok(!JSON.stringify(second.rule).includes(price));
@@ -43,8 +43,8 @@ test('genuinely ambiguous repeated values and missing context fail without a fal
   const lines = [price, price];
   assert.throws(() => generateSelectedTextRule(lines, 1, price), /cannot be distinguished safely/);
   const unique = generateSelectedTextRule(segmentSelectedText(content).map(item => item.text), 1, price);
-  assert.throws(() => applySelectedTextRule(`${price}\n${price}`, unique.rule), /context is missing/);
-  try { applySelectedTextRule(`${price}\n${price}`, unique.rule); } catch (error) { assert.equal(captureFailure(error, 'text_extraction').code, 'selected_text_missing'); }
+  assert.throws(() => applySelectedTextRule(`${price}\n${price}`, unique.rule), /ambiguous/);
+  try { applySelectedTextRule(`${price}\n${price}`, unique.rule); } catch (error) { assert.equal(captureFailure(error, 'text_extraction').code, 'selected_text_ambiguous'); }
   assert.throws(() => generateSelectedTextRule([`${price} + ${price}`], 0, price), /more than once/);
 });
 
