@@ -283,12 +283,14 @@ function resolveV3(text: string, rule: SelectedTextRuleV3) {
   const candidates = candidateValues(lines, rule);
   if (!candidates.length) throw new HttpError(422, "Selected text could not be found in the current text. Refresh the preview and select it again.");
   const matched: Set<number>[] = [];
+  const survivingAnchors: { offset: number; position: number }[] = [];
   for (const anchor of rule.anchors) {
     const positions: number[] = [];
     for (let index = 0; index < lines.length; index++)
       if (lines[index] === anchor.shape || segmentShape(lines[index]) === anchor.shape) positions.push(index);
     if (positions.length !== 1) continue;
     const position = positions[0];
+    survivingAnchors.push({ offset: anchor.offset, position });
     const maxDistance = Math.min(12, Math.abs(anchor.offset) + 2);
     let nearby = candidates.filter(item => {
       const distance = item.index - position;
@@ -304,12 +306,22 @@ function resolveV3(text: string, rule: SelectedTextRuleV3) {
   }
   if (matched.length) {
     const supported = candidates.filter(item => matched.every(indices => indices.has(item.index)));
+    // When a formerly distinct peer disappears, proximity or a broad bracket
+    // cannot prove which equal field survived. Only anchors that enclosed one
+    // original segment and still enclose one segment establish that identity.
+    const narrowBracket = survivingAnchors.some(before => before.offset === -1 &&
+      survivingAnchors.some(after => after.offset === 1 && after.position - before.position === 2));
+    if (rule.cohort && candidates.length < rule.cohort.count &&
+        !narrowBracket)
+      throw new HttpError(422, "Selected text is ambiguous in the current text. Refresh and choose more specific context.");
     if (supported.length === 1) return supported[0];
     throw new HttpError(422, supported.length ? "Selected text is ambiguous in the current text. Refresh and choose more specific context." : "Selected text could not be found in the current text. Refresh the preview and select it again.");
   }
   // A unique local field label is sufficient without a surviving remote
   // anchor. A whole-segment value needs context unless it is the only segment.
   const label = stablePrefix(rule.prefix) + stableSuffix(rule.suffix);
+  if (rule.cohort && candidates.length < rule.cohort.count)
+    throw new HttpError(422, "Selected text is ambiguous in the current text. Refresh and choose more specific context.");
   if (candidates.length === 1 && (/\p{L}{3,}/u.test(label) || lines.length === 1)) return candidates[0];
   throw new HttpError(422, candidates.length > 1 ? "Selected text is ambiguous in the current text. Refresh and choose more specific context." : "Selected text context is missing. Refresh the preview and select it again.");
 }

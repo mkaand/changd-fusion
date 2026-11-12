@@ -256,3 +256,30 @@ test("long Direct Browser blocks and repeated values select the clicked hybrid t
     assert.equal(changed.text,second);assert.ok(changed.screenshot?.length);
   }finally{fixture.closeAllConnections();await new Promise(resolve=>fixture.close(resolve));}
 });
+
+test("Direct Browser does not switch to a surviving adjacent duplicate",{timeout:90000},async()=>{
+  const old="34.199,05 TL",changed="35.999,00 TL";
+  let fields=[old,old];
+  const fixture=http.createServer((_req,res)=>{
+    res.writeHead(200,{"Content-Type":"text/html; charset=utf-8"});
+    res.end(`<html><body><main id="product"><h1>Product A</h1>${fields.map(value=>`<p>${value}</p>`).join("")}</main></body></html>`);
+  });
+  await new Promise(resolve=>fixture.listen(0,"127.0.0.1",resolve));
+  const port=fixture.address().port,url=`http://127.0.0.1:${port}/product`,policy=new EgressPolicy(undefined,()=>true,new Set([port]));
+  const m={...monitor,url,selector:"#product",visual_enabled:false,extraction_mode:"full_text"};
+  try {
+    const preview=await capture(m,limits,policy,undefined,true);
+    const lines=segmentSelectedText(preview.text).map(item=>item.text);
+    const duplicates=lines.map((text,index)=>text===old?index:-1).filter(index=>index>=0);
+    assert.equal(duplicates.length,2);
+    for(const selectedIndex of [0,1]) {
+      fields=[old,old];
+      const rule=generateSelectedTextRule(lines,duplicates[selectedIndex],old).rule;
+      const selected={...m,extraction_mode:"selected_text",extraction_rule:rule};
+      fields=[old];
+      await assert.rejects(capture(selected,limits,policy),/ambiguous|could not be found/);
+      fields=selectedIndex===0?[changed,old]:[old,changed];
+      assert.equal((await capture(selected,limits,policy)).text,changed);
+    }
+  }finally{fixture.closeAllConnections();await new Promise(resolve=>fixture.close(resolve));}
+});

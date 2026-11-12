@@ -35,13 +35,44 @@ test('changing shipping text does not invalidate a still identifiable standalone
   assert.equal(applySelectedTextRule(`${newPrice}\nShipping 5 TL\nSeller A`, rule), newPrice);
 });
 
+test('adjacent equal fields cannot inherit one another after either selected field disappears', () => {
+  const initial=`Product A\n${oldPrice}\n${oldPrice}`;
+  const lines=segmentSelectedText(initial).map(segment=>segment.text);
+  const remaining=`Product A\n${oldPrice}`;
+  for(const selectedIndex of [1,2]) {
+    const rule=generateSelectedTextRule(lines,selectedIndex,oldPrice).rule;
+    assert.throws(()=>applySelectedTextRule(remaining,rule),/ambiguous|could not be found/);
+    try {applySelectedTextRule(remaining,rule);} catch(error) {
+      assert.match(captureFailure(error,'text_extraction').code,/^selected_text_(ambiguous|missing)$/);
+    }
+    const changed=lines.map((line,index)=>index===selectedIndex?newPrice:line).join('\n');
+    assert.equal(applySelectedTextRule(changed,rule),newPrice);
+  }
+});
+
+test('anchors bracketing two equal fields do not identify the sole survivor', () => {
+  const initial=`Product A\n${oldPrice}\n${oldPrice}\nSeller A`;
+  const lines=segmentSelectedText(initial).map(segment=>segment.text);
+  for(const selectedIndex of [1,2]) {
+    const rule=generateSelectedTextRule(lines,selectedIndex,oldPrice).rule;
+    assert.throws(()=>applySelectedTextRule(`Product A\n${oldPrice}\nSeller A`,rule),/ambiguous|could not be found/);
+  }
+});
+
 test('selected product remains distinct when another product changes; missing field fails safely', () => {
   const before = `Product A\n${oldPrice}\nFree shipping\nProduct B\n${oldPrice}\nIn stock`;
   const rule = ruleFor(before, 1);
   assert.equal(applySelectedTextRule(before.replace(`Product B\n${oldPrice}`, `Product B\n${newPrice}`), rule), oldPrice);
-  assert.throws(() => applySelectedTextRule(`Product A\nFree shipping\nProduct B\n${oldPrice}\nIn stock`, rule), /could not be found/);
+  assert.throws(() => applySelectedTextRule(`Product A\nFree shipping\nProduct B\n${oldPrice}\nIn stock`, rule), /could not be found|ambiguous/);
   assert.equal(applySelectedTextRule(`Product A\n${newPrice}\nFree shipping\nProduct B\n${oldPrice}\nIn stock`, rule), newPrice);
   assert.equal(compareCaptures({text_content:oldPrice},{text:newPrice},{text_enabled:true},'/tmp').textChanged,true);
+});
+
+test('surviving context on both sides identifies a selected field when another price disappears', () => {
+  const before=`Product A\n${oldPrice}\nSeller A\nProduct B\n${oldPrice}\nSeller B`;
+  const rule=ruleFor(before,1);
+  assert.equal(applySelectedTextRule(`Product A\n${newPrice}\nSeller A\nProduct B\nSeller B`,rule),newPrice);
+  assert.throws(()=>applySelectedTextRule(`Product A\nSeller A\nProduct B\n${oldPrice}\nSeller B`,rule),/could not be found|ambiguous/);
 });
 
 test('saved V3 rules omit dynamic value and resolve when the target remains unique', () => {
@@ -67,12 +98,12 @@ test('scheduled baseline survives extraction failure and recovered value creates
     db=openSimpleDatabase(path.join(dir,'fusion.sqlite'));
     const user=randomUUID(),id=randomUUID(),channel=randomUUID();
     db.prepare('INSERT INTO users(id,email,password_hash,payload) VALUES(?,?,?,?)').run(user,'identity@example.com','hash','{}');
-    const first=`Product A\n${oldPrice}\nSeller A`;
+    const first=`Product A\n${oldPrice}\n${oldPrice}\nSeller A`;
     const rule=ruleFor(first,1);
     saveMonitor(db,{id,user_id:user,name:'Price',url:'https://example.com/product',kind:'browser',text_source:'jina',extraction_mode:'selected_text',extraction_rule:rule,text_enabled:true,visual_enabled:false,enabled:true,paused:false,notification_enabled:true,interval_seconds:30,next_run:new Date(Date.now()-1000).toISOString()},user);
     db.prepare('INSERT INTO channels(id,user_id,payload) VALUES(?,?,?)').run(channel,user,JSON.stringify({id,user_id:user,name:'Telegram',provider:'telegram',enabled:true}));
     db.prepare('INSERT INTO monitor_channels(monitor_id,channel_id) VALUES(?,?)').run(id,channel);
-    const pages=[first,'Product A\nSeller A',`Product A\n${newPrice}\nSeller A`,`Product A\n${newPrice}\nSeller A`];
+    const pages=[first,`Product A\n${oldPrice}\nSeller A`,`Product A\n${newPrice}\n${oldPrice}\nSeller A`,`Product A\n${newPrice}\n${oldPrice}\nSeller A`];
     const browser={status:{preview:false},capture:async m=>{
       try{return {ok:true,text:applySelectedTextRule(pages.shift(),m.extraction_rule),screenshot:null,http_status:200};}
       catch(error){return {ok:false,code:captureFailure(error,'text_extraction').code};}

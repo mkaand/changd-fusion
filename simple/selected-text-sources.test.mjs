@@ -159,6 +159,29 @@ test('Jina and markdown.new capture a changed selected price using the original 
   } finally {clearTextPreviewSessions();await new Promise(resolve=>server.close(resolve));}
 });
 
+test('Jina and markdown.new reject a surviving adjacent duplicate after the selected field is removed', async () => {
+  const old='34.199,05 TL', changed='35.999,00 TL';
+  let content=`Product A\n${old}\n${old}`;
+  const server=http.createServer((_req,res)=>{res.setHeader('content-type','text/markdown');res.end(content);});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const port=server.address().port;
+  const policy={target:async input=>input===url
+    ? {url:new URL(url),address:'93.184.215.14',family:4}
+    : {url:new URL(`http://127.0.0.1:${port}/`),address:'127.0.0.1',family:4}};
+  try {
+    for(const text_source of ['jina','markdown_new']) for(const lineIndex of [1,2]) {
+      clearTextPreviewSessions();content=`Product A\n${old}\n${old}`;
+      const preview=await previewJinaText({ownerId,url,source:text_source,markdownRender:'browser'},cfg,policy);
+      const selected=await previewJinaText({ownerId,sessionId:preview.session_id,lineIndex,selectedValue:old},cfg,policy);
+      const monitor=monitorInput.parse({name:'Duplicate price',url,text_source,markdown_render:'browser',extraction_mode:'selected_text',extraction_rule:selected.rule});
+      content=`Product A\n${old}`;
+      await assert.rejects(capture(monitor,cfg,policy),/ambiguous|could not be found/);
+      content=`Product A\n${lineIndex===1?changed:old}\n${lineIndex===2?changed:old}`;
+      assert.equal((await capture(monitor,cfg,policy)).text,changed);
+    }
+  } finally {clearTextPreviewSessions();await new Promise(resolve=>server.close(resolve));}
+});
+
 test('markdown.new Auto and Browser segmented previews produce capture-equivalent V3 rules', async () => {
   let current = `# Ürün\n${'A long description. '.repeat(80)}\nPrice: 34.819,01 ₺\nSeller`;
   const server = http.createServer((_req, res) => { res.setHeader('content-type', 'text/markdown'); res.end(current); });
