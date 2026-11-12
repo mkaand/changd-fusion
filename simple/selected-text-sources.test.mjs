@@ -137,6 +137,28 @@ test('Jina selected preview and capture keep Reader content and no-cache behavio
   } finally { clearTextPreviewSessions(); await new Promise(resolve => server.close(resolve)); }
 });
 
+test('Jina and markdown.new capture a changed selected price using the original rule', async () => {
+  let content='Product A\n34.199,05 TL\nSeller A\nProduct B\n34.199,05 TL\nSeller B';
+  const server=http.createServer((_req,res)=>{res.setHeader('content-type','text/markdown');res.end(content);});
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+  const port=server.address().port;
+  const policy={target:async input=>input===url
+    ? {url:new URL(url),address:'93.184.215.14',family:4}
+    : {url:new URL(`http://127.0.0.1:${port}/`),address:'127.0.0.1',family:4}};
+  try {
+    for(const text_source of ['jina','markdown_new']) {
+      clearTextPreviewSessions();
+      content='Product A\n34.199,05 TL\nSeller A\nProduct B\n34.199,05 TL\nSeller B';
+      const preview=await previewJinaText({ownerId,url,source:text_source,markdownRender:'browser'},cfg,policy);
+      const selected=await previewJinaText({ownerId,sessionId:preview.session_id,lineIndex:1,selectedValue:'34.199,05 TL'},cfg,policy);
+      const monitor=monitorInput.parse({name:'Price',url,text_source,markdown_render:'browser',extraction_mode:'selected_text',extraction_rule:selected.rule});
+      assert.equal((await capture(monitor,cfg,policy)).text,'34.199,05 TL');
+      content='Product A\nPromotion today\n35.999,00 TL\nSeller A\nProduct B\n34.199,05 TL\nSeller B';
+      assert.equal((await capture(monitor,cfg,policy)).text,'35.999,00 TL');
+    }
+  } finally {clearTextPreviewSessions();await new Promise(resolve=>server.close(resolve));}
+});
+
 test('markdown.new Auto and Browser segmented previews produce capture-equivalent V3 rules', async () => {
   let current = `# Ürün\n${'A long description. '.repeat(80)}\nPrice: 34.819,01 ₺\nSeller`;
   const server = http.createServer((_req, res) => { res.setHeader('content-type', 'text/markdown'); res.end(current); });

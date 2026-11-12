@@ -216,6 +216,21 @@ function segmentShape(text: string) {
   return text.replace(/\p{N}(?:[\p{N}.,]*\p{N})?/gu, "#");
 }
 
+function stablePrefix(text: string) {
+  const numbers = [...text.matchAll(/\p{N}(?:[\p{N}.,]*\p{N})?/gu)];
+  if (!numbers.length) return text;
+  const last = numbers[numbers.length - 1];
+  const tail = text.slice(last.index + last[0].length);
+  return /\p{L}{2,}/u.test(tail) ? tail : "";
+}
+
+function stableSuffix(text: string) {
+  const first = /\p{N}(?:[\p{N}.,]*\p{N})?/u.exec(text);
+  if (!first) return text;
+  const head = text.slice(0, first.index);
+  return /\p{L}{2,}/u.test(head) ? head : "";
+}
+
 function validateV3(rule: SelectedTextRuleV3) {
   if (rule.kind !== "contextual_segments" || typeof rule.prefix !== "string" || rule.prefix.length > MAX_ANCHOR ||
       typeof rule.suffix !== "string" || rule.suffix.length > MAX_ANCHOR || !Number.isInteger(rule.max_length) ||
@@ -238,24 +253,65 @@ function valueFromSegment(segment: string, rule: SelectedTextRuleV3) {
   return values.length === 1 ? values[0] : undefined;
 }
 
+function cohortCandidate(line: string, shape: string) {
+  if (segmentShape(line) === shape) return true;
+  if (!shape.includes("#")) return true; // Text values can change completely when anchored by stable context.
+  const currency = /(?:TL|TRY|USD|EUR|GBP|₺|[$€£])/iu.test(shape);
+  if (currency) return /^(?:[$€£₺]\s*)?\p{N}[\p{N}.,\s]*\s*(?:TL|TRY|USD|EUR|GBP|[$€£₺])$/iu.test(line);
+  return /^\p{N}[\p{N}.,\s]*$/u.test(line);
+}
+
+function candidateValues(lines: string[], rule: SelectedTextRuleV3) {
+  const collect = (active: SelectedTextRuleV3) => lines
+    .map((line, index) => ({ index, value: valueFromSegment(line, active) }))
+    .filter((item): item is { index: number; value: string } => !!item.value &&
+      (!active.cohort || cohortCandidate(lines[item.index], active.cohort.shape)));
+  const exact = collect(rule);
+  if (!rule.prefix && !rule.suffix) return exact;
+  const softer = { ...rule, prefix: stablePrefix(rule.prefix), suffix: stableSuffix(rule.suffix) };
+  if ((softer.prefix !== rule.prefix || softer.suffix !== rule.suffix) &&
+      (!rule.prefix || softer.prefix) && (!rule.suffix || softer.suffix)) {
+    const stable = collect(softer);
+    if (stable.length) return stable;
+  }
+  return exact;
+}
+
 function resolveV3(text: string, rule: SelectedTextRuleV3) {
   validateV3(rule);
   const lines = segmentSelectedText(text).map(segment => segment.text);
-  let candidates = lines.map((line, index) => ({ index, value: valueFromSegment(line, rule) })).filter((item): item is { index: number; value: string } => !!item.value);
-  if (rule.cohort) {
-    const sameShape = lines.filter(line => segmentShape(line) === rule.cohort!.shape).length;
-    if (sameShape !== rule.cohort.count) throw new HttpError(422, "Selected text context changed. Refresh the preview and confirm the target again.");
-    candidates = candidates.filter(item => segmentShape(lines[item.index]) === rule.cohort!.shape);
-  }
+  const candidates = candidateValues(lines, rule);
+  if (!candidates.length) throw new HttpError(422, "Selected text could not be found in the current text. Refresh the preview and select it again.");
+  const matched: Set<number>[] = [];
   for (const anchor of rule.anchors) {
-    const found: number[] = [];
-    for (let index = 0; index < lines.length; index++) if (segmentShape(lines[index]) === anchor.shape) found.push(index);
-    if (found.length !== 1) throw new HttpError(422, found.length > 1 ? "Selected text is ambiguous in the current text. Refresh and choose more specific context." : "Selected text context is missing. Refresh the preview and select it again.");
-    const target = found[0] - anchor.offset;
-    candidates = candidates.filter(item => item.index === target);
+    const positions: number[] = [];
+    for (let index = 0; index < lines.length; index++)
+      if (lines[index] === anchor.shape || segmentShape(lines[index]) === anchor.shape) positions.push(index);
+    if (positions.length !== 1) continue;
+    const position = positions[0];
+    const maxDistance = Math.min(12, Math.abs(anchor.offset) + 2);
+    let nearby = candidates.filter(item => {
+      const distance = item.index - position;
+      return Math.sign(distance) === -Math.sign(anchor.offset) && Math.abs(distance) <= maxDistance;
+    });
+    if (nearby.length > 1 && rule.cohort && lines.filter(line => segmentShape(line) === rule.cohort!.shape).length === rule.cohort.count) {
+      const differences = nearby.map(item => Math.abs(Math.abs(item.index - position) - Math.abs(anchor.offset)));
+      const closest = Math.min(...differences);
+      if (differences.filter(difference => difference === closest).length === 1)
+        nearby = nearby.filter((_item, index) => differences[index] === closest);
+    }
+    matched.push(new Set(nearby.map(item => item.index)));
   }
-  if (candidates.length === 1) return candidates[0];
-  throw new HttpError(422, candidates.length ? "Selected text is ambiguous in the current text. Refresh and choose more specific context." : "Selected text could not be found in the current text. Refresh the preview and select it again.");
+  if (matched.length) {
+    const supported = candidates.filter(item => matched.every(indices => indices.has(item.index)));
+    if (supported.length === 1) return supported[0];
+    throw new HttpError(422, supported.length ? "Selected text is ambiguous in the current text. Refresh and choose more specific context." : "Selected text could not be found in the current text. Refresh the preview and select it again.");
+  }
+  // A unique local field label is sufficient without a surviving remote
+  // anchor. A whole-segment value needs context unless it is the only segment.
+  const label = stablePrefix(rule.prefix) + stableSuffix(rule.suffix);
+  if (candidates.length === 1 && (/\p{L}{3,}/u.test(label) || lines.length === 1)) return candidates[0];
+  throw new HttpError(422, candidates.length > 1 ? "Selected text is ambiguous in the current text. Refresh and choose more specific context." : "Selected text context is missing. Refresh the preview and select it again.");
 }
 
 export function generateSelectedTextRule(lines: string[], lineIndex: number, selectedValue: string) {
@@ -270,29 +326,51 @@ export function generateSelectedTextRule(lines: string[], lineIndex: number, sel
     version: 3,
     kind: "contextual_segments",
     anchors: [],
-    prefix: line.slice(Math.max(0, at - MAX_ANCHOR), at),
-    suffix: line.slice(at + value.length, at + value.length + MAX_ANCHOR),
+    prefix: stablePrefix(line.slice(Math.max(0, at - MAX_ANCHOR), at)),
+    suffix: stableSuffix(line.slice(at + value.length, at + value.length + MAX_ANCHOR)),
     max_length: Math.min(MAX_VALUE, Math.max(value.length * 4, 64)),
   };
   const source = lines.join("\n");
+  const probeValue = /\p{N}/u.test(value)
+    ? value.replace(/\p{N}/gu, digit => digit === "9" ? "8" : "9")
+    : value.replace(/\p{L}/gu, "X");
+  const probeLine = line.slice(0, at).replace(/\p{N}/gu, "9") + probeValue + line.slice(at + value.length).replace(/\p{N}/gu, "9");
+  const probe = lines.map((text, index) => index === lineIndex ? probeLine : text).join("\n");
   const matchesTarget = () => {
-    try { const result = resolveV3(source, rule); return result.index === lineIndex && result.value === value; }
+    try {
+      const original = resolveV3(source, rule);
+      const changed = resolveV3(probe, rule);
+      return original.index === lineIndex && original.value === value && changed.index === lineIndex && changed.value === probeValue;
+    }
     catch { return false; }
   };
+  if (!rule.prefix && !rule.suffix) {
+    const shape = segmentShape(line);
+    if (shape.length <= MAX_ANCHOR)
+      rule.cohort = { shape, count: lines.filter(text => segmentShape(text) === shape).length };
+  }
   if (!matchesTarget()) {
-    const shapes = lines.map(segmentShape);
     const counts = new Map<string, number>();
-    for (const shape of shapes) counts.set(shape, (counts.get(shape) ?? 0) + 1);
-    const targetShape = shapes[lineIndex];
-    if (!rule.prefix && !rule.suffix && targetShape.length <= MAX_ANCHOR)
-      rule.cohort = { shape: targetShape, count: counts.get(targetShape)! };
-    const nearby = shapes.map((shape, index) => ({ shape, offset: index - lineIndex }))
+    const maskedCounts = new Map<string, number>();
+    for (const text of lines) counts.set(text, (counts.get(text) ?? 0) + 1);
+    for (const text of lines) maskedCounts.set(segmentShape(text), (maskedCounts.get(segmentShape(text)) ?? 0) + 1);
+    const nearby = lines.map((text, index) => {
+      const masked = segmentShape(text);
+      const changingAmount = text.includes(value) || /(?:[.,]\p{N}{2}|\b(?:TL|TRY|USD|EUR|GBP)\b|[₺$€£])/iu.test(text);
+      const shape = changingAmount && /\p{L}{3,}/u.test(masked) && maskedCounts.get(masked) === 1 ? masked : text;
+      return { shape, offset: index - lineIndex, source: text };
+    })
       .filter(anchor => anchor.offset && Math.abs(anchor.offset) <= 12 && anchor.shape.length <= MAX_ANCHOR &&
-        counts.get(anchor.shape) === 1)
+        (anchor.shape === anchor.source ? counts.get(anchor.shape) === 1 && !anchor.source.includes(value) &&
+          !/(?:[.,]\p{N}{2}|\b(?:TL|TRY|USD|EUR|GBP)\b|[₺$€£])/iu.test(anchor.source) : maskedCounts.get(anchor.shape) === 1))
       .sort((a, b) => Math.abs(a.offset) - Math.abs(b.offset));
-    for (const anchor of nearby.slice(0, 3)) {
-      rule.anchors.push(anchor);
-      if (matchesTarget()) break;
+    const before = nearby.find(anchor => anchor.offset < 0);
+    const after = nearby.find(anchor => anchor.offset > 0);
+    const chosen = [before, after, ...nearby].filter((anchor): anchor is (typeof nearby)[number] => !!anchor);
+    for (const anchor of chosen) {
+      if (rule.anchors.some(existing => existing.offset === anchor.offset)) continue;
+      rule.anchors.push({ shape: anchor.shape, offset: anchor.offset });
+      if (rule.anchors.length === 3) break;
     }
   }
   if (!matchesTarget()) throw new HttpError(422, "The selected occurrence cannot be distinguished safely. Select a value with unique nearby context.");
