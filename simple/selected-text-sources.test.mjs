@@ -83,7 +83,7 @@ test('markdown.new selected capture compares only the value and failures preserv
     text = lines.replace('12', '13');
     const second = await capture(monitor, cfg, policy);
     assert.equal(second.text, '13');
-    assert.equal(compareCaptures({ text_content: first.text }, second, monitor, '/tmp').textChanged, true);
+    assert.equal((await compareCaptures({ text_content: first.text }, second, monitor, '/tmp')).textChanged, true);
     text = 'Unrelated content';
     await assert.rejects(capture(monitor, cfg, policy));
     assert.equal(first.text, '12');

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
+import type { Browser, BrowserContext, Page } from "playwright";
 import { EgressPolicy, browserProxy } from "./egress.js";
 import type { Config } from "./config.js";
 import { previewExecutionTimeout } from "./capture-timeout.js";
@@ -392,6 +392,7 @@ export async function previewRegion(m: Monitor, cfg: Config, point?: { x: number
     proxy = await browserProxy(policy);
     enter("browser_launch");
     stage = "browser_launch";
+    const { chromium } = await import("playwright");
     browser = await chromium.launch({ headless: true, chromiumSandbox: true, executablePath: cfg.PLAYWRIGHT_EXECUTABLE_PATH, proxy: { server: proxy.url, bypass: "<-loopback>" }, timeout: remaining() });
     capacity?.signal?.addEventListener("abort", abortBrowser, { once: true });
     browser.once("disconnected", () => capacity?.signal?.removeEventListener("abort", abortBrowser));

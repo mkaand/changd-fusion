@@ -1,7 +1,7 @@
-import { chromium, type Browser, type BrowserContext, type Locator, type Page } from "playwright";
+import type { Browser, BrowserContext, Locator, Page } from "playwright";
 import { EgressPolicy, browserProxy, safeFetch, type SafeFetchOptions } from "./egress.js";
 import { fetchFileMetadata, parseFileMetadata, serializeFileMetadata } from "./file-monitor.js";
-import { normalizeText } from "./comparison.js";
+import { normalizeText } from "./text-comparison.js";
 import { locate, runSteps, StepFailure, warningCode, type BrowserStep } from "./browser-steps.js";
 import { AttentionFailure, detectAttention } from "./attention.js";
 import {
@@ -429,6 +429,7 @@ export async function capture(
     enterStage("proxy_initialization");
     proxy = await browserProxy(policy);
     enterStage("browser_launch");
+    const { chromium } = await import("playwright");
     browser = await chromium.launch({
       headless: true,
       timeout: Math.max(1, deadline - Date.now()),
@@ -657,7 +658,7 @@ export async function capture(
           : await page.screenshot({ ...options, fullPage: captureMode === "full_page" });
         if (captureMode === "selected_area") {
           enterStage("image_validation");
-          if (m.mask_selectors.length) screenshot = cropCaptureArea(screenshot, selectedArea!, limits);
+          if (m.mask_selectors.length) screenshot = await cropCaptureArea(screenshot, selectedArea!, limits);
         }
       }
       enterStage("image_validation");

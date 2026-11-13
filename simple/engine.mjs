@@ -1,7 +1,7 @@
 import { randomUUID,createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { compareText, compareKeywordPresence, compareVisual, normalizeText as existingNormalizeText } from "../server/dist/comparison.js";
+import { compareText, compareKeywordPresence, normalizeText as existingNormalizeText } from "../server/dist/text-comparison.js";
 import { BrowserQueue } from "./browser-queue.mjs";
 import { getMonitor, transaction } from "./db.mjs";
 import { deliver, safeTextSummary } from "../server/dist/notifications.js";
@@ -15,7 +15,7 @@ export function normalizeText(value,monitor) {
     ignore_case:!!monitor.ignore_case
   });
 }
-export function compareCaptures(before,after,monitor,root) {
+export async function compareCaptures(before,after,monitor,root) {
   const prior=monitor.kind==="file"?String(before?.text_content??""):normalizeText(before?.text_content,monitor);
   const next=monitor.kind==="file"?String(after.text??""):normalizeText(after.text,monitor);
   const text=before&&monitor.text_enabled!==false
@@ -24,7 +24,7 @@ export function compareCaptures(before,after,monitor,root) {
       : compareText(prior,next)
     : {changed:false,parts:[]};
   const visual=before?.screenshot&&after.screenshot&&monitor.visual_enabled
-    ? compareVisual(
+    ? (await import("../server/dist/comparison.js")).compareVisual(
       readFileSync(path.join(root,"artifacts",before.screenshot)),
       readFileSync(path.join(root,"artifacts",after.screenshot)),
       String(monitor.visual_threshold??"0.35"),Number(monitor.pixel_threshold??0.1))
@@ -174,7 +174,7 @@ export class FusionEngine {
     const before=beforeId?this.db.prepare("SELECT * FROM captures WHERE id=?").get(beforeId):null;
     const actual={text:result.text,screenshot:result.screenshot,http_status:result.http_status};
     let comparison;
-    try {comparison=compareCaptures(before,actual,m,this.dataDir);}
+    try {comparison=await compareCaptures(before,actual,m,this.dataDir);}
     catch {this.#failure(m,"comparison_failed",delay,item);return;}
     const afterId=randomUUID(),eventId=randomUUID(),now=Date.now(),first=!before;
     let diffName=null;

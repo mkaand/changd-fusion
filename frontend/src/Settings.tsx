@@ -80,7 +80,7 @@ export function Settings({ channels, monitors, reload, report, admin, signedOut,
         { key: "api", label: "API", children: <Tag color="green">{diagnostics.api}</Tag> },
         { key: "monitors", label: "Monitoring", children: String(diagnostics.monitoring.active) + "/" + String(diagnostics.monitoring.total) + " active · " + String(diagnostics.monitoring.attention) + " need attention" },
         { key: "delivery", label: "Delivery queue", children: String(diagnostics.deliveries.pending) + " pending · " + String(diagnostics.deliveries.failed) + " failed" },
-        { key: "retention", label: "History retention", children: String(diagnostics.retention_days) + " days" },
+        { key: "retention", label: "History retention", children: diagnostics.retention_policy ?? (diagnostics.retention_days == null ? "Unavailable" : String(diagnostics.retention_days) + " days") },
       ]} />}
     </Card>}
   </section>;

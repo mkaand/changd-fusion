@@ -72,14 +72,15 @@ it("renders authenticated system diagnostics from the API contract", async () =>
         api: "ok",
         monitoring: { active: 1, total: 2, attention: 1 },
         deliveries: { pending: 2, failed: 1 },
-        retention_days: 90,
+        retention_days: null,
+        retention_policy: "No automatic deletion",
       })
     : Promise.resolve({}));
   render(<Settings {...props} />);
   await userEvent.setup().click(screen.getByText("System & Diagnostics", { exact: true }));
   expect(await screen.findByText("1/2 active · 1 need attention")).toBeInTheDocument();
   expect(screen.getByText("2 pending · 1 failed")).toBeInTheDocument();
-  expect(screen.getByText("90 days")).toBeInTheDocument();
+  expect(screen.getByText("No automatic deletion")).toBeInTheDocument();
 });
 
 it("renders a safe retryable diagnostics error without leaving the loading indicator stuck", async () => {

@@ -1,6 +1,5 @@
 import type { BrowserContext, Page, Response } from "playwright";
 import type { BrowserStep } from "./browser-steps.js";
-import { adblockEngine, shouldBlockRequest } from "./adblock.js";
 
 export type BrowserViewport = { width: number; height: number };
 
@@ -15,7 +14,8 @@ export async function installBrowserRouting(
 ) {
   // Load one verified, local snapshot before navigation. A missing/corrupt
   // snapshot fails the capture instead of silently running without blocking.
-  const engine = options.blockTrackers ? await adblockEngine() : undefined;
+  const adblock = options.blockTrackers ? await import("./adblock.js") : undefined;
+  const engine = adblock ? await adblock.adblockEngine() : undefined;
   if (options.privateWorkflow || options.blockTrackers) {
     const targetOrigin = new URL(targetUrl).origin;
     await context.route("**/*", async (route) => {
@@ -37,7 +37,7 @@ export async function installBrowserRouting(
             if (candidate?.startsWith("http://") || candidate?.startsWith("https://")) sourceUrl = candidate;
             if (request.isNavigationRequest()) type = frame.parentFrame() ? "sub_frame" : "main_frame";
           } catch { /* Service workers are blocked by the browser context. */ }
-          if (shouldBlockRequest(engine, requested.href, sourceUrl, type)) {
+          if (adblock!.shouldBlockRequest(engine, requested.href, sourceUrl, type)) {
             await route.abort("blockedbyclient");
             return;
           }

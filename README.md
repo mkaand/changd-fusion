@@ -9,7 +9,7 @@
 One Docker container · SQLite WAL · Chromium / Playwright · Responsive light & dark UI · Telegram & email alerts
 
 [![CI](https://github.com/mkaand/changd-fusion/actions/workflows/simple-ci.yml/badge.svg?branch=master)](https://github.com/mkaand/changd-fusion/actions/workflows/simple-ci.yml)
-[![Release](https://img.shields.io/badge/release-v0.4.7-blue)](https://github.com/mkaand/changd-fusion/commits/master)
+[![Release](https://img.shields.io/badge/release-v0.4.8-blue)](https://github.com/mkaand/changd-fusion/commits/master)
 [![Docker](https://img.shields.io/badge/Docker-single--container-2496ED?logo=docker&logoColor=white)](#architecture)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](license)
 [![Built with Codex](https://img.shields.io/badge/AI--assisted-OpenAI%20Codex-6E56CF)](#origins-credits-and-development)
@@ -68,6 +68,8 @@ The images below are included in this repository, so the gallery works on GitHub
 | Desktop monitoring history | Mobile monitoring history | Dimension-aware visual comparison |
 | :---: | :---: | :---: |
 | <img src="docs/images/history-desktop.png" alt="Monitoring history on desktop" width="400"> | <img src="docs/images/history-mobile.png" alt="Monitoring history on mobile" width="230"> | <img src="docs/images/dimensions-mobile.png" alt="Screenshot dimension change on mobile" width="230"> |
+
+Monitoring history, captures, screenshots, baselines, and notification records are retained until explicitly removed. The application does not automatically delete them after a fixed number of days.
 
 ### Configure and interact on mobile
 
@@ -225,7 +227,7 @@ Core runtime dependencies and shipped filter snapshots are pinned or verified. T
 
 ## Project status
 
-**Feature-complete and in maintenance.** Changd Fusion v0.4.7 represents the consolidated Simple/SQLite architecture and the principal monitoring features described above. Future updates may include targeted fixes, security and dependency maintenance, documentation improvements, and small quality-of-life enhancements. This does not imply that every website or anti-bot protection is compatible with every capture mode.
+**Feature-complete and in maintenance.** Changd Fusion v0.4.8 represents the consolidated Simple/SQLite architecture and the principal monitoring features described above. Future updates may include targeted fixes, security and dependency maintenance, documentation improvements, and small quality-of-life enhancements. This does not imply that every website or anti-bot protection is compatible with every capture mode.
 
 Contributions, reproducible bug reports, and documentation improvements are welcome through [GitHub Issues](https://github.com/mkaand/changd-fusion/issues).
 
