@@ -112,20 +112,20 @@ test("notification delivery records success, failure and safe retry metadata",as
   } finally {engine?.close();db?.close();rmSync(dir,{recursive:true,force:true});}
 });
 
-test("existing text and HTTP comparison semantics remain intact",()=>{
+test("existing text and HTTP comparison semantics remain intact",async()=>{
   const m={text_enabled:true,visual_enabled:false,normalize_whitespace:true,ignore_text:[],ignore_case:false,monitor_http_error_pages:true};
   const before={text_content:"Available",http_status:200},after={text:"Unavailable",http_status:404,screenshot:null};
-  const changed=compareCaptures(before,after,m,"/unused");
+  const changed=await compareCaptures(before,after,m,"/unused");
   assert.equal(changed.textChanged,true);
   assert.equal(changed.httpStatusChanged,true);
   assert.equal(textDirectionMatches(changed.textDiff,"added"),true);
   assert.equal(textDirectionMatches(changed.textDiff,"removed"),true);
-  const keyword=compareCaptures({text_content:"Product sold out",http_status:200},{text:"Product available",http_status:200,screenshot:null},
+  const keyword=await compareCaptures({text_content:"Product sold out",http_status:200},{text:"Product available",http_status:200,screenshot:null},
     {...m,extraction_mode:"keyword_presence",keyword:"available",monitor_http_error_pages:false},"/unused");
   assert.equal(keyword.textChanged,true);
   assert.equal(textDirectionMatches(keyword.textDiff,"added"),true);
   assert.equal(textDirectionMatches(keyword.textDiff,"removed"),false);
-  assert.equal(compareCaptures(null,after,m,"/unused").textChanged,false,"first capture is a baseline");
+  assert.equal((await compareCaptures(null,after,m,"/unused")).textChanged,false,"first capture is a baseline");
 });
 
 test("notification mute, duplicate, cooldown and digest use one SQLite transaction store",async()=>{

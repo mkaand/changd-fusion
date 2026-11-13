@@ -491,7 +491,7 @@ app.post(api+"/text-preview",safe(async(req,res)=>{
 app.get(api+"/system/diagnostics",requireAccountSession,(req,res)=>{
   const count=db.prepare("SELECT count(*) total,sum(CASE WHEN enabled=1 AND paused=0 AND last_status NOT IN ('persistent_failure','authentication_required','challenge_detected') THEN 1 ELSE 0 END) active,sum(CASE WHEN last_status IN ('persistent_failure','authentication_required','challenge_detected') THEN 1 ELSE 0 END) attention FROM monitors WHERE user_id=?").get(req.user.user_id);
   const delivery=db.prepare("SELECT sum(CASE WHEN o.status='pending' THEN 1 ELSE 0 END) pending,sum(CASE WHEN o.status='failed' THEN 1 ELSE 0 END) failed FROM outbox o JOIN channels c ON c.id=o.channel_id JOIN events e ON e.id=o.event_id JOIN monitors m ON m.id=e.monitor_id WHERE m.user_id=? AND c.user_id=?").get(req.user.user_id,req.user.user_id);
-  res.json({api:"ok",monitoring:{total:count.total,active:count.active??0,attention:count.attention??0},deliveries:{pending:delivery.pending??0,failed:delivery.failed??0},retention_days:90});
+  res.json({api:"ok",monitoring:{total:count.total,active:count.active??0,attention:count.attention??0},deliveries:{pending:delivery.pending??0,failed:delivery.failed??0},retention_days:null,retention_policy:"No automatic deletion"});
 });
 const eventStatus=z.enum(["baseline","unchanged","changed","failed","reset","legacy","test","digest","extraction_transition"]);
 const eventFilters=z.object({

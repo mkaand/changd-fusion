@@ -1,4 +1,3 @@
-import { PNG } from "pngjs";
 import { z } from "zod";
 import { HttpError } from "./errors.js";
 import { checkDimensions, pngDimensions, type Dimensions } from "./image.js";
@@ -18,12 +17,13 @@ export const captureAreaSchema = z.object({
 
 export type CaptureArea = z.infer<typeof captureAreaSchema>;
 
-export function cropCaptureArea(bytes: Buffer, input: CaptureArea, limits: Dimensions & { pixels: number }) {
+export async function cropCaptureArea(bytes: Buffer, input: CaptureArea, limits: Dimensions & { pixels: number }) {
   const area = captureAreaSchema.parse(input);
   const dimensions = pngDimensions(bytes, limits);
   if (dimensions.width !== CAPTURE_VIEWPORT.width || dimensions.height !== CAPTURE_VIEWPORT.height)
     throw new HttpError(422, "Selected area capture requires an exact 1280x900 viewport screenshot.");
 
+  const { PNG } = await import("pngjs");
   const source = PNG.sync.read(bytes, { checkCRC: true });
   const output = new PNG({ width: area.width, height: area.height });
   for (let row = 0; row < area.height; row++) {

@@ -59,13 +59,13 @@ test('anchors bracketing two equal fields do not identify the sole survivor', ()
   }
 });
 
-test('selected product remains distinct when another product changes; missing field fails safely', () => {
+test('selected product remains distinct when another product changes; missing field fails safely', async () => {
   const before = `Product A\n${oldPrice}\nFree shipping\nProduct B\n${oldPrice}\nIn stock`;
   const rule = ruleFor(before, 1);
   assert.equal(applySelectedTextRule(before.replace(`Product B\n${oldPrice}`, `Product B\n${newPrice}`), rule), oldPrice);
   assert.throws(() => applySelectedTextRule(`Product A\nFree shipping\nProduct B\n${oldPrice}\nIn stock`, rule), /could not be found|ambiguous/);
   assert.equal(applySelectedTextRule(`Product A\n${newPrice}\nFree shipping\nProduct B\n${oldPrice}\nIn stock`, rule), newPrice);
-  assert.equal(compareCaptures({text_content:oldPrice},{text:newPrice},{text_enabled:true},'/tmp').textChanged,true);
+  assert.equal((await compareCaptures({text_content:oldPrice},{text:newPrice},{text_enabled:true},'/tmp')).textChanged,true);
 });
 
 test('surviving context on both sides identifies a selected field when another price disappears', () => {

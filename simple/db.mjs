@@ -21,10 +21,15 @@ export function openSimpleDatabase(filename) {
     "CREATE TABLE IF NOT EXISTS vault (monitor_id TEXT PRIMARY KEY REFERENCES monitors(id) ON DELETE CASCADE,user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,payload TEXT NOT NULL CHECK(json_valid(payload)));",
     "CREATE TABLE IF NOT EXISTS captures (id TEXT PRIMARY KEY,monitor_id TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,text_content TEXT,screenshot TEXT,http_status INTEGER,created_at INTEGER NOT NULL);",
     "CREATE INDEX IF NOT EXISTS captures_monitors ON captures(monitor_id,created_at DESC);",
+    "CREATE INDEX IF NOT EXISTS captures_screenshot_auth ON captures(screenshot,monitor_id) WHERE screenshot IS NOT NULL;",
     "CREATE TABLE IF NOT EXISTS events (id TEXT PRIMARY KEY,monitor_id TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,before_id TEXT REFERENCES captures(id),after_id TEXT REFERENCES captures(id),status TEXT NOT NULL,payload TEXT NOT NULL CHECK(json_valid(payload)),created_at INTEGER NOT NULL);",
     "CREATE INDEX IF NOT EXISTS events_monitor_date ON events(monitor_id,created_at DESC);",
+    "CREATE INDEX IF NOT EXISTS events_diff_screenshot_auth ON events(json_extract(payload,'$.diff_screenshot'),monitor_id) WHERE json_extract(payload,'$.diff_screenshot') IS NOT NULL;",
+    "CREATE INDEX IF NOT EXISTS events_notification_fingerprint ON events(monitor_id,json_extract(payload,'$.notification_fingerprint'),created_at) WHERE json_extract(payload,'$.notification_fingerprint') IS NOT NULL;",
     "CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY,event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,attempts INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'pending',next_attempt INTEGER NOT NULL,payload TEXT NOT NULL DEFAULT '{}',UNIQUE(event_id,channel_id));",
-    "CREATE TABLE IF NOT EXISTS notification_digests (monitor_id TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,first_event_at INTEGER NOT NULL,last_event_at INTEGER NOT NULL,event_count INTEGER NOT NULL,latest_event_id TEXT REFERENCES events(id) ON DELETE CASCADE,due_at INTEGER NOT NULL,PRIMARY KEY(monitor_id,channel_id));"
+    "CREATE INDEX IF NOT EXISTS outbox_delivery_due ON outbox(next_attempt) WHERE status IN ('pending','failed') AND attempts<5;",
+    "CREATE TABLE IF NOT EXISTS notification_digests (monitor_id TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,first_event_at INTEGER NOT NULL,last_event_at INTEGER NOT NULL,event_count INTEGER NOT NULL,latest_event_id TEXT REFERENCES events(id) ON DELETE CASCADE,due_at INTEGER NOT NULL,PRIMARY KEY(monitor_id,channel_id));",
+    "CREATE INDEX IF NOT EXISTS notification_digests_due ON notification_digests(due_at);"
   ].join("\n"));
   db.prepare("INSERT OR IGNORE INTO metadata(key,value) VALUES('schema_version',?)").run(String(SCHEMA_VERSION));
   if (db.prepare("SELECT value FROM metadata WHERE key='schema_version'").get()?.value !== String(SCHEMA_VERSION)) {

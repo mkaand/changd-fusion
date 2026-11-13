@@ -100,13 +100,13 @@ test('owner isolation and eight-session capacity remain bounded', async () => {
   } finally { clearTextPreviewSessions(); }
 });
 
-test('V3 comparison reports the selected change only, preserving baseline on extraction failure', () => {
+test('V3 comparison reports the selected change only, preserving baseline on extraction failure', async () => {
   const lines = segmentSelectedText(content).map(item => item.text);
   const rule = generateSelectedTextRule(lines, 1, price).rule;
   const monitor = { kind: 'browser', text_enabled: true, visual_enabled: false, extraction_mode: 'selected_text', extraction_rule: rule, normalize_whitespace: true, ignore_text: [], ignore_case: false };
   const before = { text_content: applySelectedTextRule(content, rule) };
   const unchanged = { text: applySelectedTextRule(content.replace(price, '35.000,00 ₺'), rule) };
-  assert.equal(compareCaptures(before, unchanged, monitor, '/tmp').textChanged, false);
+  assert.equal((await compareCaptures(before, unchanged, monitor, '/tmp')).textChanged, false);
   assert.throws(() => applySelectedTextRule('No price or context', rule));
   assert.equal(before.text_content, price);
 });
