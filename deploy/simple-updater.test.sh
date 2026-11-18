@@ -194,7 +194,7 @@ setup_orchestrator() {
   sqlite_baseline() { printf '%s\n' "$BASELINE"; }
   apply_digest() { printf '%s\n' "$1" >>"$MUTATIONS"; }
   wait_healthy() { :; }
-  cleanup_old_images() { :; }
+  cleanup_old_images() { fail automatic-image-cleanup; }
   CLEANED="$TEST_DIR/cleaned"
   : >"$CLEANED"
   remove_unused_digest() { printf '%s\n' "$1" >>"$CLEANED"; }
@@ -209,6 +209,29 @@ setup_orchestrator() {
   assert_eq "$(jq -r .healthy_digest "$STATE_FILE")" "$OLD"
 )
 ok "same digest is a silent no-op"
+
+(
+  setup_orchestrator
+  verify_target_contract() { return 1; }
+  if bootstrap_state >/dev/null 2>&1; then fail bootstrap-contract-drift-accepted; fi
+  assert_eq "$(jq -r .version "$STATE_FILE")" "0.4.1"
+  verify_target_contract() { :; }
+  image_metadata() { jq -n --arg digest "$1" '{digest:$digest,revision:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",version:"0.4.9",schema:"2"}'; }
+  if bootstrap_state >/dev/null 2>&1; then fail bootstrap-schema-drift-accepted; fi
+  assert_eq "$(jq -r .version "$STATE_FILE")" "0.4.1"
+)
+ok "manual bootstrap refuses target contract and image/SQLite schema mismatch"
+
+(
+  setup_orchestrator
+  image_metadata() { jq -n --arg digest "$1" '{digest:$digest,revision:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",version:"0.4.9",schema:"2"}'; }
+  sqlite_baseline() { printf '{"integrity":"ok","schema":"2"}\n'; }
+  bootstrap_state
+  assert_eq "$(jq -r '.version + ":" + .baseline.schema' "$STATE_FILE")" "0.4.9:2"
+  assert_eq "$(jq -r .healthy_digest "$STATE_FILE")" "$OLD"
+  [[ ! -s "$MUTATIONS" ]] || fail bootstrap-mutated-container
+)
+ok "manual bootstrap records a matching immutable image and SQLite schema without recreation"
 
 (
   setup_orchestrator

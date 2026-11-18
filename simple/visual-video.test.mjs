@@ -106,7 +106,7 @@ test("incomplete visual sets use existing PNG path; text, file and SMTP retain t
     await deliver("telegram",config,{...event([]),visualChanged:false,textChanged:true,eventType:"changed",name:"File metadata"},storage,{telegram});
     assert.deepEqual(sent,["sendMessage","sendMessage"]);
     const mails=[];
-    const smtp=()=>({sendMail:async data=>mails.push(data),close(){}});
+    const smtp=()=>({sendMail:async data=>{mails.push(data);return {accepted:["receiver@example.com"],rejected:[],response:"250 2.0.0 queued",messageId:data.messageId};},close(){}});
     await deliver("smtp",{host:"mail.example.com",port:465,from:"sender@example.com",to:"receiver@example.com"},event(names),storage,{smtp,policy:{target:async()=>({address:"93.184.215.14"})}});
     assert.equal(mails.length,1);assert.equal(mails[0].attachments.length,3);
   } finally {rmSync(dir,{recursive:true,force:true});}

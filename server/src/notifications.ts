@@ -1,6 +1,6 @@
 import nodemailer from "nodemailer";
 import https from "node:https";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { z } from "zod";
 import { EgressPolicy } from "./egress.js";
 import { Storage } from "./storage.js";
@@ -80,6 +80,7 @@ export function visualSummary(event: EventMessage) {
   return `Visual change: ${formatPercent(event.percent ?? "0")}%`;
 }
 export function summary(event: EventMessage) {
+  if (event.eventType === "test") return `Changd Fusion channel test\n${event.link}`;
   const http = event.httpStatusChanged
     ? `HTTP status changed: ${event.previousHttpStatus ?? "unknown"} → ${event.httpStatus ?? "unknown"}\n`
     : "";
@@ -202,7 +203,7 @@ export function telegramSummary(
   const lines = [
     `🔔 Changd Fusion | ${state?.[0] ?? (digest ? "Monitoring Digest" : test ? "Test Notification" : "Change Detected!")}`,
     "",
-    `🌐 Monitor: ${truncateText(event.name, 120)}`,
+    test ? "🧪 Channel test" : `🌐 Monitor: ${truncateText(event.name, 120)}`,
     state?.[1] ??
       (digest
         ? `📝 ${Math.max(1, Number(event.digestCount ?? 1))} changes detected during the selected period`
@@ -252,11 +253,12 @@ export function telegramSummary(
       !url.password &&
       url.href.length <= 512
     )
-      lines.push(`🔗 Open monitor: ${url.href}`);
+      lines.push(`🔗 ${test ? "Open Changd Fusion" : "Open monitor"}: ${url.href}`);
   } catch {}
   return truncateText(lines.join("\n"), 4000);
 }
 export function emailHTML(e: EventMessage) {
+  if (e.eventType === "test") return `<h1>Changd Fusion channel test</h1><p><a href="${escapeHTML(e.link)}">Open Changd Fusion</a></p>`;
   return `<h1>${escapeHTML(e.name)}</h1>${e.attentionState ? `<p>${escapeHTML(e.attentionState.replaceAll("_", " "))}: ${escapeHTML(e.attentionMessage ?? "Requires attention")}</p>` : ""}${e.textChanged ? `<h2>Text changes</h2><pre>${escapeHTML(e.textSummary)}</pre>` : ""}${e.visualChanged ? `<p>${escapeHTML(visualSummary(e))}</p>` : ""}<p><a href="${escapeHTML(e.link)}">Open monitor</a></p>${e.images.length ? "<p>Before, after and available diff images are attached.</p>" : ""}`;
 }
 export type TelegramSend = (
@@ -348,6 +350,26 @@ export const telegramSend: TelegramSend = async (
     req.end(body);
   });
 };
+export type SmtpSubmission = { status: "accepted_by_smtp"; response_code: string; message_id_sha256: string };
+export class SmtpAcceptanceError extends Error {
+  constructor(public readonly code: "smtp_recipient_rejected" | "smtp_no_recipient_accepted" | "smtp_invalid_response" | "smtp_missing_message_id") {
+    super(code);
+  }
+}
+export function validateSmtpSubmission(info: { accepted?: unknown; rejected?: unknown; response?: unknown; messageId?: unknown }, recipient: string): SmtpSubmission {
+  const normalize = (value: unknown) => typeof value === "string" ? value.trim().replace(/^<|>$/g, "").toLowerCase() : "";
+  const intended = normalize(recipient);
+  const accepted = Array.isArray(info?.accepted) ? info.accepted.map(normalize) : [];
+  const rejected = Array.isArray(info?.rejected) ? info.rejected.map(normalize) : [];
+  if (rejected.includes(intended)) throw new SmtpAcceptanceError("smtp_recipient_rejected");
+  if (!accepted.includes(intended)) throw new SmtpAcceptanceError("smtp_no_recipient_accepted");
+  const responseCode = typeof info.response === "string" ? /^([0-9]{3})(?:\s|$)/.exec(info.response)?.[1] : undefined;
+  if (!responseCode?.startsWith("2")) throw new SmtpAcceptanceError("smtp_invalid_response");
+  if (typeof info.messageId !== "string" || !/^<[^\r\n<>]{1,320}>$/.test(info.messageId))
+    throw new SmtpAcceptanceError("smtp_missing_message_id");
+  return { status: "accepted_by_smtp", response_code: responseCode,
+    message_id_sha256: createHash("sha256").update(info.messageId).digest("hex") };
+}
 export async function deliver(
   provider: string,
   config: any,
@@ -395,7 +417,7 @@ export async function deliver(
     });
     let timer: NodeJS.Timeout | undefined;
     try {
-      await Promise.race([
+      const info = await Promise.race([
         transport.sendMail({
           from: c.from,
           to: c.to,
@@ -412,6 +434,7 @@ export async function deliver(
           );
         }),
       ]);
+      return { smtp: validateSmtpSubmission(info, c.to) };
     } finally {
       if (timer) clearTimeout(timer);
       transport.close();

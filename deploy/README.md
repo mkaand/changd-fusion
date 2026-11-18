@@ -17,6 +17,14 @@ The updater accepts only the standardized Docker identity: project `changd-fusio
 
 The published image has immutable digest, source/revision/version and SQLite schema labels. Publication occurs only for a `master` push after the existing SQLite/code and real-container CI jobs succeed. The updater independently requires the image revision to equal GitHub's current `master` SHA. A new SQLite schema is never applied automatically.
 
+### Platinum Headless Shell transition (separate production approval required)
+
+The v0.4.9 image contains Playwright 1.64.0 Chromium Headless Shell revision 1248 and uses its executable under `/ms-playwright`. The normal base Compose file supplies that path, the existing seccomp profile, the single `/data` volume and the configured `FUSION_SIMPLE_PUBLIC_URL`. Do not keep experimental `/run` mounts or temporary browser-path overrides in the target Compose stack. Preserve the actual public URL; `http://localhost:8127` is only the install default.
+
+This release also adds `channel_test_deliveries` and migrates SQLite schema 1 to 2 on first application start. The updater deliberately refuses the automatic 1→2 schema change and any runtime contract drift. The transition therefore needs a separately approved maintenance window: disable the updater timer, inspect the current contract and healthy digest, arrange an offline SQLite backup and a rollback plan, then manually pin the reviewed v0.4.9 GHCR digest using the **normal** Compose files and `up -d --no-build --no-deps fusion`. Verify health, browser Preview/capture, and SQLite schema 2 before recording the new contract with `snapshot-contract`, `bootstrap-state` and `verify`. Review the results before enabling the timer again. A rollback to a schema-1 image requires restoring the matching offline database backup; the automatic updater will not attempt it.
+
+Keep the current Golden image, its tag/digest references, and recovery resources untouched during development and until Platinum production acceptance. The updater no longer removes older image references automatically after a successful update. At a later, separately authorized cleanup, identify the active and recorded rollback digests, inspect all containers referencing each image ID, and remove only explicitly approved unused image references. Never remove the active image, rollback target, data volume or backup.
+
 ## One-time installation (manual approval required)
 
 These steps are examples; choose generic host paths appropriate for your installation. Do not enable the timer until the contract and bootstrap output have been reviewed.
@@ -56,7 +64,7 @@ up -d --no-build --no-deps fusion
 
 The existing named `/data` volume and all unrelated services remain untouched. Success requires Docker HEALTHY, the loopback `/api/v1/health` response, the expected digest, the unchanged runtime contract, SQLite integrity and the compatible schema. A failure quarantines that digest, removes its image only when no container uses it, and makes one rollback attempt to the last healthy digest. A failed rollback records `recovery_required`; every subsequent automatic update is blocked. Stop the timer, recover manually from the preserved image/state and offline backup, then run `simple-updater.sh recover-state`. That explicit command revalidates the runtime contract, immutable running image, health, SQLite integrity and schema before atomically clearing the lock. Schema-label mismatch always requires a separately reviewed manual migration.
 
-After success, cleanup considers only old `ghcr.io/mkaand/changd-fusion` digest references, retains current and rollback digests, and skips every image ID used by any container. No prune command is used.
+After success, no image reference is removed automatically. A separately authorized cleanup may consider only old `ghcr.io/mkaand/changd-fusion` digest references, must retain current and rollback digests, and must skip every image ID used by any container. No prune command is used.
 
 ## Notifications
 

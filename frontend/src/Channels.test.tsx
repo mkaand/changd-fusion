@@ -52,19 +52,20 @@ it("validates a Telegram bot only after explicit user action", async () => {
   expect(api).toHaveBeenCalledWith("/notifications/fixture/validate", "POST", {});
   expect(report).toHaveBeenCalledWith("Bot validated: Fixture (@fixture_bot)");
 });
-it("Telegram sends nothing on mount and requires an explicit monitor selection", async () => {
+it("Telegram sends nothing on mount and tests an enabled channel without a monitor", async () => {
   vi.mocked(api).mockResolvedValue({ queued: true });
   const user = userEvent.setup();
   const report = vi.fn();
   render(
     <Channels
       channels={[channel]}
-      monitors={[{ id: "monitor" }]}
+      monitors={[]}
       reload={vi.fn()}
       report={report}
     />,
   );
   expect(api).not.toHaveBeenCalled();
-  expect(screen.getByRole("button", { name: "Test notification" })).toBeDisabled();
-  expect(screen.getByLabelText("Test notification monitor")).toBeInTheDocument();
+  await user.click(screen.getByRole("button", { name: "Test notification" }));
+  expect(api).toHaveBeenCalledWith("/notifications/fixture/test", "POST", {});
+  expect(screen.queryByLabelText("Test notification monitor")).not.toBeInTheDocument();
 });

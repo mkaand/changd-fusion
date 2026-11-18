@@ -15,7 +15,7 @@ services:
       PORT: 3000
       FUSION_DATA_DIR: /data
       PUBLIC_URL: ${FUSION_SIMPLE_PUBLIC_URL:-http://localhost:8127}
-      PLAYWRIGHT_EXECUTABLE_PATH: /usr/bin/chromium
+      PLAYWRIGHT_EXECUTABLE_PATH: /ms-playwright/chromium_headless_shell-1248/chrome-headless-shell-linux64/chrome-headless-shell
     ports:
       - "127.0.0.1:${FUSION_SIMPLE_PORT:-8127}:3000"
     volumes:

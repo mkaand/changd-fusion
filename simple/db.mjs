@@ -3,7 +3,7 @@ import { mkdirSync, chmodSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 
-export const SCHEMA_VERSION = 1;
+export const SCHEMA_VERSION = 2;
 export function openSimpleDatabase(filename) {
   if (!path.isAbsolute(filename)) throw Error("sqlite_path_must_be_absolute");
   mkdirSync(path.dirname(filename), { recursive: true, mode: 0o700 });
@@ -29,9 +29,13 @@ export function openSimpleDatabase(filename) {
     "CREATE TABLE IF NOT EXISTS outbox (id TEXT PRIMARY KEY,event_id TEXT NOT NULL REFERENCES events(id) ON DELETE CASCADE,channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,attempts INTEGER NOT NULL DEFAULT 0,status TEXT NOT NULL DEFAULT 'pending',next_attempt INTEGER NOT NULL,payload TEXT NOT NULL DEFAULT '{}',UNIQUE(event_id,channel_id));",
     "CREATE INDEX IF NOT EXISTS outbox_delivery_due ON outbox(next_attempt) WHERE status IN ('pending','failed') AND attempts<5;",
     "CREATE TABLE IF NOT EXISTS notification_digests (monitor_id TEXT NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,first_event_at INTEGER NOT NULL,last_event_at INTEGER NOT NULL,event_count INTEGER NOT NULL,latest_event_id TEXT REFERENCES events(id) ON DELETE CASCADE,due_at INTEGER NOT NULL,PRIMARY KEY(monitor_id,channel_id));",
-    "CREATE INDEX IF NOT EXISTS notification_digests_due ON notification_digests(due_at);"
+    "CREATE INDEX IF NOT EXISTS notification_digests_due ON notification_digests(due_at);",
+    "CREATE TABLE IF NOT EXISTS channel_test_deliveries (id TEXT PRIMARY KEY,channel_id TEXT NOT NULL REFERENCES channels(id) ON DELETE CASCADE,status TEXT NOT NULL DEFAULT 'pending',attempts INTEGER NOT NULL DEFAULT 0,next_attempt INTEGER NOT NULL,created_at INTEGER NOT NULL,payload TEXT NOT NULL DEFAULT '{}' CHECK(json_valid(payload)));",
+    "CREATE INDEX IF NOT EXISTS channel_test_deliveries_due ON channel_test_deliveries(next_attempt) WHERE status IN ('pending','failed') AND attempts<5;"
   ].join("\n"));
-  db.prepare("INSERT OR IGNORE INTO metadata(key,value) VALUES('schema_version',?)").run(String(SCHEMA_VERSION));
+  const priorVersion=db.prepare("SELECT value FROM metadata WHERE key='schema_version'").get()?.value;
+  if (priorVersion === "1") db.prepare("UPDATE metadata SET value='2' WHERE key='schema_version'").run();
+  else if (priorVersion === undefined) db.prepare("INSERT INTO metadata(key,value) VALUES('schema_version',?)").run(String(SCHEMA_VERSION));
   if (db.prepare("SELECT value FROM metadata WHERE key='schema_version'").get()?.value !== String(SCHEMA_VERSION)) {
     db.close();
     throw Error("unsupported_schema_version");

@@ -17,7 +17,7 @@ process.on("message",async message=>{
     PORT:8000,PUBLIC_URL:"http://127.0.0.1",DATA_DIR:dataDir,REGISTRATION_ENABLED:"false",
     HISTORY_DAYS:90,CAPTURE_TIMEOUT_MS:30000,CHROMIUM_CONCURRENCY:1,
     PREVIEW_CAPACITY_WAIT_MS:0,MAX_CAPTURE_WIDTH:4096,MAX_CAPTURE_HEIGHT:8192,
-    MAX_CAPTURE_PIXELS:8000000,PLAYWRIGHT_EXECUTABLE_PATH:process.env.PLAYWRIGHT_EXECUTABLE_PATH??"/usr/bin/chromium",
+    MAX_CAPTURE_PIXELS:8000000,PLAYWRIGHT_EXECUTABLE_PATH:process.env.PLAYWRIGHT_EXECUTABLE_PATH??"/ms-playwright/chromium_headless_shell-1248/chrome-headless-shell-linux64/chrome-headless-shell",
     LOG_LEVEL:"warn",...limits,
   };
   const artifacts=path.join(dataDir,"artifacts");

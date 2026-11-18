@@ -4,7 +4,7 @@ import path from "node:path";
 import { compareText, compareKeywordPresence, normalizeText as existingNormalizeText } from "../server/dist/text-comparison.js";
 import { BrowserQueue } from "./browser-queue.mjs";
 import { getMonitor, transaction } from "./db.mjs";
-import { deliver, safeTextSummary } from "../server/dist/notifications.js";
+import { deliver, safeTextSummary, SmtpAcceptanceError } from "../server/dist/notifications.js";
 import { decrypt } from "../server/dist/crypto.js";
 import { openValues } from "../server/dist/vault.js";
 import { Storage } from "../server/dist/storage.js";
@@ -268,20 +268,48 @@ export class FusionEngine {
           digestCount:e.metadata?.digest_count,digestStart:e.metadata?.period_start,digestEnd:e.metadata?.period_end};
         try{
           const configuration=decrypt(channel.config.encrypted,this.channelKey);
-          await this.sendNotification(channel.provider,configuration,details,this.storage);
-          const payload={...JSON.parse(row.payload),delivered_at:new Date().toISOString(),last_error:null};
+          const result=await this.sendNotification(channel.provider,configuration,details,this.storage);
+          const smtp=channel.provider==="smtp"?result?.smtp:undefined;
+          if(channel.provider==="smtp"&&smtp?.status!=="accepted_by_smtp")throw Error("smtp_receipt_missing");
+          const payload={...JSON.parse(row.payload),...(smtp?{smtp_result:smtp,accepted_at:new Date().toISOString()}:{delivered_at:new Date().toISOString()}),last_error:null};
           this.db.prepare("UPDATE outbox SET status='sent',attempts=attempts+1,payload=? WHERE id=?").run(JSON.stringify(payload),row.id);
           if(channel.provider==="telegram" && e.status==="test" && channel.config?.preview_test_required){
             // A test of old credentials must not unlock a channel edited during delivery.
             this.db.prepare("UPDATE channels SET payload=json_set(payload,'$.config.preview_verified',json('true')) WHERE id=? AND json_extract(payload,'$.config.encrypted')=? AND json_extract(payload,'$.config.preview_test_required')=1")
               .run(row.channel_id,channel.config.encrypted);
           }
-        } catch {
+        } catch(error) {
           const attempt=row.attempts+1;
-          const payload={...JSON.parse(row.payload),last_error:"delivery_failed",last_attempt_at:new Date().toISOString()};
+          const payload={...JSON.parse(row.payload),last_error:error instanceof SmtpAcceptanceError?error.code:"delivery_failed",last_attempt_at:new Date().toISOString()};
           this.db.prepare("UPDATE outbox SET status=?,attempts=?,next_attempt=?,payload=? WHERE id=?").run(attempt>=5?"failed":"pending",attempt,Date.now()+Math.min(3600000,30000*2**attempt),JSON.stringify(payload),row.id);
         }
       }
+      await this.#deliverChannelTests();
     }finally{this.delivering=false;}
+  }
+  async #deliverChannelTests(){
+    const rows=this.db.prepare("SELECT t.*,c.payload AS channel FROM channel_test_deliveries t JOIN channels c ON c.id=t.channel_id WHERE t.status IN ('pending','failed') AND t.next_attempt<=? AND t.attempts<5 ORDER BY t.next_attempt LIMIT 10").all(Date.now());
+    for(const row of rows){
+      const channel=JSON.parse(row.channel);
+      if(!channel.enabled){this.db.prepare("UPDATE channel_test_deliveries SET status='disabled' WHERE id=?").run(row.id);continue;}
+      try{
+        const configuration=decrypt(channel.config.encrypted,this.channelKey);
+        const details={id:row.id,name:"Channel test",monitorId:"",textChanged:false,visualChanged:false,
+          percent:null,textSummary:"",link:new URL("/",this.publicUrl).href,images:[],checkedAt:new Date(row.created_at).toISOString(),eventType:"test"};
+        const result=await this.sendNotification(channel.provider,configuration,details,this.storage);
+        const smtp=channel.provider==="smtp"?result?.smtp:undefined;
+        if(channel.provider==="smtp"&&smtp?.status!=="accepted_by_smtp")throw Error("smtp_receipt_missing");
+        const payload={...JSON.parse(row.payload),...(smtp?{smtp_result:smtp,accepted_at:new Date().toISOString()}:{delivered_at:new Date().toISOString()}),last_error:null};
+        this.db.prepare("UPDATE channel_test_deliveries SET status='sent',attempts=attempts+1,payload=? WHERE id=?").run(JSON.stringify(payload),row.id);
+        if(channel.provider==="telegram"&&channel.config?.preview_test_required){
+          this.db.prepare("UPDATE channels SET payload=json_set(payload,'$.config.preview_verified',json('true')) WHERE id=? AND json_extract(payload,'$.config.encrypted')=? AND json_extract(payload,'$.config.preview_test_required')=1")
+            .run(row.channel_id,channel.config.encrypted);
+        }
+      }catch(error){
+        const attempt=row.attempts+1;
+        const payload={...JSON.parse(row.payload),last_error:error instanceof SmtpAcceptanceError?error.code:"delivery_failed",last_attempt_at:new Date().toISOString()};
+        this.db.prepare("UPDATE channel_test_deliveries SET status=?,attempts=?,next_attempt=?,payload=? WHERE id=?").run(attempt>=5?"failed":"pending",attempt,Date.now()+Math.min(3600000,30000*2**attempt),JSON.stringify(payload),row.id);
+      }
+    }
   }
 }

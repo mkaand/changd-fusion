@@ -9,6 +9,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { openSimpleDatabase, getMonitor, listMonitors, saveMonitor, transaction, newId, userCount } from "./db.mjs";
 import { FusionEngine } from "./engine.mjs";
+import { queueChannelTest } from "./channel-tests.mjs";
+import { listDeliveries, retryDelivery } from "./deliveries.mjs";
 import { EgressPolicy } from "../server/dist/egress.js";
 import { previewRegion, releaseRegionPreviewSession, closeRegionPreviewSessions } from "../server/dist/region-picker.js";
 import { previewJinaText } from "../server/dist/text-picker.js";
@@ -42,7 +44,7 @@ const storage=new Storage(path.join(DATA,"artifacts"));
 const cfg={NODE_ENV:"production",DATABASE_URL:"unused",JWT_SECRET,CHANNEL_KEY,PORT,PUBLIC_URL,DATA_DIR:DATA,
   REGISTRATION_ENABLED:"false",HISTORY_DAYS:90,CAPTURE_TIMEOUT_MS:30000,CHROMIUM_CONCURRENCY:1,
   PREVIEW_CAPACITY_WAIT_MS:12000,MAX_CAPTURE_WIDTH:4096,MAX_CAPTURE_HEIGHT:8192,
-  MAX_CAPTURE_PIXELS:8000000,PLAYWRIGHT_EXECUTABLE_PATH:process.env.PLAYWRIGHT_EXECUTABLE_PATH??"/usr/bin/chromium",LOG_LEVEL:"warn"};
+  MAX_CAPTURE_PIXELS:8000000,PLAYWRIGHT_EXECUTABLE_PATH:process.env.PLAYWRIGHT_EXECUTABLE_PATH??"/ms-playwright/chromium_headless_shell-1248/chrome-headless-shell-linux64/chrome-headless-shell",LOG_LEVEL:"warn"};
 const app=express();
 app.disable("x-powered-by");
 app.set("trust proxy","loopback");
@@ -535,43 +537,22 @@ app.get(api+"/deliveries",safe(async(req,res)=>{
     page_size:z.coerce.number().int().min(1).max(100).default(20),
     status:z.enum(["pending","retrying","sending","sent","failed"]).optional()
   }).strict().parse(req.query);
-  const from="FROM outbox o JOIN channels c ON c.id=o.channel_id JOIN events e ON e.id=o.event_id JOIN monitors m ON m.id=e.monitor_id";
-  const status="CASE WHEN o.status='pending' AND o.attempts>0 THEN 'retrying' ELSE o.status END";
-  const where="WHERE c.user_id=? AND m.user_id=? AND (? IS NULL OR "+status+"=?)";
-  const params=[req.user.user_id,req.user.user_id,query.status??null,query.status??null];
-  const rows=db.prepare("SELECT o.*,json_extract(c.payload,'$.name') channel_name,m.id monitor_id,json_extract(m.payload,'$.name') monitor_name,"+status+" display_status "+from+" "+where+" ORDER BY o.next_attempt DESC,o.id DESC LIMIT ? OFFSET ?").all(...params,query.page_size,(query.page-1)*query.page_size);
-  const total=db.prepare("SELECT count(*) n "+from+" "+where).get(...params).n;
-  res.json({items:rows.map(row=>({
-    id:row.id,event_id:row.event_id,channel_id:row.channel_id,channel_name:row.channel_name,monitor_id:row.monitor_id,monitor_name:row.monitor_name,
-    attempts:row.attempts,status:row.display_status,next_attempt:new Date(row.next_attempt).toISOString(),
-    delivered_at:JSON.parse(row.payload).delivered_at??null,last_error:JSON.parse(row.payload).last_error??null
-  })),total,page:query.page,page_size:query.page_size});
+  res.json(listDeliveries(db,req.user.user_id,{page:query.page,pageSize:query.page_size,status:query.status??null}));
 }));
 app.post(api+"/deliveries/:id/retry",safe(async(req,res)=>{
   if(!isUuid(req.params.id))throw replyError(404,"Failed delivery not found");
   if(req.user.user_type!==2)throw replyError(403,"Administrator required");
-  const row=db.prepare("SELECT o.* FROM outbox o JOIN channels c ON c.id=o.channel_id JOIN events e ON e.id=o.event_id JOIN monitors m ON m.id=e.monitor_id WHERE o.id=? AND o.status='failed' AND c.enabled=1 AND c.user_id=? AND m.user_id=?").get(req.params.id,req.user.user_id,req.user.user_id);
-  if(!row)throw replyError(404,"Failed delivery not found");
-  const payload={...JSON.parse(row.payload),last_error:null};
-  const updated=db.prepare("UPDATE outbox SET status='pending',attempts=0,next_attempt=?,payload=? WHERE id=? AND status='failed'").run(Date.now(),JSON.stringify(payload),row.id);
-  if(!updated.changes)throw replyError(409,"Delivery is no longer failed");
+  if(!retryDelivery(db,req.params.id,req.user.user_id))throw replyError(404,"Failed delivery not found");
   setImmediate(()=>void engine.deliverPending().catch(()=>{}));
   res.status(202).json({queued:true});
 }));
 app.post(api+"/notifications/:id/test",safe(async(req,res)=>{
-  const channel=db.prepare("SELECT payload FROM channels WHERE id=? AND user_id=?").get(req.params.id,req.user.user_id);
-  if(!channel)throw replyError(404,"Channel not found");
-  const {monitor_id}=z.object({monitor_id:z.string().uuid()}).strict().parse(req.body);
-  const monitor=owner(req,monitor_id),eventId=randomUUID(),createdAt=Date.now();
-  const event={id:eventId,monitor_id:monitor.id,status:"test",text_changed:true,visual_changed:false,text_diff:[{value:"Test notification",added:true,removed:false}],created_at:new Date(createdAt).toISOString()};
-  transaction(db,()=>{
-    db.prepare("INSERT INTO events(id,monitor_id,status,payload,created_at) VALUES(?,?,?,?,?)")
-      .run(eventId,monitor.id,"test",JSON.stringify(event),createdAt);
-    db.prepare("INSERT INTO outbox(id,event_id,channel_id,next_attempt,payload) VALUES(?,?,?,?,?)")
-      .run(randomUUID(),eventId,req.params.id,createdAt,JSON.stringify({eventId}));
-  });
+  z.object({}).strict().parse(req.body??{});
+  const queued=queueChannelTest(db,req.params.id,req.user.user_id);
+  if(queued===null)throw replyError(404,"Channel not found");
+  if(queued===false)throw replyError(422,"Enable the channel before sending a test notification");
   setImmediate(()=>void engine.deliverPending().catch(()=>{}));
-  res.status(202).json({queued:true});
+  res.status(202).json({queued:true,id:queued});
 }));
 app.post(api+"/notifications/:id/validate",safe(async(req,res)=>{
   const row=db.prepare("SELECT payload FROM channels WHERE id=? AND user_id=?").get(req.params.id,req.user.user_id);

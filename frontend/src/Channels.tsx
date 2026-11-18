@@ -28,7 +28,7 @@ export function Channels({
     [editing, setEditing] = useState<any>(),
     [saving, setSaving] = useState(false),
     [validating, setValidating] = useState<string>(),
-    [testMonitorId, setTestMonitorId] = useState<string>();
+    [testing, setTesting] = useState<string>();
   const [preview, setPreview] = useState<{ kind: string; text: string }>();
   const [form] = Form.useForm();
   const provider = Form.useWatch("provider", form);
@@ -99,18 +99,16 @@ export function Channels({
               >Validate Bot</Button>
             )}
             <Button
-              disabled={!testMonitorId}
+              disabled={!c.enabled}
+              loading={testing === c.id}
               onClick={async () => {
+                setTesting(c.id);
                 try {
-                  await api("/notifications/" + c.id + "/test", "POST", {
-                    monitor_id: testMonitorId,
-                  });
-                  report(
-                    "Test notification queued. Delivery status appears in that monitor’s history.",
-                  );
+                  await api("/notifications/" + c.id + "/test", "POST", {});
+                  report("Test notification queued. Check Delivery History for provider acceptance and retries.");
                 } catch (e) {
                   report((e as Error).message);
-                }
+                } finally { setTesting(undefined); }
               }}
             >
               Test notification
@@ -132,14 +130,6 @@ export function Channels({
           </Space>
         </Card>
       ))}
-      {!!channels.length && <Select
-        aria-label="Test notification monitor"
-        placeholder="Select a monitor for test notifications"
-        value={testMonitorId}
-        onChange={setTestMonitorId}
-        options={monitors.map((m) => ({ value: m.id, label: m.name || m.id }))}
-        style={{ minWidth: 260, maxWidth: "100%" }}
-      />}
       <Modal
         title={editing ? "Edit channel" : "Add channel"}
         open={open}
