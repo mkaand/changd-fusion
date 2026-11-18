@@ -33,7 +33,7 @@ const limits={
   PUBLIC_URL:"http://localhost:8127",DATA_DIR:"/data",REGISTRATION_ENABLED:"false",
   HISTORY_DAYS:90,CAPTURE_TIMEOUT_MS:45000,CHROMIUM_CONCURRENCY:1,
   PREVIEW_CAPACITY_WAIT_MS:12000,MAX_CAPTURE_WIDTH:4096,MAX_CAPTURE_HEIGHT:8192,
-  MAX_CAPTURE_PIXELS:8000000,PLAYWRIGHT_EXECUTABLE_PATH:"/usr/bin/chromium",LOG_LEVEL:"warn"
+  MAX_CAPTURE_PIXELS:8000000,PLAYWRIGHT_EXECUTABLE_PATH:process.env.PLAYWRIGHT_EXECUTABLE_PATH??"/ms-playwright/chromium_headless_shell-1248/chrome-headless-shell-linux64/chrome-headless-shell",LOG_LEVEL:"warn"
 };
 
 test("real Chromium captures with JavaScript disabled, selected element and selected area", {timeout:180000},async()=>{

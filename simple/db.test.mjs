@@ -88,7 +88,7 @@ test("existing SQLite WAL data and metadata remain readable across a 0.4.2 reope
     db.close();
     db=openSimpleDatabase(file);
     assert.equal(db.prepare("PRAGMA journal_mode").get().journal_mode,"wal");
-    assert.equal(db.prepare("SELECT value FROM metadata WHERE key='schema_version'").get().value,"1");
+    assert.equal(db.prepare("SELECT value FROM metadata WHERE key='schema_version'").get().value,"2");
     assert.equal(getMonitor(db,id,user).baseline_id,capture);
     assert.equal(db.prepare("SELECT text_content FROM captures WHERE id=?").get(capture).text_content,"Original baseline");
     assert.equal(JSON.parse(db.prepare("SELECT payload FROM events WHERE id=?").get(event).payload).status,"baseline");

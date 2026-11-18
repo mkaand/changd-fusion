@@ -11,7 +11,7 @@ test('compatible SQLite indexes serve authorization and due-work queries', () =>
   try {
     const filename=path.join(dir,'fusion.sqlite');
     db=openSimpleDatabase(filename);
-    assert.equal(SCHEMA_VERSION,1);
+    assert.equal(SCHEMA_VERSION,2);
     const plan=(sql,values)=>db.prepare('EXPLAIN QUERY PLAN '+sql).all(...values).map(row=>row.detail).join(' | ');
     const capture='SELECT 1 FROM captures c JOIN monitors m ON m.id=c.monitor_id WHERE m.user_id=? AND c.screenshot=?';
     const diff="SELECT 1 FROM events e JOIN monitors m ON m.id=e.monitor_id WHERE m.user_id=? AND json_extract(e.payload,'$.diff_screenshot')=?";
@@ -24,7 +24,7 @@ test('compatible SQLite indexes serve authorization and due-work queries', () =>
     assert.match(plan(digest,[Date.now()]),/notification_digests_due/);
     assert.match(plan(fingerprint,['monitor','fingerprint',Date.now()]),/events_notification_fingerprint/);
     db.close();db=openSimpleDatabase(filename);
-    assert.equal(db.prepare("SELECT value FROM metadata WHERE key='schema_version'").get().value,'1');
+    assert.equal(db.prepare("SELECT value FROM metadata WHERE key='schema_version'").get().value,'2');
     assert.equal(db.prepare('PRAGMA synchronous').get().synchronous,2);
     assert.equal(db.prepare('PRAGMA journal_mode').get().journal_mode,'wal');
     assert.equal(db.prepare('PRAGMA foreign_keys').get().foreign_keys,1);

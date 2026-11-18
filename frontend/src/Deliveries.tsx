@@ -2,6 +2,16 @@ import { useEffect, useState } from "react";
 import { Alert, Button, Card, Table, Tag, Select, Space, Pagination } from "antd";
 import { api } from "./api";
 
+const deliverySubject = (item: any) => item.kind === "test" ? "Channel test" : item.monitor_name;
+const deliveryDetails = (item: any) => item.last_error ||
+  (item.smtp_result?.status === "accepted_by_smtp" && item.accepted_at
+    ? `Accepted by SMTP relay ${new Date(item.accepted_at).toLocaleString()} (SMTP ${item.smtp_result.response_code}; inbox delivery unconfirmed)`
+    : item.delivered_at
+      ? item.provider === "smtp"
+        ? `Previously marked sent ${new Date(item.delivered_at).toLocaleString()} (SMTP acceptance was not recorded; inbox delivery unconfirmed)`
+        : `Sent to provider ${new Date(item.delivered_at).toLocaleString()}`
+      : `Next attempt ${new Date(item.next_attempt).toLocaleString()}`);
+
 function useCompactDeliveries() {
   const [compact, setCompact] = useState(() =>
     typeof window === "undefined" ? false : window.innerWidth < 1024,
@@ -98,14 +108,14 @@ export function Deliveries({ admin = false }: { admin?: boolean }) {
           {items.map((item) => (
             <Card key={item.id} className="delivery-card" size="small">
               <Space wrap>
-                <a href={`/jobs/${item.monitor_id}`}>{item.monitor_name}</a>
+                {item.kind === "test" ? <strong>{deliverySubject(item)}</strong> : <a href={`/jobs/${item.monitor_id}`}>{deliverySubject(item)}</a>}
                 <Tag>{item.channel_name}</Tag>
                 <Tag color={item.status === "failed" ? "red" : item.status === "sent" ? "green" : "blue"}>
-                  {item.status}
+                  {item.smtp_result?.status === "accepted_by_smtp" ? "Accepted by SMTP" : item.status}
                 </Tag>
               </Space>
               <p className="delivery-details">
-                Attempts: {item.attempts} · {item.last_error || (item.delivered_at ? "Delivered " + new Date(item.delivered_at).toLocaleString() : "Next attempt " + new Date(item.next_attempt).toLocaleString())}
+                Attempts: {item.attempts} · {deliveryDetails(item)}
               </p>
               {admin && <Button disabled={item.status !== "failed"} onClick={() => void retry(item)}>Retry delivery</Button>}
             </Card>
@@ -129,7 +139,7 @@ export function Deliveries({ admin = false }: { admin?: boolean }) {
           {
             title: "Monitor",
             render: (_, r) => (
-              <a href={"/jobs/" + r.monitor_id}>{r.monitor_name}</a>
+              r.kind === "test" ? <strong>{deliverySubject(r)}</strong> : <a href={"/jobs/" + r.monitor_id}>{deliverySubject(r)}</a>
             ),
           },
           { title: "Channel", dataIndex: "channel_name" },
@@ -145,18 +155,14 @@ export function Deliveries({ admin = false }: { admin?: boolean }) {
                       : "blue"
                 }
               >
-                {r.status}
+                {r.smtp_result?.status === "accepted_by_smtp" ? "Accepted by SMTP" : r.status}
               </Tag>
             ),
           },
           { title: "Attempts", dataIndex: "attempts" },
           {
             title: "Details",
-            render: (_, r) =>
-              r.last_error ||
-              (r.delivered_at
-                ? "Delivered " + new Date(r.delivered_at).toLocaleString()
-                : "Next attempt " + new Date(r.next_attempt).toLocaleString()),
+            render: (_, r) => deliveryDetails(r),
           },
           ...(admin
             ? [

@@ -377,8 +377,11 @@ bootstrap_state() {
   local digest metadata baseline state
   digest="$(current_digest)" || return
   [[ "$digest" =~ $DIGEST_PATTERN ]] || die "current_image_is_not_immutable_ghcr_digest" || return
+  verify_target_contract "$digest" || die "bootstrap_target_contract_mismatch" || return
   metadata="$(image_metadata "$digest")" || return
   baseline="$(sqlite_baseline)" || return
+  [[ "$(jq -r .schema <<<"$metadata")" == "$(jq -r .schema <<<"$baseline")" ]] \
+    || die "bootstrap_image_schema_mismatch" || return
   wait_healthy "$digest" || die "current_deployment_unhealthy" || return
   STATE_FILE="$FUSION_STATE_DIR/state.json"
   state="$(jq -n --arg digest "$digest" --arg version "$(jq -r .version <<<"$metadata")" --argjson baseline "$baseline" \
@@ -522,7 +525,7 @@ run_update() {
       new_state="$(jq --arg digest "$candidate" --arg previous "$previous" --arg version "$candidate_version" --argjson baseline "$after" \
         '.previous_digest=$previous | .healthy_digest=$digest | .version=$version | .baseline=$baseline | .updated_at=(now|todateiso8601)' <<<"$STATE")"
       write_state "$new_state"
-      cleanup_old_images "$candidate" "$previous"
+      # Retain all earlier image references until a separately approved cleanup.
       notify SUCCESS "version $candidate_version deployed at ${master:0:12}"
       return 0
     fi

@@ -48,7 +48,7 @@ export class BrowserQueue {
     if(this.#preview||this.#waiting||this.#running)return {skipped:true};
     const child=fork(path.resolve(import.meta.dirname,"capture-runner.mjs"),[],{
       detached:true,stdio:["ignore","ignore","ignore","ipc"],
-      env:{NODE_ENV:"production",PLAYWRIGHT_EXECUTABLE_PATH:process.env.PLAYWRIGHT_EXECUTABLE_PATH??"/usr/bin/chromium",
+      env:{NODE_ENV:"production",PLAYWRIGHT_EXECUTABLE_PATH:process.env.PLAYWRIGHT_EXECUTABLE_PATH??"/ms-playwright/chromium_headless_shell-1248/chrome-headless-shell-linux64/chrome-headless-shell",
         PATH:process.env.PATH??"/usr/bin:/bin",HOME:process.env.HOME??"/home/node"}
     });
     const state={child,cancelled:false,terminating:false};

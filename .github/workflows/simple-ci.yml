@@ -66,9 +66,11 @@ jobs:
             sleep 2
           done
           if [ "$ready" != 1 ]; then docker compose logs --tail=80 fusion; exit 1; fi
+          docker image inspect "$(docker compose images -q fusion)" --format 'Simple image size: {{.Size}} bytes'
           docker compose exec -T fusion node simple/verify-build-metadata.mjs "$APP_COMMIT" "$APP_BRANCH"
           docker compose exec -T fusion node -e 'if(!process.version.startsWith("v24."))process.exit(1)'
-          docker compose exec -T fusion chromium --version
+          docker compose exec -T fusion sh -c 'test -x "$PLAYWRIGHT_EXECUTABLE_PATH" && "$PLAYWRIGHT_EXECUTABLE_PATH" --version | grep -F "156.0.8078.4"'
+          docker compose exec -T fusion sh -c '! command -v chromium >/dev/null 2>&1'
           docker compose exec -T fusion ffmpeg -version
           docker compose exec -T fusion ffprobe -version
           token="$(docker compose exec -T fusion cat /data/setup-token | tr -d '\r\n')"

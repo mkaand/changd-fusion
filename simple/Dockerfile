@@ -20,10 +20,16 @@ ARG APP_BRANCH
 RUN APP_COMMIT="$APP_COMMIT" APP_BRANCH="$APP_BRANCH" npm run build
 
 FROM node:24.22.1-bookworm-slim@sha256:55fb5f5a527ea2c5c4a95f963e48ef90aa38c7b346054fdc8ee9957a2b55d205
-ENV NODE_ENV=production PORT=3000 FUSION_DATA_DIR=/data PLAYWRIGHT_EXECUTABLE_PATH=/usr/bin/chromium
+ENV NODE_ENV=production PORT=3000 FUSION_DATA_DIR=/data PLAYWRIGHT_BROWSERS_PATH=/ms-playwright PLAYWRIGHT_EXECUTABLE_PATH=/ms-playwright/chromium_headless_shell-1248/chrome-headless-shell-linux64/chrome-headless-shell
 WORKDIR /app
-RUN apt-get update && apt-get install -y --no-install-recommends chromium chromium-common chromium-sandbox fonts-liberation ffmpeg && rm -rf /var/lib/apt/lists/* && mkdir -p /data && chown node:node /data
 COPY --from=server-build --chown=node:node /build/server/node_modules ./node_modules
+RUN --mount=type=secret,id=proxy_ca \
+    if [ -s /run/secrets/proxy_ca ]; then export NODE_EXTRA_CA_CERTS=/run/secrets/proxy_ca; fi; \
+    apt-get update && apt-get install -y --no-install-recommends ffmpeg fonts-liberation && \
+    ./node_modules/.bin/playwright install-deps chromium-headless-shell && \
+    ./node_modules/.bin/playwright install chromium-headless-shell && \
+    test -x "$PLAYWRIGHT_EXECUTABLE_PATH" && \
+    rm -rf /var/lib/apt/lists/* && mkdir -p /data && chown -R node:node /data /ms-playwright
 COPY --from=server-build --chown=node:node /build/server/dist ./server/dist
 COPY --chown=node:node server/package.json ./server/package.json
 COPY --chown=node:node server/filters ./server/filters

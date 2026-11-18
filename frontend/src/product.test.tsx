@@ -109,6 +109,17 @@ it("notification delivery history displays retries and authorized administrative
   await user.click(screen.getByText("Retry delivery"));
   expect(api).toHaveBeenCalledWith("/deliveries/fixture/retry", "POST", {});
 });
+it("shows monitor-independent SMTP tests as relay acceptance, not inbox delivery", async () => {
+  vi.mocked(api).mockResolvedValue({items:[{
+    id:"test-delivery",kind:"test",monitor_id:null,monitor_name:null,channel_name:"SMTP fixture",provider:"smtp",
+    status:"sent",attempts:1,accepted_at:"2026-11-18T10:00:00.000Z",smtp_result:{status:"accepted_by_smtp",response_code:"250"}
+  }],total:1});
+  render(<Deliveries admin />);
+  expect(await screen.findByText("Channel test")).toBeInTheDocument();
+  expect(screen.getByText("Accepted by SMTP")).toBeInTheDocument();
+  expect(screen.getByText(/inbox delivery unconfirmed/)).toBeInTheDocument();
+  expect(screen.queryByRole("link",{name:"Channel test"})).not.toBeInTheDocument();
+});
 it("delivery history keeps existing rows visible while a manual refresh is pending", async () => {
   let resolveRefresh: ((value: unknown) => void) | undefined;
   vi.mocked(api)
