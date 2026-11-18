@@ -69,3 +69,19 @@ it("Telegram sends nothing on mount and tests an enabled channel without a monit
   expect(api).toHaveBeenCalledWith("/notifications/fixture/test", "POST", {});
   expect(screen.queryByLabelText("Test notification monitor")).not.toBeInTheDocument();
 });
+it("keeps the preview selector and Add channel in the scoped wrapping header", () => {
+  render(<Channels channels={[channel]} monitors={[]} reload={vi.fn()} report={vi.fn()} />);
+  const header=screen.getByRole("heading",{name:"Notification channels"}).parentElement;
+  expect(header).toHaveClass("notification-channel-header");
+  expect(header).toContainElement(screen.getByRole("button",{name:"Add channel"}));
+  expect(header).toContainElement(screen.getByLabelText("Telegram message preview"));
+});
+it("Telegram preview remains usable from the wrapped header", async () => {
+  vi.mocked(api).mockResolvedValue({ text: "Fixture Telegram preview" });
+  const user=userEvent.setup();
+  render(<Channels channels={[channel]} monitors={[]} reload={vi.fn()} report={vi.fn()} />);
+  await user.click(screen.getByLabelText("Telegram message preview"));
+  await user.click(screen.getByText("Text",{selector:".ant-select-item-option-content"}));
+  expect(api).toHaveBeenCalledWith("/notifications/preview/text");
+  expect(await screen.findByText("Fixture Telegram preview")).toBeInTheDocument();
+});

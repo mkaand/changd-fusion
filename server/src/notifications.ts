@@ -1,6 +1,7 @@
 import nodemailer from "nodemailer";
 import https from "node:https";
 import { createHash, randomUUID } from "node:crypto";
+import { domainToASCII } from "node:url";
 import { z } from "zod";
 import { EgressPolicy } from "./egress.js";
 import { Storage } from "./storage.js";
@@ -80,7 +81,10 @@ export function visualSummary(event: EventMessage) {
   return `Visual change: ${formatPercent(event.percent ?? "0")}%`;
 }
 export function summary(event: EventMessage) {
-  if (event.eventType === "test") return `Changd Fusion channel test\n${event.link}`;
+  if (event.eventType === "test") {
+    const { timestamp, url } = testEmailDetails(event);
+    return `Changd Fusion notification channel test\n\nThis is a test of your configured email notification channel. No monitor was checked or changed.\nRequested: ${timestamp}\n${url ? `Application: ${url}\n` : ""}SMTP relay acceptance does not confirm inbox delivery.`;
+  }
   const http = event.httpStatusChanged
     ? `HTTP status changed: ${event.previousHttpStatus ?? "unknown"} → ${event.httpStatus ?? "unknown"}\n`
     : "";
@@ -258,8 +262,27 @@ export function telegramSummary(
   return truncateText(lines.join("\n"), 4000);
 }
 export function emailHTML(e: EventMessage) {
-  if (e.eventType === "test") return `<h1>Changd Fusion channel test</h1><p><a href="${escapeHTML(e.link)}">Open Changd Fusion</a></p>`;
+  if (e.eventType === "test") {
+    const { timestamp, url } = testEmailDetails(e);
+    return `<h1>Changd Fusion notification channel test</h1><p>This is a test of your configured email notification channel. No monitor was checked or changed.</p><p>Requested: ${escapeHTML(timestamp)}</p>${url ? `<p><a href="${escapeHTML(url)}">Open Changd Fusion</a></p>` : ""}<p>SMTP relay acceptance does not confirm inbox delivery.</p>`;
+  }
   return `<h1>${escapeHTML(e.name)}</h1>${e.attentionState ? `<p>${escapeHTML(e.attentionState.replaceAll("_", " "))}: ${escapeHTML(e.attentionMessage ?? "Requires attention")}</p>` : ""}${e.textChanged ? `<h2>Text changes</h2><pre>${escapeHTML(e.textSummary)}</pre>` : ""}${e.visualChanged ? `<p>${escapeHTML(visualSummary(e))}</p>` : ""}<p><a href="${escapeHTML(e.link)}">Open monitor</a></p>${e.images.length ? "<p>Before, after and available diff images are attached.</p>" : ""}`;
+}
+function testEmailDetails(event: EventMessage) {
+  const date = event.checkedAt ? new Date(event.checkedAt) : new Date();
+  const timestamp = Number.isFinite(date.getTime()) ? date.toISOString() : new Date().toISOString();
+  let url: string | null = null;
+  try {
+    const parsed = new URL(event.link);
+    if (parsed.protocol === "https:" && !parsed.username && !parsed.password) url = parsed.href;
+  } catch {}
+  return { timestamp, url };
+}
+export function smtpMessageId(from: string) {
+  const domain = domainToASCII(from.slice(from.lastIndexOf("@") + 1)).toLowerCase();
+  if (!/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(domain))
+    throw Error("Invalid SMTP sender domain");
+  return `<${randomUUID()}@${domain}>`;
 }
 export type TelegramSend = (
   token: string,
@@ -421,11 +444,13 @@ export async function deliver(
         transport.sendMail({
           from: c.from,
           to: c.to,
+          envelope: { from: c.from, to: c.to },
           subject: `Changd Fusion: ${event.name}`,
           text: summary(event),
           html: emailHTML(event),
           attachments: files,
-          messageId: `<${event.id}@changd-fusion.example.com>`,
+          messageId: smtpMessageId(c.from),
+          date: new Date(),
         }),
         new Promise<never>((_, reject) => {
           timer = setTimeout(
