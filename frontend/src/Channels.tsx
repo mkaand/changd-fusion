@@ -63,13 +63,13 @@ export function Channels({
   };
   return (
     <>
-      <Space className="page-header">
+      <div className="page-header notification-channel-header">
         <h2>Notification channels</h2>
         <Button type="primary" onClick={() => create()}>
           Add channel
         </Button>
-        <Select aria-label="Telegram message preview" placeholder="Preview Telegram message" style={{ minWidth: 220 }} onChange={async (kind) => { try { setPreview({ kind, text: (await api(`/notifications/preview/${kind}`)).text }); } catch (e) { report((e as Error).message); } }} options={["text", "visual", "combined", "dimensions", "failure", "authentication", "challenge", "test", "digest"].map((value) => ({ value, label: value.replace(/^./, (c) => c.toUpperCase()) }))} />
-      </Space>
+        <Select aria-label="Telegram message preview" placeholder="Preview Telegram message" onChange={async (kind) => { try { setPreview({ kind, text: (await api(`/notifications/preview/${kind}`)).text }); } catch (e) { report((e as Error).message); } }} options={["text", "visual", "combined", "dimensions", "failure", "authentication", "challenge", "test", "digest"].map((value) => ({ value, label: value.replace(/^./, (c) => c.toUpperCase()) }))} />
+      </div>
       {preview && <Card className="telegram-preview" title={`Telegram preview: ${preview.kind}`} extra={<Button onClick={() => setPreview(undefined)}>Close</Button>}><Typography.Paragraph className="telegram-preview-text">{preview.text}</Typography.Paragraph><Typography.Text type="secondary">Preview only — no Telegram request is made.</Typography.Text></Card>}
       {!channels.length && (
         <Empty description="Add SMTP or Telegram to receive unified change alerts." />
