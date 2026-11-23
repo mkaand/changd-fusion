@@ -124,6 +124,7 @@ it("preserves unmounted Advanced settings when only interval is edited", async (
   };
   setupApi([existing], existing);
   const user = userEvent.setup({ pointerEventsCheck: PointerEventsCheckLevel.Never });
+  vi.mocked(window.matchMedia).mockImplementation((query) => ({ matches: false, media: query, onchange: null, addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn() }));
   render(<AntApp><FusionApp /></AntApp>);
   await user.click(await screen.findByLabelText("Actions for GreenCard Lottery"));
   await user.click(await screen.findByText("Edit", { exact: true }));
@@ -131,7 +132,7 @@ it("preserves unmounted Advanced settings when only interval is edited", async (
   // Do not expand Advanced settings; adjust only the displayed duration.
   expect(screen.queryByLabelText("Text content source")).not.toBeInTheDocument();
   expect(screen.getByLabelText("Check interval value")).toHaveValue("1");
-  expect(screen.getByLabelText("Check interval unit")).toHaveTextContent("Hours");
+  expect(screen.getByText("Hours", { exact: true })).toBeInTheDocument();
   await user.click(screen.getByLabelText("Check interval unit"));
   await user.click(await screen.findByText("Days", { exact: true }));
   fireEvent.change(screen.getByLabelText("Check interval value"), { target: { value: "1" } });

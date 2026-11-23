@@ -89,11 +89,11 @@ it("uses the real mobile RegionPicker, preserves unsaved fields, and sends its s
   render(<AntApp><FusionApp /></AntApp>);
   await user.click(await screen.findByRole("button", { name: "Edit" }));
   fireEvent.change(screen.getByLabelText("Monitor name"), { target: { value: "Unsaved renamed monitor" } });
-  fireEvent.change(screen.getByLabelText("Check interval (seconds)"), { target: { value: "900" } });
+  fireEvent.change(screen.getByLabelText("Check interval value"), { target: { value: "15" } });
   await openMobileRegion(user, false);
   await user.click(await screen.findByRole("button", { name: "Use selector" }));
   expect(await screen.findByLabelText("Monitor name")).toHaveValue("Unsaved renamed monitor");
-  expect(screen.getByLabelText("Check interval (seconds)")).toHaveValue("900");
+  expect(screen.getByLabelText("Check interval value")).toHaveValue("15");
   await user.click(screen.getByRole("button", { name: "Save monitor" }));
   await waitFor(() => expect(mockedApi).toHaveBeenCalledWith(`/jobs/${existing.id}`, "PUT", expect.objectContaining({ name: "Unsaved renamed monitor", interval_seconds: 900, capture_mode: "element", capture_selector_type: "css", capture_selector: "#new-price" })));
   expect(mockedApi.mock.calls.some(([path]) => String(path).endsWith("/reset"))).toBe(false);

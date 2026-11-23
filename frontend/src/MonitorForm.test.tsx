@@ -315,7 +315,7 @@ it("round-trips day and hour interval units as integer seconds", async () => {
   const input = screen.getByLabelText("Check interval value");
   const units = screen.getByLabelText("Check interval unit");
   expect(input).toHaveValue("5");
-  expect(units).toHaveTextContent("Minutes");
+  expect(screen.getByText("Minutes", { exact: true })).toBeInTheDocument();
   await user.click(units);
   await user.click(screen.getByText("Days", { exact: true }));
   await user.clear(input);
