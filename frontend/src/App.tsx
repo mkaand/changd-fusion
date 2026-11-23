@@ -305,7 +305,14 @@ export default function FusionApp() {
   const save = async () => {
     setSaving(true);
     try {
-      const b = await form.validateFields();
+      await form.validateFields();
+      // Collapsed Advanced fields can be unmounted. Preserve their form-store
+      // values, while keeping readonly server metadata out of the strict API.
+      const allValues = form.getFieldsValue(true);
+      const writableKeys = ["name", "url", "markdown_render", "selector", "muted_until", ...Object.keys(defaults)];
+      const b = Object.fromEntries(writableKeys
+        .filter((key) => Object.hasOwn(allValues, key))
+        .map((key) => [key, allValues[key]]));
       if (!b.text_enabled && !b.visual_enabled)
         throw Error("Enable at least one detection method");
       if (b.capture_mode === "selected_area" && (!b.visual_enabled || !isValidCaptureArea(b.capture_area)))
