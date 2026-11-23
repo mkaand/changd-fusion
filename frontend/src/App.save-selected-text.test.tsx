@@ -112,3 +112,42 @@ it("keeps Account Security available in a public workspace and sends owner crede
   await waitFor(() => expect(mockedApi).toHaveBeenCalledWith("/security/verify", "POST", { email: "owner@example.com", password: "synthetic-fixture-password" }));
   expect(await screen.findByRole("region", { name: "Public Access setting" })).toBeInTheDocument();
 });
+
+it("preserves unmounted Advanced settings when only interval is edited", async () => {
+  const existing = {
+    id: "33333333-3333-4333-8333-333333333333", name: "GreenCard Lottery",
+    url: "https://dvprogram.state.gov/", kind: "browser", text_enabled: true,
+    visual_enabled: false, text_source: "markdown_new", markdown_render: "browser",
+    extraction_mode: "selected_text", extraction_rule: rule, interval_seconds: 3600,
+    notification_mode: "digest", digest_window_seconds: 3600, ignore_case: true,
+    channel_ids: [], created_at: "2026-11-01T00:00:00Z", monitor_state: "healthy"
+  };
+  setupApi([existing], existing);
+  const user = userEvent.setup({ pointerEventsCheck: PointerEventsCheckLevel.Never });
+  vi.mocked(window.matchMedia).mockImplementation((query) => ({ matches: false, media: query, onchange: null, addListener: vi.fn(), removeListener: vi.fn(), addEventListener: vi.fn(), removeEventListener: vi.fn(), dispatchEvent: vi.fn() }));
+  render(<AntApp><FusionApp /></AntApp>);
+  await user.click(await screen.findByLabelText("Actions for GreenCard Lottery"));
+  await user.click(await screen.findByText("Edit", { exact: true }));
+  await screen.findByLabelText("Check interval value");
+  // Do not expand Advanced settings; adjust only the displayed duration.
+  expect(screen.queryByLabelText("Text content source")).not.toBeInTheDocument();
+  expect(screen.getByLabelText("Check interval value")).toHaveValue("1");
+  expect(screen.getByText("Hours", { exact: true })).toBeInTheDocument();
+  await user.click(screen.getByLabelText("Check interval unit"));
+  await user.click(await screen.findByText("Days", { exact: true }));
+  fireEvent.change(screen.getByLabelText("Check interval value"), { target: { value: "1" } });
+  await user.click(screen.getByRole("button", { name: "Save monitor" }));
+  await waitFor(() => expect(mockedApi).toHaveBeenCalledWith(
+    `/jobs/${existing.id}`, "PUT", expect.objectContaining({
+      interval_seconds: 86400,
+      text_source: "markdown_new", markdown_render: "browser",
+      extraction_mode: "selected_text", extraction_rule: rule,
+      notification_mode: "digest", digest_window_seconds: 3600,
+      ignore_case: true
+    })
+  ));
+  const payload = mockedApi.mock.calls.find(([path, method]) => path === `/jobs/${existing.id}` && method === "PUT")?.[2] as Record<string, unknown>;
+  expect(payload).not.toHaveProperty("id");
+  expect(payload).not.toHaveProperty("created_at");
+  expect(payload).not.toHaveProperty("monitor_state");
+});

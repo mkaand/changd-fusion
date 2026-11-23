@@ -308,3 +308,21 @@ it("keeps a V1 monitor editable and carries an applied V2 rule into the save pay
   current.setFieldValue("extraction_rule", v2);
   expect(JSON.parse(JSON.stringify(await current.validateFields())).extraction_rule).toEqual(v2);
 });
+
+it("round-trips day and hour interval units as integer seconds", async () => {
+  const user = userEvent.setup();
+  render(<Fixture />);
+  const input = screen.getByLabelText("Check interval value");
+  const units = screen.getByLabelText("Check interval unit");
+  expect(input).toHaveValue("5");
+  expect(screen.getByText("Minutes", { exact: true })).toBeInTheDocument();
+  await user.click(units);
+  await user.click(screen.getByText("Days", { exact: true }));
+  await user.clear(input);
+  await user.type(input, "1");
+  expect(current.getFieldValue("interval_seconds")).toBe(86400);
+  await user.click(screen.getByLabelText("Check interval unit"));
+  await user.click(screen.getByText("Hours", { exact: true }));
+  expect(screen.getByLabelText("Check interval value")).toHaveValue("24");
+  expect(current.getFieldValue("interval_seconds")).toBe(86400);
+});

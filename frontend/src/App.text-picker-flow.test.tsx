@@ -43,7 +43,7 @@ it("uses the real mobile TextPicker and preserves the draft through apply, remou
   await user.click(screen.getByText("New monitor", { exact: true }));
   fireEvent.change(screen.getByLabelText("Monitor name"), { target: { value: "Unsaved mobile monitor" } });
   fireEvent.change(screen.getByLabelText("URL"), { target: { value: "https://example.com/product" } });
-  fireEvent.change(screen.getByLabelText("Check interval (seconds)"), { target: { value: "900" } });
+  fireEvent.change(screen.getByLabelText("Check interval value"), { target: { value: "15" } });
   await user.click(screen.getByText("Advanced settings", { exact: true }));
   await user.click(screen.getByLabelText("Text content source"));
   await user.click(screen.getByText(/Jina Reader —/, { exact: false }));
@@ -57,7 +57,7 @@ it("uses the real mobile TextPicker and preserves the draft through apply, remou
   await user.click(screen.getByRole("button", { name: "Generate extraction rule" }));
   await user.click(await screen.findByRole("button", { name: "Apply selection to editor" }));
   expect(await screen.findByLabelText("Monitor name")).toHaveValue("Unsaved mobile monitor");
-  expect(screen.getByLabelText("Check interval (seconds)")).toHaveValue("900");
+  expect(screen.getByLabelText("Check interval value")).toHaveValue("15");
   await user.click(screen.getByRole("button", { name: "Save monitor" }));
   await waitFor(() => expect(mockedApi).toHaveBeenCalledWith("/jobs", "POST", expect.objectContaining({ name: "Unsaved mobile monitor", interval_seconds: 900, text_source: "jina", extraction_mode: "selected_text", extraction_rule: generatedRule })));
   expect(mockedApi.mock.calls.some(([path]) => String(path).endsWith("/reset"))).toBe(false);

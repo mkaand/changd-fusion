@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Collapse, DatePicker, Form, Input, InputNumber, Select, Switch, Alert, Radio, Typography } from "antd";
 import { BrowserStepsEditor } from "./BrowserStepsEditor";
 import { RegionPicker } from "./RegionPicker";
@@ -6,6 +6,47 @@ import { TextPicker } from "./TextPicker";
 import { SelectedAreaPicker } from "./SelectedAreaPicker";
 import { isValidSelectedTextRule } from "./selected-text-rule";
 const HiddenObjectField = (_: { value?: unknown }) => null;
+
+type IntervalUnit = "seconds" | "minutes" | "hours" | "days";
+const intervalUnits: { value: IntervalUnit; label: string; seconds: number }[] = [
+  { value: "seconds", label: "Seconds", seconds: 1 },
+  { value: "minutes", label: "Minutes", seconds: 60 },
+  { value: "hours", label: "Hours", seconds: 3600 },
+  { value: "days", label: "Days", seconds: 86400 },
+];
+function preferredIntervalUnit(value?: number): IntervalUnit {
+  const seconds = value ?? 300;
+  return [...intervalUnits].reverse().find((unit) => seconds >= unit.seconds && seconds % unit.seconds === 0)?.value ?? "seconds";
+}
+function IntervalInput({ value, onChange }: { value?: number | null; onChange?: (seconds: number | null) => void }) {
+  const [unit, setUnit] = useState<IntervalUnit>(() => preferredIntervalUnit(value ?? undefined));
+  const lastEmitted = useRef<number | null>(null);
+  useEffect(() => {
+    if (typeof value === "number" && value !== lastEmitted.current) setUnit(preferredIntervalUnit(value));
+  }, [value]);
+  const factor = intervalUnits.find((option) => option.value === unit)!.seconds;
+  return <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+    <InputNumber
+      aria-label="Check interval value"
+      style={{ flex: "1 1 140px" }}
+      value={value == null ? null : value / factor}
+      min={30 / factor}
+      max={604800 / factor}
+      onChange={(amount) => {
+        const seconds = amount === null ? null : Math.round(amount * factor);
+        lastEmitted.current = seconds;
+        onChange?.(seconds);
+      }}
+    />
+    <Select
+      aria-label="Check interval unit"
+      style={{ width: 130 }}
+      value={unit}
+      onChange={setUnit}
+      options={intervalUnits.map(({ value: unitValue, label }) => ({ value: unitValue, label }))}
+    />
+  </div>;
+}
 
 export const defaults = {
   kind: "browser", text_enabled: true, visual_enabled: false, selector_type: "css",
@@ -34,7 +75,7 @@ export function MonitorForm({ form, channels, monitorId, onOpenMobileRegion, onO
       <Form.Item name="url" label="URL" rules={[{ required: true, type: "url" }]}><Input placeholder="https://example.com" /></Form.Item>
       {detection}
       {!text && !visual && <Alert title="Enable Text, Visual, or both." type="warning" />}
-      <Form.Item name="interval_seconds" label="Check interval (seconds)" rules={[{ required: true }]}><InputNumber min={30} max={604800} /></Form.Item>
+      <Form.Item name="interval_seconds" label="Check interval" rules={[{ required: true }, { validator: (_, value) => Number.isInteger(value) && value >= 30 && value <= 604800 ? Promise.resolve() : Promise.reject(new Error("Interval must be between 30 seconds and 7 days.")) }]}><IntervalInput /></Form.Item>
       <Form.Item name="channel_ids" label="Notification channels"><Select mode="multiple" options={channels.map((c) => ({ value: c.id, label: c.name }))} /></Form.Item>
     </section>
     <Collapse className="monitor-editor-advanced" activeKey={isAdvancedOpen ? ["advanced"] : []} onChange={(keys) => updateAdvanced((keys as string[]).includes("advanced"))} items={[{ key: "advanced", label: "Advanced settings", children: <>
